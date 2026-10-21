@@ -1,4 +1,4 @@
-﻿/**
+/**
  * video-link-read — 链接级"点开看看"（id: 'video-link-read', order: 45）
  *
  * 为什么拆成两个插件：
@@ -36,6 +36,32 @@ function platformOf(url) {
   if (/bilibili\.com|b23\.tv|bili2233\.cn/.test(u)) return 'bilibili'
   if (/douyin\.com|iesdouyin\.com/.test(u)) return 'douyin'
   return ''
+}
+
+/**
+ * 从「原始段」里捞卡片链接（兜底层）。
+ * `ev.cards` 已经被内核抽过一遍，但 QQ 小程序卡片的链接埋在 `meta.detail_1.qqdocurl` /
+ * `meta.news.jumpUrl` 之类的深层字段里，内核的 `extractCardUrl` 只认它知道的几个路径。
+ * 这里把 json 段整段丢进正则再按平台过滤 —— 宁可多找一个，也别整条漏掉。
+ */
+function urlsFromRawSegments(segs) {
+  const out = []
+  for (const seg of Array.isArray(segs) ? segs : []) {
+    if (String(seg?.type || '') !== 'json') continue
+    const d = seg?.data ?? seg ?? {}
+    // QQ 卡片 JSON 里的斜杠是转义过的。段里的 data 既可能是**原始 JSON 串**（`https:\/\/`），
+    // 也可能是被内核 JSON.parse 过再 stringify 的（`https:\\/\\/`）。**两种转义都还原**，别只认一种。
+    const body = typeof d === 'string' ? d : (d.data ?? '')
+    const raw = String(body)
+      .replace(/\\\\\//g, '/')   // \\/  → /
+      .replace(/\\\//g, '/')     // \/   → /
+    if (!raw) continue
+    for (const m of raw.matchAll(/https?:\/\/[^\s"'<>]+/gi)) {
+      const u = m[0].replace(/[)\]}>.,;:'"!?]+$/, '')
+      if (u.length > 10 && !out.includes(u)) out.push(u)
+    }
+  }
+  return out
 }
 
 function quotaCheck(bot, chatKey, qq, perUserHour, perGroupHour) {
@@ -138,13 +164,22 @@ export default {
       // 已经在别处（比如群文件视频）成功塞过帧 = 这一轮已经"看过东西"了，别再看第二段
       if (Array.isArray(ev.imageParts) && ev.imageParts.length) return
 
+      // 链接来源有两条，**都要看**：
+      //   ① 正文里的链接（用户直接打字贴的）
+      //   ② `ev.cards` —— QQ 小程序/分享卡片。⚠️ 内核 format.js:405-407 把卡片里的链接
+      //      抽出来单独放 cards，**不塞进 text**（注释：保持"卡片不算文字"的旧行为）。
+      //      所以只搜 rawText 会漏掉所有卡片分享 —— 这是踩过的坑，别再改回去。
       const text = String(ev.rawText ?? ev.text ?? '')
-      const urls = extractUrls(text)
-      if (!urls.length) return
+      const candidates = [
+        ...extractUrls(text),
+        ...(Array.isArray(ev.cards) ? ev.cards.map(String) : []),
+        ...urlsFromRawSegments(ev.rawSegments),
+      ]
       const allowed = Array.isArray(cfg().platforms) ? cfg().platforms.map(String) : ['bilibili', 'douyin']
-      const hit = urls.map((u) => ({ url: u, platform: platformOf(u) }))
+      const hit = candidates.map((u) => ({ url: u, platform: platformOf(u) }))
         .find((x) => x.platform && allowed.includes(x.platform))
       if (!hit) return                                   // 不是支持的平台 → 完全不碰
+      bot.log.debug(`[看链接] 命中 ${hit.platform} ${hit.url.slice(0, 80)}（来源=${text.includes(hit.url) ? '正文' : '卡片'}）`)
 
       // 额度（跟 video-read 共用一个槽）
       const q = quotaCheck(bot, ev.chatKey, ev.sender?.qq,

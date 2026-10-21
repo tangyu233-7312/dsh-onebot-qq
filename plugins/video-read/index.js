@@ -26,19 +26,38 @@
  * 状态（额度窗口）进 `bot.state.get(chatKey)._scratch`，遵守契约：插件不开全局 Map。
  */
 import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
-/** 从原始段里挖视频（OneBot v11：`{type:'video', data:{file, file_id, url, path}}`） */
+/**
+ * 从原始段里挖视频。
+ *
+ * OneBot v11 规范是 `{type:'video', data:{file, file_id, url, path}}`，但 **NapCat 实际给的字段
+ * 不一定齐**：`file` 可能是个文件名、`file_id` 可能空、`url` 可能没有。所以这里按优先级收集
+ * **所有可能的把手**，交给下游 resolveLocal 逐个试 —— 而不是只取第一个非空就返回。
+ * @returns {{file:string, fileId:string, url:string, local:string, keys:string[]}|null} keys = 实际拿到值的字段名（排障用）
+ */
 function videoSegOf(ev) {
   const segs = Array.isArray(ev?.rawSegments) ? ev.rawSegments : []
   for (const seg of segs) {
     if (String(seg?.type || '') !== 'video') continue
     const d = seg?.data ?? seg ?? {}
-    const file = String(d.file ?? '')
-    const fileId = String(d.file_id ?? d.fileId ?? '')
-    const url = String(d.url ?? '')
-    const local = String(d.path ?? '')
-    if (!file && !fileId && !url && !local) continue
-    return { file, fileId, url, local }
+    // 大小写/别名都认：file / file_id / fileId / fid / url / path / file_path / filename
+    const pick = (...names) => {
+      for (const n of names) {
+        const v = d[n]
+        if (typeof v === 'string' && v.trim()) return v.trim()
+        if (typeof v === 'number' && v > 0) return String(v)
+      }
+      return ''
+    }
+    const file = pick('file', 'filename')
+    const fileId = pick('file_id', 'fileId', 'fid')
+    const url = pick('url', 'file_url')
+    const local = pick('path', 'file_path', 'local_path')
+    const keys = Object.entries({ file, fileId, url, local }).filter(([, v]) => v).map(([k]) => k)
+    if (!keys.length) continue
+    return { file, fileId, url, local, keys }
   }
   return null
 }
@@ -161,22 +180,55 @@ export default {
     const urlOf = () => String(cfg().sidecarUrl || '').trim()
     const SLOT = 'video-read:seg'
 
+
     // ── passive-tap：把视频段记下来（fail-open，绝不阻塞主链） ──
     // ⚠️ 本插件**不负责拉起侧车**（那是运维/部署的事，也不该由插件 spawn 进程）。
     //    侧车没起时下面所有请求都会失败并降级，聊天不受影响。
-    bot.on('passive-tap', (ev) => {
+    bot.on('passive-tap', async (ev) => {
       if (cfg().enabled === false) return
       if (!urlOf()) return
       const seg = videoSegOf(ev)
-      if (seg) ev._scratch[SLOT] = seg
+      if (seg) {
+        ev._scratch[SLOT] = seg
+        bot.log.debug(`[看视频] 收到视频段 file=${seg.file || '-'} fileId=${seg.fileId || '-'} url=${String(seg.url || '-').slice(0, 60)}`)
+      } else {
+        // 有视频段但挖不出字段 —— 这种最难查，必须留痕
+        const hasVideoSeg = (Array.isArray(ev.rawSegments) ? ev.rawSegments : []).some((s) => String(s?.type) === 'video')
+        if (hasVideoSeg) {
+          bot.log.warn(`[看视频] 有 video 段但挖不出 file/url，段内容=${JSON.stringify(ev.rawSegments.filter((s) => String(s?.type) === 'video')).slice(0, 400)}`)
+        }
+      }
     })
 
     // ── ② before-turn：抽帧 → 塞 imageParts（order 44，必须早于 kernel:context 的 50） ──
     bot.on('before-turn', async (ev) => {
       if (cfg().enabled === false || !urlOf()) return
+      // 每个门都留痕：不然"为什么没看"只能猜（trace 只在这一轮确实提到视频时才写，不刷屏）
+      const seg0 = ev._scratch?.[SLOT]
+      if (!seg0 && !ev.replyToId) return
       if (!shouldLook(ev, cfg())) return
-
-      const seg = ev._scratch?.[SLOT]
+      let seg = ev._scratch?.[SLOT]
+      if (!seg) {
+        // ── 被引视频：QQ 里"转发视频"只能**先发视频、再引用它说话**（客户端限制，绕不开）。
+        //    内核的引用反查只取文本，视频段变成 `[媒体/富文本]` 且原始段被丢弃（index.js:744），
+        //    所以这里**自己再反查一次**。
+        //    ⚠️ 必须放在 before-turn（顺序 await，安全），**不能放在 passive-tap**——
+        //    那个阶段内核是 fire-and-forget 的，不等 async 完成，会出现
+        //    "before-turn 判定没有视频段 → 0.5 秒后才反查回来"的时序 bug（踩过）。
+        if (ev.replyToId && typeof bot.napcat?.msgById === 'function') {
+          try {
+            const q = await bot.napcat.msgById(ev.replyToId)
+            const qSeg = q ? videoSegOf({ rawSegments: q.message ?? q.raw_message ?? [] }) : null
+            if (qSeg) {
+              seg = qSeg
+              ev._scratch[SLOT] = qSeg
+              bot.log.debug(`[看视频] 被引消息里有视频段 (replyToId=${ev.replyToId}) file=${qSeg.file || '-'} id=${qSeg.fileId || '-'}`)
+            }
+          } catch (e) {
+            bot.log.debug(`[看视频] 被引消息反查失败: ${e.message}`)
+          }
+        }
+      }
       if (!seg) return
 
       // 额度：先查再发请求（别先下载几百 MB 再说超限）
@@ -194,6 +246,7 @@ export default {
       }
 
       const started = Date.now()
+      bot.log.debug(`[看视频] 请求侧车 ${String(req.url).slice(0, 80)} (${req.platform})`)
       let data = null
       try {
         const res = await fetch(`${urlOf().replace(/\/+$/, '')}/read`, {
@@ -215,6 +268,7 @@ export default {
       }
 
       if (!data?.ok) {
+        bot.log.debug(`[看视频] 侧车拒绝: ${data?.code} ${String(data?.error || '').slice(0, 160)}`)
         bot.log.info(`[看视频] 侧车拒绝: ${data?.code} ${data?.error || ''}`)
         return tell(ev, failText(data))
       }
@@ -273,19 +327,32 @@ export default {
           }
         } catch { /* 忽略 */ }
       }
-      const id = seg.fileId || seg.file
-      if (id && typeof bot.napcat?.getFile === 'function') {
+      // NapCat 溯源：**每个 handle 都试** —— file / file_id / url 在 NapCat 眼里是同一个东西的
+      // 不同叫法，哪个能用取决于版本。只试 seg.fileId || seg.file 会漏掉"file 有值但其实是文件名"的情况。
+      for (const id of [seg.fileId, seg.file].filter(Boolean)) {
+        if (typeof bot.napcat?.getFile !== 'function') break
         try {
           const info = await bot.napcat.getFile(id)
           const p = String(info?.file || '')
-          if (p && fs.existsSync(p) && fs.statSync(p).isFile()) return { url: p, platform: 'file' }
+          if (p && fs.existsSync(p) && fs.statSync(p).isFile()) {
+            bot.log.debug(`[看视频] getFile(${String(id).slice(0, 20)}) → 本地 ${p}`)
+            return { url: p, platform: 'file' }
+          }
           const u = String(info?.url || '')
-          if (/^https?:\/\//.test(u)) return { url: u, platform: 'file' }
+          if (/^https?:\/\//.test(u)) {
+            bot.log.debug(`[看视频] getFile(${String(id).slice(0, 20)}) → 直链 ${u.slice(0, 60)}`)
+            return { url: u, platform: 'qq' }
+          }
         } catch (e) {
-          bot.log.debug(`[看视频] getFile 失败: ${e.message}`)
+          bot.log.debug(`[看视频] getFile 抛错: ${e.message}`)
+          bot.log.debug(`[看视频] getFile(${String(id).slice(0, 20)}) 失败: ${e.message}`)
         }
       }
-      if (/^https?:\/\//.test(seg.url || '')) return { url: seg.url, platform: 'file' }
+      if (/^https?:\/\//.test(seg.url || '')) return { url: seg.url, platform: 'qq' }
+      // 走到这里 = 所有把手都试过还拿不到。留一笔 warn（不是 debug），真机排障要靠它：
+      // 会直接告诉你 NapCat 给的段里到底有什么字段。
+      bot.log.warn(`[看视频] 拿不到视频文件：keys=[${(seg.keys || []).join(',')}] `
+        + `file=${String(seg.file || '-').slice(0, 40)} id=${String(seg.fileId || '-').slice(0, 40)}`)
       return null
     }
   },
