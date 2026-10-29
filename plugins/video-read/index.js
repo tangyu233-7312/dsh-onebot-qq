@@ -38,8 +38,19 @@ import fs from 'node:fs'
 function videoSegOf(ev) {
   const segs = Array.isArray(ev?.rawSegments) ? ev.rawSegments : []
   for (const seg of segs) {
-    if (String(seg?.type || '') !== 'video') continue
+    const t = String(seg?.type || '')
+    // 多数情况是 video 段；但群里"作为文件发的视频"是 file 段 —— 也认，
+    // 靠扩展名/URL 判一下是不是视频，免得把普通文件当视频去抽帧。
+    if (t !== 'video' && t !== 'file') continue
     const d = seg?.data ?? seg ?? {}
+    if (t === 'file') {
+      const name = String(d.file || d.filename || d.name || '')
+      const u = String(d.url || d.file_url || '')
+      const looksVideo = /\.(mp4|mov|m4v|avi|mkv|flv|webm|wmv|ts)$/i.test(name)
+        || /\.(mp4|mov|m4v|avi|mkv|flv|webm|wmv|ts)(\?|$)/i.test(u)
+        || /nt\.qq\.com\.cn|multimedia/i.test(u)
+      if (!looksVideo) continue
+    }
     // 大小写/别名都认：file / file_id / fileId / fid / url / path / file_path / filename
     const pick = (...names) => {
       for (const n of names) {
@@ -143,6 +154,16 @@ export default {
       hint: '建议开。开：只有 @ 它 / 叫唤醒词 / 引用它之后再发视频、贴链接才看；'
         + '关：群里任何人发都去看（很费钱，适合小群）。',
     },
+    // 群里"先发视频、再单独发一条 @它"是两条独立消息 —— 视频段在上一条里。
+    // 这个窗口让上一条的视频能被下一条接住（腾讯/QQ 客户端没法把两者合成一条）。
+    recentVideoSec: {
+      type: 'int', default: 120, unit: '秒', group: '文件与图片',
+      min: 0, max: 600, step: 10,
+      label: '上一条视频能"接住"多久',
+      hint: '群里常见的用法是：先发视频 → 再单独发一条「@它 看看这个」。\n'
+        + '这是两条消息，视频在第一条里。这个窗口内，第二条能接住第一条的视频。\n'
+        + '0 = 不接（只认「视频和 @ 在同一条消息里」以及「引用视频」两种）。',
+    },
     frames: {
       type: 'int', default: 8, min: 1, max: 12, step: 1, group: '文件与图片',
       label: '抽几帧',
@@ -201,6 +222,20 @@ export default {
       return n >= 1000 ? Math.round(n) : Math.round(n * 1000)
     }
     const SLOT = 'video-read:seg'
+    const LAST_SEG = 'video-read:lastSeg'
+    /**
+     * 上一条消息里的视频段（"先发视频、再单独 @它"那种）。超时就不认，用完即弃 ——
+     * 不然用户下一次 @ 它还会被翻出几十秒前的旧视频。
+     */
+    const takeRecentSeg = (chatKey) => {
+      const ttl = Math.max(0, Number(cfg().recentVideoSec) || 0) * 1000
+      if (!ttl) return null
+      const st = bot.state?.get?.(chatKey)
+      const rec = st?._scratch?.[LAST_SEG]
+      if (!rec || !rec.seg) return null
+      delete st._scratch[LAST_SEG]
+      return Date.now() - Number(rec.at || 0) <= ttl ? rec.seg : null
+    }
 
     // ── passive-tap：把视频段记下来（fail-open，绝不阻塞主链） ──
     // ⚠️ 本插件**不负责拉起侧车**（那是运维/部署的事，也不该由插件 spawn 进程）。
@@ -209,16 +244,27 @@ export default {
       if (cfg().enabled === false) return
       if (!urlOf()) return
       const seg = videoSegOf(ev)
-      if (seg) ev._scratch[SLOT] = seg
+      if (!seg) return
+      ev._scratch[SLOT] = seg
+      // 同时记进 ChatState：下一条消息（"@它 看看这个"）还能接住这个视频。
+      // 契约：插件不自开全局 Map，跨轮状态必须走 bot.state（按 chatKey 隔离）。
+      const st = bot.state?.get?.(ev.chatKey)
+      if (st) {
+        const sc = (st._scratch ||= Object.create(null))
+        sc[LAST_SEG] = { seg, at: Date.now() }
+      }
     })
 
     // ── ② before-turn：抽帧 → 塞 imageParts（order 44，必须早于 kernel:context 的 50） ──
     bot.on('before-turn', async (ev) => {
       if (cfg().enabled === false || !urlOf()) return
       const seg0 = ev._scratch?.[SLOT]
-      if (!seg0 && !ev.replyToId) return
+      // 三条来路：本条消息带视频 / 引用了一条视频 / 上一条消息刚发过视频（见 recentVideoSec）
+      if (!seg0 && !ev.replyToId && !(Number(cfg().recentVideoSec) > 0)) return
       if (!shouldLook(ev, cfg())) return
       let seg = ev._scratch?.[SLOT]
+      // 上一条消息刚发过视频（"先发视频、再 @它看看这个"）—— 优先于引用反查，省一次协议端调用
+      if (!seg) seg = takeRecentSeg(ev.chatKey)
       if (!seg) {
         // ── 被引视频：QQ 里"转发视频"只能**先发视频、再引用它说话**（客户端限制，绕不开）。
         //    内核的引用反查只取文本，视频段变成 `[媒体/富文本]` 且原始段被丢弃（index.js:744），
@@ -243,7 +289,11 @@ export default {
           } catch { /* 反查失败按"没有视频"处理，不影响这一轮 */ }
         }
       }
-      if (!seg) return
+      if (!seg) {
+        // 静默返回最容易让人以为「它不想看」—— 记一行，排障时能看出是"没找到视频"而不是"看到了没抽帧"
+        bot.log.debug?.(`[看视频] 本轮没有可看的视频段（${ev.chatKey}）`)
+        return
+      }
 
       // 额度：先查再发请求（别先下载几百 MB 再说超限）
       const q = quotaCheck(bot, ev.chatKey, ev.sender?.qq,
@@ -259,6 +309,7 @@ export default {
         return tell(ev, '这视频我没拿到手，看不了…')
       }
 
+      bot.log.debug?.(`[看视频] 请求侧车：${String(req.url || '').slice(0, 80)}（${req.platform}）`)
       const started = Date.now()
       let data = null
       try {
