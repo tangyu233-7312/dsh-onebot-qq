@@ -94,3 +94,35 @@ test('群聊续聊的 {n} 占位符能替换', () => {
   const t = buildPromptText(ev({ wake: { kind: 'continuation' }, hint: ['你刚回过话，之后群里又有 7 条新消息'] , _tail: '[提醒: x]' }))
   assert.match(t, /7 条新消息/)
 })
+
+test('控制台那 6 个提示词框一进来就带默认文案（不是空的）', async () => {
+  // 用户没改过配置时，面板不该显示空 —— 否则会以为「提示词是空的」或不知道怎么写。
+  const { CORE_CONTROLS, readValue } = await import('../admin/schema.js')
+  const { REPLY_DEFAULTS } = await import('../kernel/pacing.js')
+  const keyMap = {
+    'pacing.reply.prompts.private': 'private',
+    'pacing.reply.prompts.privateContinuation': 'privateContinuation',
+    'pacing.reply.prompts.group': 'group',
+    'pacing.reply.prompts.groupContinuation': 'groupContinuation',
+    'pacing.reply.prompts.tailPrivate': 'tailPrivate',
+    'pacing.reply.prompts.tailGroup': 'tailGroup',
+  }
+  // 空配置：模拟「用户一个都没改」
+  const fakeKernel = { pluginConfig: {} }
+  for (const [key, field] of Object.entries(keyMap)) {
+    const entry = CORE_CONTROLS.find((c) => c.key === key)
+    assert.ok(entry, '缺配置项 ' + key)
+    assert.equal(entry.default, REPLY_DEFAULTS.prompts[field], key + ' 的 default 应等于默认文案')
+    assert.ok(String(entry.default).length > 10, key + ' 的默认值太短')
+    const shown = readValue(fakeKernel, key, {})
+    assert.equal(shown, REPLY_DEFAULTS.prompts[field], key + ' 在空配置下应回落到默认文案')
+    assert.ok(String(shown).trim().length > 10, key + ' 面板显示为空了')
+  }
+})
+
+test('用户改过就显示用户的值，不再回落到默认', async () => {
+  const { readValue } = await import('../admin/schema.js')
+  const fakeKernel = { pluginConfig: {} }
+  const raw = { pacing: { reply: { prompts: { private: '我自己写的一句' } } } }
+  assert.equal(readValue(fakeKernel, 'pacing.reply.prompts.private', raw), '我自己写的一句')
+})
