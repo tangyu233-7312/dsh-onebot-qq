@@ -848,6 +848,10 @@ export async function apply(ctx, bundleConfig = {}) {
           const imgTag = parsed.images?.length ? ` [被引图×${parsed.images.length}]` : ''
           ev._scratch.quoteText = `[${qSender}(QQ:${qMsg.sender?.user_id ?? qMsg.user_id ?? '?'})]: ${parsed.text || '[媒体/富文本]'}${imgTag}`
           if (parsed.images?.length) ev.images.push(...parsed.images)
+          // 顺手把被引消息的**原始段**留给插件：文本化之后视频/文件段就没了，
+          // 而 video-read 要靠它去抽帧（QQ 里"发视频"和"@它"必然是两条消息，第二条只能引用）。
+          // 这里已经调过 msgById，插件不必再打一次同一个接口。
+          ev._scratch.replyRawSegments = Array.isArray(qMsg.message) ? qMsg.message : []
         }
       } catch { /* 引用反查失败不阻塞本轮 */ }
     }

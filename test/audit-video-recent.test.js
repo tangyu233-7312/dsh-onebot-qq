@@ -163,3 +163,26 @@ test('file 段但不是视频（比如 .zip）：不认，别去抽帧', async (
   await handlers['before-turn'](ev)
   assert.equal(calls.length, 0)
 })
+
+test('内核反查引用时留下的原始段：优先用它（不再自己打 msgById）', async (t) => {
+  const calls = stubFetch(t)
+  const { handlers } = setup()
+  // 模拟内核已经反查过被引消息，把原始段放在 ev._scratch.replyRawSegments
+  const ev = atEv({
+    replyToId: 999,
+    _scratch: {
+      replyRawSegments: [{ type: 'video', data: { file: 'x.mp4', url: 'https://multimedia.nt.qq.com.cn/y.mp4' } }],
+    },
+  })
+  // 故意让 bot.onebot.msgById 不可用 —— 走内核那条路就该完全不需要它
+  await handlers['before-turn'](ev)
+  assert.equal(calls.length, 1, '应该用内核留的段去请求侧车')
+})
+
+test('内核没留原始段、也没有 msgById：不炸，只是看不到', async (t) => {
+  const calls = stubFetch(t)
+  const { handlers, warns } = setup()
+  const ev = atEv({ replyToId: 1000 })   // chatKey 上没有 recent 记录
+  await handlers['before-turn'](ev)
+  assert.equal(calls.length, 0)
+})

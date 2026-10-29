@@ -35,6 +35,41 @@ import fs from 'node:fs'
  * **所有可能的把手**，交给下游 resolveLocal 逐个试 —— 而不是只取第一个非空就返回。
  * @returns {{file:string, fileId:string, url:string, local:string, keys:string[]}|null} keys = 实际拿到值的字段名（排障用）
  */
+/**
+ * 兜底：协议端可能把 `message` 给成 CQ 码字符串（message_format=string），而不是段数组。
+ * 那种情况下 videoSegOf 拿不到段 —— 这里从 CQ 串里捞 [CQ:video,...] / [CQ:file,...mp4...]。
+ */
+function videoSegOfCqString(str) {
+  const text = String(str || '')
+  if (!text.includes('[CQ:')) return null
+  for (const m of text.matchAll(/\[CQ:(video|file),([^\]]*)\]/g)) {
+    const kind = m[1]
+    const kv = {}
+    for (const part of m[2].split(',')) {
+      const i = part.indexOf('=')
+      if (i > 0) kv[part.slice(0, i).trim()] = part.slice(i + 1).trim()
+    }
+    const name = String(kv.file || kv.name || '')
+    if (kind === 'file' && !/\.(mp4|mov|m4v|avi|mkv|flv|webm|wmv|ts)$/i.test(name)) continue
+    const file = name
+    const fileId = String(kv.file_id || kv.fid || '')
+    const url = String(kv.url || kv.file_url || '')
+    const local = String(kv.path || kv.file_path || '')
+    const keys = Object.entries({ file, fileId, url, local }).filter(([, v]) => v).map(([k]) => k)
+    if (keys.length) return { file, fileId, url, local, keys }
+  }
+  return null
+}
+
+/** 引用反查拿回来的消息 → 视频段（段数组与 CQ 串两种形态都认） */
+function videoSegOfMsg(msg) {
+  if (!msg) return null
+  if (Array.isArray(msg)) return videoSegOf({ rawSegments: msg })
+  if (typeof msg === 'string') return videoSegOfCqString(msg)
+  const segs = msg.message ?? msg.raw_message
+  return Array.isArray(segs) ? videoSegOf({ rawSegments: segs }) : videoSegOfCqString(segs)
+}
+
 function videoSegOf(ev) {
   const segs = Array.isArray(ev?.rawSegments) ? ev.rawSegments : []
   for (const seg of segs) {
@@ -273,6 +308,15 @@ export default {
       let seg = ev._scratch?.[SLOT]
       // 上一条消息刚发过视频（"先发视频、再 @它看看这个"）—— 优先于引用反查，省一次协议端调用
       if (!seg) { const r = takeRecentSeg(ev.chatKey); if (r) { r.__via = '上一条消息'; seg = r } }
+      // 被引消息的原始段：内核反查引用时顺手留下的（它已经调过 msgById）。
+      // 优先用这个 —— 之前插件自己再调一次 bot.onebot.msgById，那个方法在某些上下文里拿不到，
+      // optional chaining 会把整块静默跳过，表现出来就是"引用视频永远识别不到"。
+      if (!seg) {
+        const raw = ev._scratch?.replyRawSegments
+        const byKernel = Array.isArray(raw) && raw.length ? videoSegOf({ rawSegments: raw }) : null
+        if (byKernel) { byKernel.__via = '引用反查(内核)'; seg = byKernel; ev._scratch[SLOT] = byKernel }
+        else diag('内核没留原始段', 'replyRawSegments=' + (Array.isArray(raw) ? raw.length + '段' : typeof raw))
+      }
       if (!seg) {
         // ── 被引视频：QQ 里"转发视频"只能**先发视频、再引用它说话**（客户端限制，绕不开）。
         //    内核的引用反查只取文本，视频段变成 `[媒体/富文本]` 且原始段被丢弃（index.js:744），
@@ -280,22 +324,28 @@ export default {
         //    ⚠️ 必须放在 before-turn（顺序 await，安全），**不能放在 passive-tap**——
         //    那个阶段内核是 fire-and-forget 的，不等 async 完成，会出现
         //    "before-turn 判定没有视频段 → 0.5 秒后才反查回来"的时序 bug（踩过）。
-        if (ev.replyToId && typeof bot.onebot?.msgById === 'function') {
+        // 不再用 typeof 前置检查：万一 bot.onebot 的 getter 有问题，typeof 会直接把整块跳过、
+        // 表现得像"没有视频"（这次就是这么被坑的）。改成直接调用 + catch 记录真实原因。
+        diag('反查准备', 'hasMsgById=' + typeof bot.onebot?.msgById + ' hasOnebot=' + (bot.onebot ? 'yes' : 'no'))
+        if (ev.replyToId) {
           // 每条引用都会走到这里：不是视频的结论按 messageId 缓存 100 条，别反复打协议端。
           const noVideo = (ev._scratch['video-read:noVideo'] ||= new Set())
           if (noVideo.has(String(ev.replyToId))) return
           try {
             const q = await bot.onebot.msgById(ev.replyToId)
-            const qSeg = q ? videoSegOf({ rawSegments: q.message ?? q.raw_message ?? [] }) : null
+            const msgSegs = q?.message ?? q?.raw_message ?? []
+            diag('反查', `q=${q ? 'ok' : 'null'} msgSegs=${Array.isArray(msgSegs) ? msgSegs.length + '段' : typeof msgSegs}`
+              + (Array.isArray(msgSegs) ? ' 类型=' + msgSegs.map((x) => x?.type).join('/') : ''))
+            const qSeg = q ? (videoSegOfMsg(q.message ?? q.raw_message) || videoSegOfMsg(q)) : null
             if (qSeg) {
-            qSeg.__via = '引用反查'
-            seg = qSeg
-            ev._scratch[SLOT] = qSeg
+              qSeg.__via = '引用反查'
+              seg = qSeg
+              ev._scratch[SLOT] = qSeg
             } else {
               noVideo.add(String(ev.replyToId))
               if (noVideo.size > 100) noVideo.delete(noVideo.values().next().value)
             }
-          } catch { /* 反查失败按"没有视频"处理，不影响这一轮 */ }
+          } catch (e) { diag('反查异常', String(e?.message || e)) }
         }
       }
       if (!seg) {
