@@ -181,7 +181,7 @@ install-autostart.ps1        :: 或装成开机自启（计划任务）
 ```
 
 ```bash
-# Linux / NAS
+# Linux/NAS（本fork项目已实测在NAS通过Docker能安装）
 cd sidecar && node server.mjs
 # 或写个 systemd 单元：ExecStart=/usr/bin/node /path/to/sidecar/server.mjs
 ```
@@ -262,8 +262,6 @@ curl http://127.0.0.1:3972/health
 [MIT](LICENSE)
 
 ---
-
-> ⚠️ 请注意：本项目的主要贡献来自于蓝色大肥鱼——本人由于能力限制，仅通过不断“压力”大肥鱼来进行代码编写和部分细节调整。因此也诚邀同好者共同测试和维护。
 
 > [!WARNING]
 > 本插件和文档由 AI 生成，内容仅供参考，请仔细甄别。
