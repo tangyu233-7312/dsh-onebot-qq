@@ -58,7 +58,7 @@ DSH插件式的QQ机器人，经 OneBot v11 协议收发消息 —— 协议端�
 | 40 | `persona-voice` | 人设固定句池、长回复拆条 | 开 |
 | 44 | `video-read` | 群里直接发的视频 → 抽帧给模型看 | 开 |
 | 45 | `video-link-read` | B站/抖音链接、**裸 BV 号** → 抽帧给模型看 | 开 |
-| 47 | `video-wander` | **自己找视频看**：隔几小时自己挑一个 B 站视频看，写完感想私聊发给主人 | 开（自动看=关） |
+| 47 | `video-wander` | **自己找视频看**：定时挑 B 站视频看、写完感想私聊发主人；**对话里也能自己决定去看**（`watch_video` 工具，与定时器共用配额） | 开（自动看=关） |
 | 50 | `voice` | **语音 / 曲库 / 唱歌**（本仓库定制）：TTS 念话；点歌 → 分离人声 → RVC 换音色 → 混回伴奏。**要 Python + RVC + 自备音色模型** | **关** |
 | 55 | `group-welcome` | 新成员入群发欢迎图文 | 开 |
 | 60 | `imagegen` | 生图 / 图生图 / 群头像 | 开 |
@@ -82,7 +82,7 @@ DSH插件式的QQ机器人，经 OneBot v11 协议收发消息 —— 协议端�
 |---|---|
 | Node.js | `>= 22` |
 | DSH | `>= 0.2.1-rc.2 < 0.3.0`（`engines.dsh` 声明） |
-| 协议端（任选其一） | 任意 **OneBot v11** 实现。实测能用的三种：<br>· **NapCat**（最常用，有 Docker 镜像 \`mlikiowa/napcat-docker\` 和 Windows 版；WebUI 默认 6099 扫码登录，token 在 WebUI 里设）<br>· **SnowLuma** v2.x（token 必填、不自己启动 QQ）<br>· **OneBot** 实现（token 可空）<br>都需开启**正向 WebSocket**（常见默认 3001）与 **HTTP API**（常见默认 3000），见 [安装与卸载 §二](docs/安装与卸载.md#二准备协议端onebot-v11) |
+| 协议端（任选其一） | 任意 **OneBot v11** 实现。实测能用的三种：<br>· **NapCat**（最常用，有 Docker 镜像 `mlikiowa/napcat-docker` 和 Windows 版；WebUI 默认 6099 扫码登录，token 在 WebUI 里设）<br>· **SnowLuma** v2.x（token 必填、不自己启动 QQ）<br>· **OneBot** 实现（token 可空）<br>都需开启**正向 WebSocket**（常见默认 3001）与 **HTTP API**（常见默认 3000），见 [安装与卸载 §二](docs/安装与卸载.md#二准备协议端onebot-v11) |
 | QQ 号 | 协议端登录用（建议小号）；机器人靠它收发消息 |
 
 ## 安装
@@ -137,14 +137,14 @@ dsh plugin --profile web add link:/abs/path/dsh-onebot-qq
 
 「链接解析 / 看视频 / 看视频链接 / 自己找视频看」这四个功能的**下载与抽帧后端**。
 
-> **本仓库自带一套可用实现**（\`sidecar/\`，零依赖 Node 脚本）。
-> 但它**不会自己启动** —— 要你用 \`sidecar/start.bat\` 手动起、或装成开机自启、或用 systemd。
+> **本仓库自带一套可用实现**（`sidecar/`，零依赖 Node 脚本）。
+> 但它**不会自己启动** —— 要你用 `sidecar/start.bat` 手动起、或装成开机自启、或用 systemd。
 > 不跑侧车也完全不影响聊天，那几个功能会自己降级。
 
 ### 「侧车」是什么
 
 主插件只负责**在 QQ 里收发消息、拼提示词、调模型**。而「下载 B 站/抖音视频、用 ffmpeg 抽帧转码」这类活儿
-需要额外装 Python/ffmpeg、可能还要登录 cookie，体积大、坑多，不适合塞进插件包，而且包内红线禁止 \`child_process\` ——
+需要额外装 Python/ffmpeg、可能还要登录 cookie，体积大、坑多，不适合塞进插件包，而且包内红线禁止 `child_process` ——
 所以把它拆成**一个独立的小 HTTP 服务**跑在同一台机器上，插件通过 HTTP 调它干活。
 这种「主程序旁边挂一个专职小服务」的做法叫 **sidecar（侧车）**：像摩托车的跨斗，自己不跑，但能载货。
 
@@ -152,10 +152,10 @@ dsh plugin --profile web add link:/abs/path/dsh-onebot-qq
 
 | 功能 | 子插件 | 默认 | 调用的接口 | 没有侧车时 |
 |---|---|---|---|---|
-| **链接解析**（B站/抖音链接 → 直接把视频、图集发到群里） | \`link-parser\` | **关** | \`POST /parse\` | 链接按普通消息交给模型（模型只看到链接文字） |
-| **看视频**（群里发的视频 → 抽几帧给模型看） | \`video-read\` | **开** | \`POST /read\` | 群里如实回一句「看视频的服务没起来」 |
-| **看视频链接**（B 站/抖音链接、裸 BV 号 → 抽帧给模型看） | \`video-link-read\` | **开** | \`POST /read\` | 同上 |
-| **自己找视频看**（隔几小时自己挑一个 B 站视频看，写感想发主人私聊） | \`video-wander\` | **开**（自动看=关） | \`POST /read\` | 拿不到帧就跳过这次，只记日志不打扰 |
+| **链接解析**（B站/抖音链接 → 直接把视频、图集发到群里） | `link-parser` | **关** | `POST /parse` | 链接按普通消息交给模型（模型只看到链接文字） |
+| **看视频**（群里发的视频 → 抽几帧给模型看） | `video-read` | **开** | `POST /read` | 群里如实回一句「看视频的服务没起来」 |
+| **看视频链接**（B 站/抖音链接、裸 BV 号 → 抽帧给模型看） | `video-link-read` | **开** | `POST /read` | 同上 |
+| **自己找视频看**（定时挑 + 对话里自己决定看） | `video-wander` | **开**（自动看=关） | `POST /read` | 拿不到帧就跳过这次，只记日志不打扰 |
 
 > ⚠️ 后三个**插件默认是开的**：没跑侧车时，群里一出现视频/视频链接，机器人就会说「看视频的服务没起来，这视频我看不了」。
 > 不想看到这句 → 控制台「文件与图片」页把开关关掉；想用 → 按下面把侧车跑起来。
@@ -166,69 +166,69 @@ dsh plugin --profile web add link:/abs/path/dsh-onebot-qq
 
 | 项 | 必需？ | 说明 |
 |---|---|---|
-| Node.js 18+ | ✅ | 侧车是零依赖 \`.mjs\`，只用内置模块 |
-| **ffmpeg + ffprobe** | ✅ | 抽帧 / DASH 合流。\`sidecar.config.json\` 可指定路径，留空自动找 |
-| **yt-dlp** | 链接解析要 | B站/抖音下载。可给可执行文件路径，或配 \`pythonPath\` 用 \`python -m yt_dlp\` |
+| Node.js 18+ | ✅ | 侧车是零依赖 `.mjs`，只用内置模块 |
+| **ffmpeg + ffprobe** | ✅ | 抽帧 / DASH 合流。`sidecar.config.json` 可指定路径，留空自动找 |
+| **yt-dlp** | 链接解析要 | B站/抖音下载。可给可执行文件路径，或配 `pythonPath` 用 `python -m yt_dlp` |
 | 磁盘 | — | 下载的视频按 TTL 自动清（默认帧 10 分钟、总量 2 GB 上限） |
 
 **启动：**
 
-\`\`\`bat
+```bat
 :: Windows
 cd sidecar
 start.bat                    :: 前台跑，关窗口就停
 install-autostart.ps1        :: 或装成开机自启（计划任务）
-\`\`\`
+```
 
-\`\`\`bash
+```bash
 # Linux / NAS
 cd sidecar && node server.mjs
 # 或写个 systemd 单元：ExecStart=/usr/bin/node /path/to/sidecar/server.mjs
-\`\`\`
+```
 
 **自检：**
 
-\`\`\`bash
+```bash
 curl http://127.0.0.1:3972/health
 # 期望 {"ok":true,"ffmpeg":true,"ffprobe":true,"ytdlp":true,...}
-\`\`\`
+```
 
 ### 三个接口
 
 | 接口 | 谁用 | 做什么 |
 |---|---|---|
-| \`GET /health\` | 控制台 / 自检 | 报 ffmpeg / yt-dlp 是否就位 |
-| \`POST /read\` | \`video-read\` / \`video-link-read\` / \`video-wander\` | 下载（或本地路径）→ ffprobe 探时长 → ffmpeg 抽 N 帧 → 返回帧路径 |
-| \`POST /parse\` | \`link-parser\` | 下载媒体 → 返回本地路径（由插件搬进群） |
+| `GET /health` | 控制台 / 自检 | 报 ffmpeg / yt-dlp 是否就位 |
+| `POST /read` | `video-read` / `video-link-read` / `video-wander` | 下载（或本地路径）→ ffprobe 探时长 → ffmpeg 抽 N 帧 → 返回帧路径 |
+| `POST /parse` | `link-parser` | 下载媒体 → 返回本地路径（由插件搬进群） |
 
-请求 / 响应格式见 [\`sidecar/README.md\`](sidecar/README.md)。
+请求 / 响应格式见 [`sidecar/README.md`](sidecar/README.md)。
 
-> 想自己用 Python / Go 重写一个也行 —— 插件只认上面三个接口和约定的 \`code\` 字段：
-> \`too_long\`（太长）/ \`too_big\`（太大）/ \`busy\`（正忙）/ \`nomatch\`（链接打不开）/ \`download_failed\`（下载失败）。
+> 想自己用 Python / Go 重写一个也行 —— 插件只认上面三个接口和约定的 `code` 字段：
+> `too_long`（太长）/ `too_big`（太大）/ `busy`（正忙）/ `nomatch`（链接打不开）/ `download_failed`（下载失败）。
 
 ### 安全边界（改之前先读）
 
 侧车是**群友能间接触发**的（发视频、贴链接），所以自带实现做了这些：
 
-- **只绑 \`127.0.0.1\`**，不对外网开
-- **域名白名单** \`allowedHosts\`：B站 / 抖音 / QQ 的 CDN 在列，其它一律拒
+- **只绑 `127.0.0.1`**，不对外网开
+- **域名白名单** `allowedHosts`：B站 / 抖音 / QQ 的 CDN 在列，其它一律拒
 - **私网地址拒绝**：不许它去访问内网（防 SSRF）
-- **本地路径白名单**：只读临时目录与 \`.dsh/dsh-onebot-qq\` 下的文件
-- **失败一律 200 + \`ok:false\`**：让插件能干净降级，不是抛 500 让调用方猜
+- **本地路径白名单**：只读临时目录与 `.dsh/dsh-onebot-qq` 下的文件
+- **失败一律 200 + `ok:false`**：让插件能干净降级，不是抛 500 让调用方猜
 - **用完就删**：源视频几百 MB，按 TTL 与总量上限清
 
 ### 控制台在哪配
 
 | 位置 | 要做什么 |
 |---|---|
-| 控制台 →「链接解析」页 | 打开「链接解析」；「侧车地址」填 \`http://127.0.0.1:3972\`（默认值） |
+| 控制台 →「链接解析」页 | 打开「链接解析」；「侧车地址」填 `http://127.0.0.1:3972`（默认值） |
 | 控制台 →「文件与图片」页 | 「让模型看视频内容」/「点开 B 站 / 抖音链接看视频」两个开关 + 各自的「侧车地址」 |
 | 控制台 →「自己找视频看」页 | 侧车地址 + 抽几帧 + 最长时长等（自动看要单独开） |
-| 配置键（手改 \`config.json\`） | \`pluginConfig.link-parser.parserUrl\`、\`pluginConfig.video-read.sidecarUrl\`、\`pluginConfig.video-link-read.sidecarUrl\`、\`pluginConfig.video-wander.sidecarUrl\` |
+| 配置键（手改 `config.json`） | `pluginConfig.link-parser.parserUrl`、`pluginConfig.video-read.sidecarUrl`、`pluginConfig.video-link-read.sidecarUrl`、`pluginConfig.video-wander.sidecarUrl` |
 
 - 地址**留空 = 不解析/不看**（等于关掉该功能）；
-- 侧车换端口/换机器也能用（跨机器就把 \`127.0.0.1\` 换成那台机器的内网 IP，**别暴露到公网**）；
-- 插件侧还有一道 \`maxBytes\` 上限（\`link-parser\` 默认 100MB）。
+- 侧车换端口/换机器也能用（跨机器就把 `127.0.0.1` 换成那台机器的内网 IP，**别暴露到公网**）；
+- 插件侧还有一道 `maxBytes` 上限（`link-parser` 默认 100MB）。
 
 ## 文档
 
@@ -246,8 +246,8 @@ curl http://127.0.0.1:3972/health
 
 | 目录 | 是什么 | 默认 |
 |---|---|---|
-| \`sidecar/\` | **解析侧车**（见上一节） | 不启动 |
-| \`tools/singing-pack/\` | **RVC 能力包**：唱歌用的推理脚本 + 安装脚本。**不含音色模型**（自己训练，已被 .gitignore 排除） | — |
+| `sidecar/` | **解析侧车**（见上一节） | 不启动 |
+| `tools/singing-pack/` | **RVC 能力包**：唱歌用的推理脚本 + 安装脚本。**不含音色模型**（自己训练，已被 .gitignore 排除） | — |
 
 两块都要额外装东西（ffmpeg / yt-dlp / Python / CUDA），所以默认都不跑。
 装法、依赖清单、已知限制 → [docs/定制-语音唱歌与侧车.md](docs/定制-语音唱歌与侧车.md)。

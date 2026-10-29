@@ -306,6 +306,50 @@ test('两段式提交：先回话、后调工具，也能收到（线上真实�
   } finally { s.restore() }
 })
 
+test('watch_video：对话里能自己触发一次观看，立刻返回', async () => {
+  const s = setup({ cfg: { autoEnabled: true } })
+  try {
+    assert.equal(typeof s.tools.watch_video?.execute, 'function', '应注册 watch_video 工具')
+    const r = await s.tools.watch_video.execute({}, { agent: { session: { id: 'session-normal' } } })
+    assert.equal(r.ok, true, '应该接受这次请求：' + JSON.stringify(r))
+    // 异步去看了：稍等让它跑完
+    await new Promise((res) => setTimeout(res, 1800))
+    assert.equal(s.delivered.length, 1, '看完应该发一条')
+  } finally { s.restore() }
+})
+
+test('watch_video：在看视频的会话里拒绝（防递归）', async () => {
+  const s = setup({ cfg: { autoEnabled: true } })
+  try {
+    // 让 core.scopeOf 认这个会话是「受限会话」（= 看视频的地方）
+    s.bot.core.scopeOf = (sid) => (sid === 'sess-wander' ? { label: '看视频的地方' } : null)
+    const r = await s.tools.watch_video.execute({}, { agent: { session: { id: 'sess-wander' } } })
+    assert.equal(r.ok, false)
+    assert.match(r.reason, /不能再触发/)
+  } finally { s.restore() }
+})
+
+test('watch_video：配额用完时如实拒绝，不会硬看', async () => {
+  const s = setup({ cfg: { autoEnabled: true, maxPerDay: 1 } })
+  try {
+    const r1 = await s.tools.watch_video.execute({}, { agent: { session: { id: 's1' } } })
+    assert.equal(r1.ok, true)
+    await new Promise((res) => setTimeout(res, 1800))
+    // 第二次：刚看过 → 要么"刚看过"要么配额满
+    const r2 = await s.tools.watch_video.execute({}, { agent: { session: { id: 's1' } } })
+    assert.equal(r2.ok, false)
+    assert.match(r2.reason, /刚看过|配额/)
+  } finally { s.restore() }
+})
+
+test('watch_video：自动看没开也能手动触发（用户点了就是想看）', async () => {
+  const s = setup({ cfg: { autoEnabled: false } })   // 自动看关
+  try {
+    const r = await s.tools.watch_video.execute({}, { agent: { session: { id: 'sx' } } })
+    assert.equal(r.ok, true, 'autoEnabled=false 只挡定时器，不该挡对话里主动看')
+  } finally { s.restore() }
+})
+
 test('会话登记了工具白名单：只有三个工具能用', async () => {
   const s = setup({ cfg: { autoEnabled: true } })
   try {

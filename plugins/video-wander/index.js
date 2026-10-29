@@ -728,6 +728,40 @@ export default {
       },
     })
 
+    // ── 工具：让它在对话里也能自己决定去看 ────────────────────
+    // 定时器是「到点自己看」；这个是「聊着聊着想去看看」。
+    // 两者共用同一套配额（everyHours / maxPerDay），不会因为多了一条路就能超量。
+    bot.registerTool('watch_video', {
+      description: '自己挑一个 B 站热门视频看（不需要对方给链接）。'
+        + '调用后会**真的去看**：挑视频 → 下载抽帧 → 写感想 → 把「看了什么 + 感想 + 链接」私聊发给主人。'
+        + '当前这一轮只要回一句「我去翻翻」之类的就行，不用等结果。'
+        + '受配额限制（每几小时一次、每天上限），超了会返回 ok:false，如实告诉对方就行。'
+        + '想用的时候：对方让你随便看看、你自己想找点话题、或者闲着没事想翻点新东西。',
+      parameters: {},
+      async execute(args = {}, exec) {
+        const sid = String(exec?.agent?.session?.id || '')
+        // 防递归：在「看视频的地方」会话里不能再触发一次
+        if (sid && bot.core?.scopeOf?.(sid)) {
+          return { ok: false, reason: '现在这个会话就是看视频用的，不能再触发一次' }
+        }
+        if (!pluginOn()) return { ok: false, reason: '看视频功能没启用' }
+        if (!String(cfg().sidecarUrl || '').trim()) return { ok: false, reason: '侧车没配，看不了' }
+        if (running) return { ok: false, reason: '正在看别的，等这次看完' }
+        const st = state()
+        const today = runsToday(st)
+        const cap = Math.max(0, num(cfg().maxPerDay, 6))
+        if (cap <= 0) return { ok: false, reason: '配置里把「每天最多」设成 0 了，就是不让看' }
+        if (today >= cap) return { ok: false, reason: '今天已经看了 ' + today + ' 个了，配额用完了' }
+        const next = dueAt(st)
+        const waitMin = Math.ceil((next - now()) / 60000)
+        if (waitMin > 0) return { ok: false, reason: '刚看过，' + waitMin + ' 分钟后再说' }
+        // 不 await：看一个视频要下载 + 抽帧 + 写感想，几十秒到几分钟，
+        // 让工具立刻返回，这一轮先把话说完，看完的感想会另外发过来
+        runOnce('对话里自己想去看看').catch((e) => log.error('[看视频的地方] 对话触发失败: ' + (e?.message || e)))
+        return { ok: true, message: '我去翻翻，看完了把看到的东西发给你' }
+      },
+    })
+
     // ── 定时器 ──────────────────────────────────────────────
     /** 插件是否启用（控制台「启用插件」那个开关；关掉内核就当它不存在） */
     const pluginOn = () => cfg().enabled !== false

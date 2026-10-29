@@ -1,20 +1,20 @@
 # voice — 语音 / 曲库 / 唱歌子插件
 
 > [!WARNING]
-> **默认全关。** 装进来是 \`enabled: false\` —— 整个插件不加载，
-> \`speak\` / \`sing\` 两个工具都不会注册。
+> **默认全关。** 装进来是 `enabled: false` —— 整个插件不加载，
+> `speak` / `sing` 两个工具都不会注册。
 >
 > 它依赖外部环境（Python + ffmpeg，唱歌还要 RVC + 自备音色模型 + 建议 N 卡），
 > 没配好就开着，每次调用都会失败。**装法见 [../../docs/定制-语音唱歌与侧车.md](../../docs/定制-语音唱歌与侧车.md)。**
 >
-> 三个开关都要开：\`enabled\`（插件本身）→ \`ttsEnabled\`（念话）/ \`singEnabled\`（唱歌）。
+> 三个开关都要开：`enabled`（插件本身）→ `ttsEnabled`（念话）/ `singEnabled`（唱歌）。
 
 ## 两条路
 
 | 路 | 工具 | 干什么 | 依赖 |
 |---|---|---|---|
-| **语音输出** | \`speak\` | 把一句话念成语音发出去 | Python + edge-tts 或 MiMo key；想换音色才需要 RVC |
-| **唱歌** | \`sing\` | 点歌 → 曲库找歌 → 分离人声/伴奏 → RVC 只换人声 → 混回伴奏 → 语音 | RVC 能力包（\`tools/singing-pack\`）+ .pth 音色模型 + ffmpeg |
+| **语音输出** | `speak` | 把一句话念成语音发出去 | Python + edge-tts 或 MiMo key；想换音色才需要 RVC |
+| **唱歌** | `sing` | 点歌 → 曲库找歌 → 分离人声/伴奏 → RVC 只换人声 → 混回伴奏 → 语音 | RVC 能力包（`tools/singing-pack`）+ .pth 音色模型 + ffmpeg |
 
 两条路**各自独立开关**，关掉唱歌不影响念话。
 
@@ -22,16 +22,16 @@
 
 | 配置项 | 默认 | 说明 |
 |---|---|---|
-| \`enabled\` | **false** | 插件总开关（本仓库定制） |
-| \`ttsEnabled\` | **false** | 语音输出 |
-| \`singEnabled\` | **false** | 唱歌 |
-| \`ttsPython\` / \`rvcPython\` | \`''\` | 留空 = PATH 里的 \`python\`。**原版这里硬编码了开发机路径，本仓库已去掉** |
-| \`rvcDir\` | \`''\` | 留空 = \`<数据目录>/singing-pack\` |
-| \`ttsMaxChars\` | 60 | 单条念几个字 |
-| \`ttsPerTurn\` | 1 | 每轮最多几条 |
-| \`singMaxSeconds\` | 300 | 单首时长上限 |
-| \`singCooldownMin\` | 10 | 点歌冷却（主人默认豁免） |
-| \`singMasterFree\` | true | 主人点歌不限冷却 |
+| `enabled` | **false** | 插件总开关（本仓库定制） |
+| `ttsEnabled` | **false** | 语音输出 |
+| `singEnabled` | **false** | 唱歌 |
+| `ttsPython` / `rvcPython` | `''` | 留空 = PATH 里的 `python`。**原版这里硬编码了开发机路径，本仓库已去掉** |
+| `rvcDir` | `''` | 留空 = `<数据目录>/singing-pack` |
+| `ttsMaxChars` | 60 | 单条念几个字 |
+| `ttsPerTurn` | 1 | 每轮最多几条 |
+| `singMaxSeconds` | 300 | 单首时长上限 |
+| `singCooldownMin` | 10 | 点歌冷却（主人默认豁免） |
+| `singMasterFree` | true | 主人点歌不限冷却 |
 
 把 **蓝色大肥鱼** 的人设念出来：文本 → TTS → silk → QQ 语音段。
 

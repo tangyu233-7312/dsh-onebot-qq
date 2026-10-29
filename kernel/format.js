@@ -590,13 +590,13 @@ export function buildPromptText(ev, opts = {}) {
     ? `[本条消息ID ${ev.messageId ?? '-'}]`
     : `[QQ会话 ${ev.chatKey}｜本条消息ID ${ev.messageId ?? '-'}]`
   const head = `[QQ线:回话须调工具] ${chatTag} `
-  // 唤醒标记：关键词/接续/主动接话各自一句短标记（完整口吻规则在 QQ 线的 CLAUDE.local.md，别在这儿堆）
+  // 唤醒标记：只给**极简**标签。具体该怎么说由 index.js 的 hint 按「群聊 / 私聊」分别写，
+  // 这里再写一遍只会变成两套互相打架的话（踩过：私聊里冒出「群里正聊着」）。
   const wakeMark = ev.wake?.kind === 'keyword' ? `[关键词:${ev.wake.keyword}] `
     : ev.wake?.kind === 'followup' ? '[接上条] '
-      : ev.wake?.kind === 'proactive' ? '[主动接话候选:没人叫你,群里正聊着;想接就自然接一句,不想接这轮就别调发送工具] '
-        // 连续对话：刚被真人叫过、也回过话；现在只是"要不要补一句"，明确允许这轮什么都不发
-        : ev.wake?.kind === 'continuation' ? '[续聊检查:你刚回过话,这是同一段对话的后续;想补一句就发,不想补就什么都别做] '
-          : ev.wake?.kind === 'welcome' ? '[入群欢迎轮:这是系统的入群通知,不是群友发言;按下面提示发欢迎语] ' : ''
+      : ev.wake?.kind === 'proactive' ? '[主动开口轮] '
+        : ev.wake?.kind === 'continuation' ? '[续聊检查] '
+          : ev.wake?.kind === 'welcome' ? '[入群欢迎轮] ' : ''
   // 群里必须带说话人+QQ：同名/近名的人靠号码才能分开（否则会把 A 说的话安到 B 头上）
   // 主动接话轮/入群欢迎轮的"触发"不是某个人发的消息 → 不挂说话人前缀，避免凭空出现一个空名字
   const speakerName = senderNameOf(ev.sender, ev.sender?.qq)
@@ -610,6 +610,16 @@ export function buildPromptText(ev, opts = {}) {
   const imgHint = ev.imagePaths?.length ? `\n[图: ${ev.imagePaths.join(', ')}]` : ''
   const ctx = ev.historyBlock ? `\n${ev.historyBlock}` : ''
   const hints = ev.hint?.length ? `\n${ev.hint.join(' ')}` : ''
+  // 尾巴：模型读到最后看的正是这一句。
+  //   · 合成轮（主动开口 / 续聊）里，**群聊**要求"不发也要写一行 [不发] 原因"——
+  //     群里没人点它名，只写正文就等于石沉大海，必须逼它明确表态；
+  //   · **私聊**不这么逼：一对一里"这次不想说话"是正常行为，硬要它写 [不发] 反而像客服。
+  const isSynthTurn = ev.wake?.kind === 'proactive' || ev.wake?.kind === 'continuation'
+  const tail = isSynthTurn
+    ? (ev.isGroup
+      ? '\n[提醒: 发到群里必须调 send_message；这轮不打算说话也要在正文写一行 [不发] 原因]'
+      : '\n[提醒: 想说话就调 send_message；不想说就不发，不用解释]')
+    : '\n[提醒:只写正文收不到]'
   // 双保险：拼好的 prompt 再兜一道合法化 —— 历史里只要带一个孤立代理，上游就整轮 400
-  return toWellFormedText(head + wakeMark + speaker + (ev.text || '') + fileHint + quote + cardHint + imgHint + ctx + hints + '\n[提醒:只写正文收不到]')
+  return toWellFormedText(head + wakeMark + speaker + (ev.text || '') + fileHint + quote + cardHint + imgHint + ctx + hints + tail)
 }
