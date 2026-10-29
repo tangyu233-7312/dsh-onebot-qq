@@ -130,7 +130,7 @@ test('默认：插件启用但自动看关', () => {
 test('配置项都是控制台可调：20 项且都有默认值', () => {
   const schema = plugin.configSchema
   const keys = Object.keys(schema)
-  assert.equal(keys.length, 25, '配置项数量变了要顺手看文档：' + keys.join(','))
+  assert.equal(keys.length, 26, '配置项数量变了要顺手看文档：' + keys.join(','))
   for (const k of keys) assert.ok(schema[k].default !== undefined, k + ' 必须有默认值')
   // 关键数字项都得有 min/max，不能让用户填出界
   for (const k of ['everyHours', 'maxPerDay', 'thoughtMaxChars', 'frames', 'maxMinutes', 'retryMinutes', 'excludeDays']) {
@@ -381,6 +381,35 @@ test('watch_video：自动看没开也能手动触发（用户点了就是想看
   try {
     const r = await s.tools.watch_video.execute({}, { agent: { session: { id: 'sx' } } })
     assert.equal(r.ok, true, 'autoEnabled=false 只挡定时器，不该挡对话里主动看')
+  } finally { s.restore() }
+})
+
+test('看画面的提示可在控制台改（watchPrompt），默认带「跟主人说一句」', async () => {
+  const s = setup({ cfg: { autoEnabled: true } })
+  try {
+    await s.shared.videoWanderRunNow('测试')
+    const p = (s.prompts[s.prompts.length - 1] || {}).text || ''
+    assert.match(p, /只看你看得见的/, '默认提示应该在 prompt 里')
+    assert.match(p, /附带一句想对主人说的话/, '默认值应包含这句（用户明确要的）')
+  } finally { s.restore() }
+})
+
+test('改了 watchPrompt 就按改的来，不再用默认那段', async () => {
+  const s = setup({ cfg: { autoEnabled: true, watchPrompt: '这是我自定义的看片要求。' } })
+  try {
+    await s.shared.videoWanderRunNow('测试')
+    const p = (s.prompts[s.prompts.length - 1] || {}).text || ''
+    assert.match(p, /这是我自定义的看片要求/)
+    assert.equal(p.includes('只看你看得见的'), false, '不该再出现默认那段')
+  } finally { s.restore() }
+})
+
+test('watchPrompt 被清空：回落到默认，不是「没有任何要求」', async () => {
+  const s = setup({ cfg: { autoEnabled: true, watchPrompt: '' } })
+  try {
+    await s.shared.videoWanderRunNow('测试')
+    const p = (s.prompts[s.prompts.length - 1] || {}).text || ''
+    assert.match(p, /只看你看得见的/, '清空应回落默认')
   } finally { s.restore() }
 })
 

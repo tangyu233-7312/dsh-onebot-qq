@@ -49,6 +49,15 @@ const API_GAP_MS = 900
 const BRIEF_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
 
 /** 分区表：控制台「从哪些分区挑」用这里；value 是 B 站 rid */
+/**
+ * 看画面之后的默认提示 —— 只是**出厂值**，用户可以在控制台
+ * 「自己找视频看 → 看到画面后让它怎么想」整段重写。
+ * 放成常量是为了 buildPrompt 里能在「用户清空」时回落。
+ */
+const DEFAULT_WATCH_PROMPT = '下面这些图就是这个视频的画面。**只看你看得见的**：画面里有什么、在讲什么、你的感觉。\n'
+  + '看不清、看不懂、觉得无聊 —— 都可以直接说，别编画面里没有的东西。\n'
+  + '写完感想还可以附带一句想对主人说的话。'
+
 const BILI_REGIONS = [
   { value: '0', label: '全站' },
   { value: '1000', label: '知识' },
@@ -222,6 +231,16 @@ export default {
       label: '看完发给谁（QQ 号）',
       hint: '留空 = 发给实例配置里的主人 QQ（adminQq，也就是能发命令的那个号）。'
         + '填了就以这里为准；必须是你自己的号，不然它会去骚扰别人。',
+    },
+    // 看到画面之后让它怎么想 —— 2026-10-29 从代码里搬出来，控制台可改。
+    // 这里是最容易被"口味"影响的一段：要不要它抒情、要不要它跟主人说话、允不允许说无聊。
+    watchPrompt: {
+      type: 'text', group: '自己找视频看',
+      label: '看到画面后让它怎么想',
+      default: DEFAULT_WATCH_PROMPT,
+      hint: '塞在「这是视频信息」和「你现在只有两个动作可做」之间。\n'
+        + '想让它多抒情、少点分析，或者明确要求跟主人说一句话，都改这里。\n'
+        + '整段会被原样拼进 prompt，换行保留。',
     },
     thoughtMaxChars: {
       type: 'int', default: 300, unit: '字', group: '自己找视频看',
@@ -574,8 +593,10 @@ export default {
       if (meta.length) lines.push('信息：' + meta.join(' ｜ '))
       if (video.desc) lines.push('简介：' + video.desc)
       lines.push('')
-      lines.push('下面这些图就是这个视频的画面。**只看你看得见的**：画面里有什么、在讲什么、你的感觉。')
-      lines.push('看不清、看不懂、觉得无聊 —— 都可以直接说，别编画面里没有的东西。')
+      // 这段文案可在控制台改（「自己找视频看」页的「看到画面后让它怎么想」）；
+      // 清空 = 用默认值，别让用户手滑清掉就变成"没有要求"。
+      const watchPrompt = String(cfg().watchPrompt || '').trim() || DEFAULT_WATCH_PROMPT
+      lines.push(watchPrompt)
       lines.push('')
       const maxChars = Math.max(30, num(cfg().thoughtMaxChars, 300))
       lines.push('**你现在只有两个动作可做，必须选一个调用：**')
