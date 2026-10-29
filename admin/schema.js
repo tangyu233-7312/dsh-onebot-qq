@@ -318,6 +318,39 @@ export const CORE_CONTROLS = [
     min: 0, max: 24, step: 1, default: 7,
     hint: '几点恢复主动说话（0~24）。默认 7 点。起止相同 = 不启用静默。',
   },
+  // 主动开口 / 续聊的提示词（2026-10-29）：从代码里搬出来，方便改口味而不动代码。
+  // {n} = 这期间新消息条数，拼接时替换。
+  {
+    key: 'pacing.reply.prompts.private', group: '主动接话', section: '提示词（可改）', type: 'text',
+    label: '私聊主动开口时给它的提示',
+    hint: '对方安静够久、它准备主动开口时，把这段话塞给模型。想加/去要求直接改这里 —— 比如不喜欢某句叮嘱就删掉。\n'
+      + '这段末尾提到 watch_video（「自己找视频看」的工具），不想让它用就删掉那半句。',
+  },
+  {
+    key: 'pacing.reply.prompts.privateContinuation', group: '主动接话', section: '提示词（可改）', type: 'text',
+    label: '私聊续聊时给它的提示',
+    hint: '它刚在私聊回过话、对方又说了几句时用这段。{n} 会替换成新消息条数。',
+  },
+  {
+    key: 'pacing.reply.prompts.group', group: '主动接话', section: '提示词（可改）', type: 'text',
+    label: '群聊主动开口时给它的提示',
+    hint: '群里没人叫它、它自己准备接一句时用这段。群聊默认要求「不发也在正文写一行 [不发] 原因」—— 因为群里没人点它名，只写正文等于石沉大海。私聊没有这个要求。',
+  },
+  {
+    key: 'pacing.reply.prompts.groupContinuation', group: '主动接话', section: '提示词（可改）', type: 'text',
+    label: '群聊续聊时给它的提示',
+    hint: '{n} 会替换成这期间的新消息条数。',
+  },
+  {
+    key: 'pacing.reply.prompts.tailPrivate', group: '主动接话', section: '提示词（可改）', type: 'text',
+    label: '私聊提示的收尾一句',
+    hint: '贴在 prompt 最后一行 —— 模型读到最后看的正是这句，比中间写十遍都管用。',
+  },
+  {
+    key: 'pacing.reply.prompts.tailGroup', group: '主动接话', section: '提示词（可改）', type: 'text',
+    label: '群聊提示的收尾一句',
+    hint: '群聊的收尾：默认强制它「不发也要写 [不发] 原因」。觉得太啰嗦可以自己放宽。',
+  },
   {
     key: 'pacing.reply.style.splitEnabled', group: '主动接话', type: 'bool', label: '拆条（先短反应再补正话）', default: true,
     hint: '小概率把一条回复拆成两条发（先丢个短反应、隔一会儿补正话），治“每条一个路子”的机器感。',

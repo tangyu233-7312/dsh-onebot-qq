@@ -59,3 +59,38 @@ test('唤醒标记只有极简标签，不再重复写场景说明', () => {
   // 旧写法会把「主动接话候选:没人叫你,群里正聊着;想接就调 send_message…」整句塞进标记里
   assert.equal(/主动接话候选:没人叫你/.test(t), false, '标记里不该再带整句说明（细节归 hint）')
 })
+
+// ── 提示词可配置（2026-10-29）──────────────────────────────
+test('提示词文案不写死在代码里：默认值在 REPLY_DEFAULTS.prompts，控制台有 6 个可改项', async () => {
+  const { REPLY_DEFAULTS } = await import('../kernel/pacing.js')
+  const { CORE_CONTROLS } = await import('../admin/schema.js')
+  const keys = ['private', 'privateContinuation', 'group', 'groupContinuation', 'tailPrivate', 'tailGroup']
+  for (const k of keys) {
+    assert.equal(typeof REPLY_DEFAULTS.prompts[k], 'string', '默认值缺 ' + k)
+    assert.ok(REPLY_DEFAULTS.prompts[k].length > 5, k + ' 太短，像是占位没填')
+  }
+  const exposed = CORE_CONTROLS.filter((c) => c.key.startsWith('pacing.reply.prompts.'))
+  assert.equal(exposed.length, 6, '控制台应暴露 6 个提示词项，实际 ' + exposed.length)
+  for (const c of exposed) assert.equal(c.type, 'text', c.key + ' 应该是多行文本控件')
+})
+
+test('私聊默认文案里没有多余的说教句（用户明确不想要）', async () => {
+  const { REPLY_DEFAULTS } = await import('../kernel/pacing.js')
+  const p = REPLY_DEFAULTS.prompts
+  assert.equal(p.private.includes('别问「你怎么不理我」'), false)
+  assert.equal(p.private.includes('别像客服'), false)
+  assert.equal(p.tailPrivate.includes('不用解释'), true, '收尾那句保留「不用解释」')
+})
+
+test('收尾句可被调用方覆盖（ev._tail）', () => {
+  const t = buildPromptText(ev({ chatKey: 'private:1', isGroup: false, groupId: null, _tail: '[提醒: 爱说不说]' }))
+  assert.match(t, /\[提醒: 爱说不说\]/)
+  // 不带方括号的也认，会自动补前缀
+  const t2 = buildPromptText(ev({ chatKey: 'private:1', isGroup: false, groupId: null, _tail: '爱说不说' }))
+  assert.match(t2, /\[提醒: 爱说不说\]/)
+})
+
+test('群聊续聊的 {n} 占位符能替换', () => {
+  const t = buildPromptText(ev({ wake: { kind: 'continuation' }, hint: ['你刚回过话，之后群里又有 7 条新消息'] , _tail: '[提醒: x]' }))
+  assert.match(t, /7 条新消息/)
+})

@@ -614,11 +614,17 @@ export function buildPromptText(ev, opts = {}) {
   //   · 合成轮（主动开口 / 续聊）里，**群聊**要求"不发也要写一行 [不发] 原因"——
   //     群里没人点它名，只写正文就等于石沉大海，必须逼它明确表态；
   //   · **私聊**不这么逼：一对一里"这次不想说话"是正常行为，硬要它写 [不发] 反而像客服。
+  // 合成轮的收尾句由调用方给（index.js 从控制台的「提示词（可改）」里取，ev._tail）；
+  // 没给就退回默认 —— 这样文案可配置，format.js 不用管文案长什么样。
   const isSynthTurn = ev.wake?.kind === 'proactive' || ev.wake?.kind === 'continuation'
+  const customTail = String(ev._tail || '').trim()
   const tail = isSynthTurn
-    ? (ev.isGroup
-      ? '\n[提醒: 发到群里必须调 send_message；这轮不打算说话也要在正文写一行 [不发] 原因]'
-      : '\n[提醒: 想说话就调 send_message；不想说就不发，不用解释]')
+    // 它自己带了「[提醒: …]」就整句用它，否则补上前缀
+    ? (customTail
+      ? (customTail.startsWith('[') ? '\n' + customTail : '\n[提醒: ' + customTail + ']')
+      : (ev.isGroup
+        ? '\n[提醒: 发到群里必须调 send_message；这轮不打算说话也要在正文写一行 [不发] 原因]'
+        : '\n[提醒: 想说话就调 send_message；不想说就不发，不用解释]'))
     : '\n[提醒:只写正文收不到]'
   // 双保险：拼好的 prompt 再兜一道合法化 —— 历史里只要带一个孤立代理，上游就整轮 400
   return toWellFormedText(head + wakeMark + speaker + (ev.text || '') + fileHint + quote + cardHint + imgHint + ctx + hints + tail)

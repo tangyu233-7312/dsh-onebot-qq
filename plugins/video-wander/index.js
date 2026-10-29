@@ -97,11 +97,14 @@ function readState(dataDir) {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'))
     return {
       lastRunAt: Number(raw.lastRunAt) || 0,
+      // 对话里触发的那条路自己的时间戳。与 lastRunAt **完全独立** ——
+      // 定时器刚看过不该影响「主人让它看」，反过来也一样。
+      chatLastAt: Number(raw.chatLastAt) || 0,
       runs: Array.isArray(raw.runs) ? raw.runs.slice(-100) : [],
       seen: raw.seen && typeof raw.seen === 'object' ? raw.seen : {},
     }
   } catch {
-    return { lastRunAt: 0, runs: [], seen: {} }
+    return { lastRunAt: 0, chatLastAt: 0, runs: [], seen: {} }
   }
 }
 
@@ -110,7 +113,12 @@ function writeState(dataDir, st) {
   const cutoff = now() - STATE_KEEP_DAYS * 24 * 3600 * 1000
   const seen = {}
   for (const [k, v] of Object.entries(st.seen || {})) if (Number(v) > cutoff) seen[k] = Number(v)
-  const body = { lastRunAt: Number(st.lastRunAt) || 0, runs: (st.runs || []).slice(-100), seen }
+  const body = {
+    lastRunAt: Number(st.lastRunAt) || 0,
+    chatLastAt: Number(st.chatLastAt) || 0,
+    runs: (st.runs || []).slice(-100),
+    seen,
+  }
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true })
     const tmp = file + '.tmp'
@@ -182,6 +190,24 @@ export default {
       label: '每天最多看几次',
       hint: '按自然日算（本地时间 0 点重置）。0 = 一天都不看（等于关掉）。',
     },
+    // ── 对话里自己看（与上面的定时器完全独立）──────────────
+    // 这两项只作用于「聊着聊着它自己想去看看」，不占上面那份配额。
+    chatCooldownMin: {
+      type: 'int', default: 30, unit: '分钟', group: '自己找视频看',
+      min: 0, max: 1440, step: 5,
+      label: '对话里看完后冷却（分钟）',
+      hint: '它在一轮对话里主动看完一个视频后，多久之内不能再这样看。\n'
+        + '**这个冷却和上面「多久看一次」互不相干** —— 定时器刚看过，你在聊天里让它看，它照样能看。\n'
+        + '0 = 不冷却（可能会被反复叫去看）。',
+    },
+    chatMaxPerDay: {
+      type: 'int', default: 6, unit: '次', group: '自己找视频看',
+      min: 0, max: 24, step: 1,
+      label: '对话里每天最多看几次',
+      hint: '单独计数，不占「每天最多看几次」的名额。\n'
+        + '防的是「聊着聊着一直看」—— 0 = 对话里完全不允许它主动看。',
+    },
+
     regions: {
       // 控制台没有多选控件，用逗号分隔的列表（type:'group' 就是干这个的）；
       // 中文分区名和 B 站 rid 都认，见 resolveRegions()
@@ -337,8 +363,16 @@ export default {
       return s < e ? (h >= s && h < e) : (h >= s || h < e)
     }
 
-    /** 今天的次数（自然日，本地时间） */
-    const runsToday = (st) => (st.runs || []).filter((r) => localDate(Number(r.at) || 0) === localDate()).length
+    /**
+     * 今天的次数（自然日，本地时间）。
+     * trigger 传 'timer' / 'chat' 就只数那一条路；不传 = 两条加起来。
+     * 两条路各自有配额，互不占用（2026-10-29 改：原来共用一份，
+     * 定时器刚看过就会把「主人让它看」也挡掉，用户体感是「不是我要它看，是插件硬塞的」）。
+     */
+    const runsToday = (st, trigger) => (st.runs || [])
+      .filter((r) => localDate(Number(r.at) || 0) === localDate())
+      .filter((r) => !trigger || String(r.trigger || 'timer') === trigger)
+      .length
 
     /** 正常节奏下的下次到点时间 */
     const dueAt = (st) => Number(st.lastRunAt || 0) + Math.max(1, num(cfg().everyHours, 4)) * 3600 * 1000
@@ -558,7 +592,7 @@ export default {
     }
 
     // ── 一次完整的「自己看视频」 ─────────────────────────────
-    async function runOnce(reason) {
+    async function runOnce(reason, trigger = 'timer') {
       if (running) return { skipped: 'running' }
       running = true
       pending = null
@@ -614,18 +648,19 @@ export default {
 
         // 标记「看过」：不管它写没写，视频是真的看了，避免下次又挑同一条
         st.seen = { ...(st.seen || {}), [video.bvid]: now() }
-        st.lastRunAt = now()
+        if (trigger === 'chat') st.chatLastAt = now()
+        else st.lastRunAt = now()
 
         const got = turn.got
         pending = null
         if (!got) {
-          st.runs.push({ at: now(), bvid: video.bvid, title: video.title.slice(0, 60), ok: false, reason: turn.timeout ? 'timeout' : 'no_report' })
+          st.runs.push({ at: now(), trigger, bvid: video.bvid, title: video.title.slice(0, 60), ok: false, reason: turn.timeout ? 'timeout' : 'no_report' })
           save(st)
           log.warn('[看视频的地方] 看完了但它没交感想（' + (turn.timeout ? '超时' : '只回了话没调工具') + '）—— 不打扰主人')
           return { ok: false, reason: 'no_report' }
         }
         if (got.kind === 'skip') {
-          st.runs.push({ at: now(), bvid: video.bvid, title: video.title.slice(0, 60), ok: true, reason: 'skip:' + String(got.reason || '').slice(0, 80) })
+          st.runs.push({ at: now(), trigger, bvid: video.bvid, title: video.title.slice(0, 60), ok: true, reason: 'skip:' + String(got.reason || '').slice(0, 80) })
           save(st)
           log.info('[看视频的地方] 它决定不写这条（' + String(got.reason || '未说原因').slice(0, 60) + '）—— 不打扰主人')
           return { ok: true, skipped: true }
@@ -635,18 +670,20 @@ export default {
         const to = masterTarget()
         if (!to) {
           log.warn('[看视频的地方] 没有可用的主人 QQ（masterQq 与 adminQq 都为空），本次不发')
-          st.runs.push({ at: now(), bvid: video.bvid, title: video.title.slice(0, 60), ok: false, reason: 'no_master' })
+          st.runs.push({ at: now(), trigger, bvid: video.bvid, title: video.title.slice(0, 60), ok: false, reason: 'no_master' })
           save(st)
           return { ok: false, reason: 'no_master' }
         }
         await bot.deliver(to, text)
-        st.runs.push({ at: now(), bvid: video.bvid, title: video.title.slice(0, 60), ok: true, reason: 'sent' })
+        st.runs.push({ at: now(), trigger, bvid: video.bvid, title: video.title.slice(0, 60), ok: true, reason: 'sent' })
         save(st)
         log.info('[看视频的地方] 已发给 ' + to + '：' + video.bvid + '（' + got.thought.length + ' 字）')
         return { ok: true, sent: true, to, bvid: video.bvid }
       } catch (e) {
         log.error('[看视频的地方] 本轮失败: ' + (e?.stack || e?.message || e))
-        st.lastRunAt = now()   // 记一次，避免失败后每 60 秒重试一次刷日志
+        // 记一次，避免失败后每 60 秒重试一次刷日志（两条路各记各的）
+        if (trigger === 'chat') st.chatLastAt = now()
+        else st.lastRunAt = now()
         save(st)
         return { ok: false, reason: String(e?.message || e) }
       } finally {
@@ -719,9 +756,16 @@ export default {
           autoEnabled: autoOn(),
           everyHours: num(cfg().everyHours, 4),
           maxPerDay: num(cfg().maxPerDay, 6),
-          todayCount: runsToday(st),
+          todayCount: runsToday(st, 'timer'),
           lastRunAt: Number(st.lastRunAt) || null,
           nextDueAt: dueAt(st),
+          // 对话那条路是独立的一套
+          chat: {
+            cooldownMin: Math.max(0, num(cfg().chatCooldownMin, 30)),
+            maxPerDay: Math.max(0, num(cfg().chatMaxPerDay, 6)),
+            todayCount: runsToday(st, 'chat'),
+            lastAt: Number(st.chatLastAt) || null,
+          },
           lastWatched: last ? { at: last.at, bvid: last.bvid, title: last.title } : null,
           quiet: { enabled: quietOn(), start: num(cfg().quietStart, 1), end: num(cfg().quietEnd, 8), active: inQuiet() },
         }
@@ -747,17 +791,21 @@ export default {
         if (!pluginOn()) return { ok: false, reason: '看视频功能没启用' }
         if (!String(cfg().sidecarUrl || '').trim()) return { ok: false, reason: '侧车没配，看不了' }
         if (running) return { ok: false, reason: '正在看别的，等这次看完' }
+        // 这里用**对话专用**的那套配额（chatCooldownMin / chatMaxPerDay），
+        // 与定时器的 everyHours / maxPerDay 互不相干。
+        // 原来共用一个 lastRunAt：定时器刚看完 → 主人叫它看 → 它说「刚看过，N 分钟后再来」，
+        // 用户体感是「根本不是我要它看，是插件硬塞给我的」。
         const st = state()
-        const today = runsToday(st)
-        const cap = Math.max(0, num(cfg().maxPerDay, 6))
-        if (cap <= 0) return { ok: false, reason: '配置里把「每天最多」设成 0 了，就是不让看' }
-        if (today >= cap) return { ok: false, reason: '今天已经看了 ' + today + ' 个了，配额用完了' }
-        const next = dueAt(st)
-        const waitMin = Math.ceil((next - now()) / 60000)
-        if (waitMin > 0) return { ok: false, reason: '刚看过，' + waitMin + ' 分钟后再说' }
+        const chatCap = Math.max(0, num(cfg().chatMaxPerDay, 6))
+        if (chatCap <= 0) return { ok: false, reason: '配置里把「对话里每天最多」设成 0 了，就是不让看' }
+        const chatToday = runsToday(st, 'chat')
+        if (chatToday >= chatCap) return { ok: false, reason: '今天这样看已经 ' + chatToday + ' 次了，明天再说' }
+        const cdMs = Math.max(0, num(cfg().chatCooldownMin, 30)) * 60000
+        const waitMs = Number(st.chatLastAt || 0) + cdMs - now()
+        if (waitMs > 0) return { ok: false, reason: '刚看过一个，' + Math.ceil(waitMs / 60000) + ' 分钟后再来' }
         // 不 await：看一个视频要下载 + 抽帧 + 写感想，几十秒到几分钟，
         // 让工具立刻返回，这一轮先把话说完，看完的感想会另外发过来
-        runOnce('对话里自己想去看看').catch((e) => log.error('[看视频的地方] 对话触发失败: ' + (e?.message || e)))
+        runOnce('对话里自己想去看看', 'chat').catch((e) => log.error('[看视频的地方] 对话触发失败: ' + (e?.message || e)))
         return { ok: true, message: '我去翻翻，看完了把看到的东西发给你' }
       },
     })
@@ -778,9 +826,10 @@ export default {
       if (!String(cfg().sidecarUrl || '').trim()) return
       if (inQuiet()) return
       const st = state()
-      if (runsToday(st) >= Math.max(0, num(cfg().maxPerDay, 6))) return
+      // 只数「定时器自己看的」那部分：对话里看的走另一份配额，不占这里的名额
+      if (runsToday(st, 'timer') >= Math.max(0, num(cfg().maxPerDay, 6))) return
       if (now() < dueAt(st)) return
-      runOnce('到点自己看').catch((e) => log.error('[看视频的地方] 定时触发失败: ' + (e?.message || e)))
+      runOnce('到点自己看', 'timer').catch((e) => log.error('[看视频的地方] 定时触发失败: ' + (e?.message || e)))
     }
 
     function start() {
@@ -814,9 +863,15 @@ export default {
           autoEnabled: autoOn(),
         everyHours: num(cfg().everyHours, 4),
         maxPerDay: Math.max(0, num(cfg().maxPerDay, 6)),
-        todayCount: runsToday(st),
+        todayCount: runsToday(st, 'timer'),
         lastRunAt: Number(st.lastRunAt) || null,
         nextDueAt: dueAt(st),
+        chat: {
+          cooldownMin: Math.max(0, num(cfg().chatCooldownMin, 30)),
+          maxPerDay: Math.max(0, num(cfg().chatMaxPerDay, 6)),
+          todayCount: runsToday(st, 'chat'),
+          lastAt: Number(st.chatLastAt) || null,
+        },
         running,
         quiet: { enabled: quietOn(), start: num(cfg().quietStart, 1), end: num(cfg().quietEnd, 8), active: inQuiet() },
         recent: (st.runs || []).slice(-8).reverse(),
@@ -826,6 +881,8 @@ export default {
 
     log.info('[看视频的地方] 已装配：' + (autoOn()
       ? '自动看=开（每 ' + num(cfg().everyHours, 4) + ' 小时最多一次，每天 ≤' + num(cfg().maxPerDay, 6) + ' 次）'
-      : '自动看=关'))
+      : '自动看=关')
+      + '｜对话里自己看：冷却 ' + Math.max(0, num(cfg().chatCooldownMin, 30)) + ' 分钟，每天 ≤'
+      + Math.max(0, num(cfg().chatMaxPerDay, 6)) + ' 次（与自动看各算各的）')
   },
 }

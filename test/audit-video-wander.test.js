@@ -130,7 +130,7 @@ test('默认：插件启用但自动看关', () => {
 test('配置项都是控制台可调：20 项且都有默认值', () => {
   const schema = plugin.configSchema
   const keys = Object.keys(schema)
-  assert.equal(keys.length, 23, '配置项数量变了要顺手看文档：' + keys.join(','))
+  assert.equal(keys.length, 25, '配置项数量变了要顺手看文档：' + keys.join(','))
   for (const k of keys) assert.ok(schema[k].default !== undefined, k + ' 必须有默认值')
   // 关键数字项都得有 min/max，不能让用户填出界
   for (const k of ['everyHours', 'maxPerDay', 'thoughtMaxChars', 'frames', 'maxMinutes', 'retryMinutes', 'excludeDays']) {
@@ -312,7 +312,6 @@ test('watch_video：对话里能自己触发一次观看，立刻返回', async 
     assert.equal(typeof s.tools.watch_video?.execute, 'function', '应注册 watch_video 工具')
     const r = await s.tools.watch_video.execute({}, { agent: { session: { id: 'session-normal' } } })
     assert.equal(r.ok, true, '应该接受这次请求：' + JSON.stringify(r))
-    // 异步去看了：稍等让它跑完
     await new Promise((res) => setTimeout(res, 1800))
     assert.equal(s.delivered.length, 1, '看完应该发一条')
   } finally { s.restore() }
@@ -321,7 +320,6 @@ test('watch_video：对话里能自己触发一次观看，立刻返回', async 
 test('watch_video：在看视频的会话里拒绝（防递归）', async () => {
   const s = setup({ cfg: { autoEnabled: true } })
   try {
-    // 让 core.scopeOf 认这个会话是「受限会话」（= 看视频的地方）
     s.bot.core.scopeOf = (sid) => (sid === 'sess-wander' ? { label: '看视频的地方' } : null)
     const r = await s.tools.watch_video.execute({}, { agent: { session: { id: 'sess-wander' } } })
     assert.equal(r.ok, false)
@@ -329,21 +327,57 @@ test('watch_video：在看视频的会话里拒绝（防递归）', async () => 
   } finally { s.restore() }
 })
 
-test('watch_video：配额用完时如实拒绝，不会硬看', async () => {
-  const s = setup({ cfg: { autoEnabled: true, maxPerDay: 1 } })
+test('两条路的配额互不占用：定时器刚看过，对话里照样能看', async () => {
+  // 关键回归：原来共用 lastRunAt，定时器跑完 → 主人叫它看 → 它说「刚看过，N 分钟后再来」
+  // 用户体感是「根本不是我要它看，是插件硬塞的」。
+  const s = setup({ cfg: { autoEnabled: true, everyHours: 4, maxPerDay: 6 } })
+  try {
+    // 先让定时器跑一次（shared 入口等价于「到点自己看」，走 timer 那条计数）
+    await s.shared.videoWanderRunNow('到点自己看')
+    await new Promise((res) => setTimeout(res, 1800))
+    const afterTimer = s.delivered.length
+    assert.ok(afterTimer >= 1, '定时器那次应该发出去了')
+    // 紧接着对话里再让它看：不该被定时器的冷却挡住
+    const r = await s.tools.watch_video.execute({}, { agent: { session: { id: 's1' } } })
+    assert.equal(r.ok, true, '对话里不该被定时器的配额挡住：' + JSON.stringify(r))
+  } finally { s.restore() }
+})
+
+test('对话那条路有自己的冷却（chatCooldownMin），不看定时器的', async () => {
+  const s = setup({ cfg: { autoEnabled: true, chatCooldownMin: 30 } })
   try {
     const r1 = await s.tools.watch_video.execute({}, { agent: { session: { id: 's1' } } })
     assert.equal(r1.ok, true)
     await new Promise((res) => setTimeout(res, 1800))
-    // 第二次：刚看过 → 要么"刚看过"要么配额满
     const r2 = await s.tools.watch_video.execute({}, { agent: { session: { id: 's1' } } })
     assert.equal(r2.ok, false)
-    assert.match(r2.reason, /刚看过|配额/)
+    assert.match(r2.reason, /刚看过一个/)
+  } finally { s.restore() }
+})
+
+test('对话那条路有自己的每日上限（chatMaxPerDay）', async () => {
+  const s = setup({ cfg: { autoEnabled: true, chatCooldownMin: 0, chatMaxPerDay: 1 } })
+  try {
+    const r1 = await s.tools.watch_video.execute({}, { agent: { session: { id: 's1' } } })
+    assert.equal(r1.ok, true)
+    await new Promise((res) => setTimeout(res, 1800))
+    const r2 = await s.tools.watch_video.execute({}, { agent: { session: { id: 's1' } } })
+    assert.equal(r2.ok, false)
+    assert.match(r2.reason, /今天这样看已经 1 次/)
+  } finally { s.restore() }
+})
+
+test('chatMaxPerDay=0：对话里完全不允许，定时器不受影响', async () => {
+  const s = setup({ cfg: { autoEnabled: true, chatMaxPerDay: 0 } })
+  try {
+    const r = await s.tools.watch_video.execute({}, { agent: { session: { id: 's1' } } })
+    assert.equal(r.ok, false)
+    assert.match(r.reason, /设成 0/)
   } finally { s.restore() }
 })
 
 test('watch_video：自动看没开也能手动触发（用户点了就是想看）', async () => {
-  const s = setup({ cfg: { autoEnabled: false } })   // 自动看关
+  const s = setup({ cfg: { autoEnabled: false } })
   try {
     const r = await s.tools.watch_video.execute({}, { agent: { session: { id: 'sx' } } })
     assert.equal(r.ok, true, 'autoEnabled=false 只挡定时器，不该挡对话里主动看')

@@ -32,7 +32,7 @@ import {
 
 import { OneBotAdapter } from './kernel/onebot-adapter.js'
 import { ChatState, Pipeline, createDeliver, turnStore } from './kernel/state-pipeline.js'
-import { createPacing } from './kernel/pacing.js'
+import { createPacing, REPLY_DEFAULTS } from './kernel/pacing.js'
 import { createDshDriver } from './kernel/dsh-driver.js'
 import { startCompatServer } from './kernel/compat-server.js'
 import { loadConfig, validateConfig, resolveRuntimePaths, saveConfig } from './kernel/config-store.js'
@@ -1166,23 +1166,20 @@ export async function apply(ctx, bundleConfig = {}) {
     if (isPrivateChat) ev.wake.chatType = 'private'
     ev._scratch.silentFailure = true
     // 合成轮的口径由这里**统一给**（format.js 只留一个极简标签，不再重复写一遍）。
-    // 群聊与私聊是两种社交场景，不能用同一句话 —— 分四份写：
+    // 文案本身**不写死**：默认值在 pacing.js 的 REPLY_DEFAULTS.prompts，
+    // 控制台「主动接话 → 提示词（可改）」六个框随便改（{n} 会替换成新消息条数）。
+    const P = { ...REPLY_DEFAULTS.prompts, ...(runtime.pacing?.reply?.prompts || {}) }
+    const fill = (tpl) => String(tpl || '').replace(/\{n\}/g, String(Number(humanMsgs) || 0)).trim()
+    const tailPrompt = fill(isPrivateChat ? P.tailPrivate : P.tailGroup)
     ev.hint.push(isContinuation
-      ? (isPrivateChat
-        ? `[你刚回过话，对方还没接。之后对方又说了 ${Number(humanMsgs) || 0} 句（见上文）。`
-          + '想补一句就补（比如刚想到的补充、或者换个话头）；不想补就什么都不做，这轮不发也没关系]'
-        : `[你刚回过话，之后群里又有 ${Number(humanMsgs) || 0} 条新消息（见上文）。`
-          + '想补一句就正常发一条；不想补就什么都别做]')
+      ? fill(isPrivateChat ? P.privateContinuation : P.groupContinuation)
       : isPrivateChat
-        // 私聊主动开口：一对一里没有「别人在聊」可以插，唯一的理由是「对方安静了一阵」
-        ? '[这是你和主人的私聊，对方已经安静了一阵。'
-          + '想说什么就说 —— 分享刚看到的、想起的事、或者轻轻问一句；'
-          + '想找点话题又没头绪的话，可以调 watch_video 自己去翻个视频看（看完会发过来）。'
-          + '不想说就什么都不发，这轮不发完全没问题。'
-          + '别问「你怎么不理我」，别道歉，别像客服]'
+        ? fill(P.private)
         : reason === 'silence'
-          ? '[群里安静一会儿了。可以起个话头或接上一个话题，像群友随口一句；不想说就别发]'
-          : '[没人叫你，群里正聊着。想接就自然接一句；实在插不上嘴就不发，并在正文写一行 [不发] 原因]')
+          ? fill(P.group)
+          : fill(P.group))
+    // 收尾提醒交给 format.js 贴到最后一行（合成轮才有；普通回话仍是那句通用的）
+    if (tailPrompt) ev._tail = tailPrompt
     // 私聊没有「群上文」可拉（协议端也没有私聊历史接口）：上下文来自 DSH 会话本身，
     // 所以这里只对群拉上文，私聊直接跳过，别去调一个必然失败的接口。
     const ctxCount = Number(runtime.outbound?.groupContextCount ?? runtime.groupContextCount ?? 5)
