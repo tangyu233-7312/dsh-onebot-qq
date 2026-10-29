@@ -116,25 +116,6 @@ function mediaTypeOf(buf) {
   return 'image/jpeg'
 }
 
-/** 链接正则：中文/全角符号不进链接，尾部半角标点削掉（跟 link-parser 的教训一致） */
-const URL_RE = /https?:\/\/[^\s<>"'`，。；、！？（）【】《》「」]+/gi
-function extractUrls(text) {
-  const out = []
-  for (const m of String(text || '').matchAll(URL_RE)) {
-    const u = m[0].replace(/[)\]}>.,;:'"!?]+$/, '')
-    if (u.length > 10) out.push(u)
-  }
-  return out
-}
-
-/** 认平台：只认侧车白名单里的那几家，别的交给下游（web_fetch 之类） */
-function platformOf(url) {
-  const u = String(url || '').toLowerCase()
-  if (/bilibili\.com|b23\.tv|bili2233\.cn/.test(u)) return 'bilibili'
-  if (/douyin\.com|iesdouyin\.com/.test(u)) return 'douyin'
-  return ''
-}
-
 /** 本线额度窗口（一小时滑窗），返回 { ok, used, max } */
 function quotaCheck(bot, chatKey, qq, perUserHour, perGroupHour) {
   const st = bot.state?.get?.(chatKey) ?? {}
