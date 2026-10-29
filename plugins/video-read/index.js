@@ -257,14 +257,22 @@ export default {
 
     // ── ② before-turn：抽帧 → 塞 imageParts（order 44，必须早于 kernel:context 的 50） ──
     bot.on('before-turn', async (ev) => {
-      if (cfg().enabled === false || !urlOf()) return
+      // 诊断（info 级，默认就能看到）：只在这条消息"可能跟视频有关"时打，避免刷屏。
+      // 排查「@它看不到视频」这类问题时，第一眼要知道卡在哪一步。
+      const diag = (stage, extra = '') => {
+        const near = ev.replyToId || ev._scratch?.[SLOT] || /video/.test(JSON.stringify(ev.rawSegments || []))
+        if (!near) return
+        bot.log.info?.(`[看视频] ${ev.chatKey} ${stage}：wake=${ev.wake?.kind || '-'} replyTo=${ev.replyToId || '-'} ${extra}`)
+      }
+      diag('进入')
+      if (cfg().enabled === false || !urlOf()) { diag('跳过', '插件关或侧车地址空'); return }
       const seg0 = ev._scratch?.[SLOT]
       // 三条来路：本条消息带视频 / 引用了一条视频 / 上一条消息刚发过视频（见 recentVideoSec）
-      if (!seg0 && !ev.replyToId && !(Number(cfg().recentVideoSec) > 0)) return
-      if (!shouldLook(ev, cfg())) return
+      if (!seg0 && !ev.replyToId && !(Number(cfg().recentVideoSec) > 0)) { diag('跳过', '无视频段/无引用/窗口关'); return }
+      if (!shouldLook(ev, cfg())) { diag('跳过', '没叫它（onlyWhenAddressed）'); return }
       let seg = ev._scratch?.[SLOT]
       // 上一条消息刚发过视频（"先发视频、再 @它看看这个"）—— 优先于引用反查，省一次协议端调用
-      if (!seg) seg = takeRecentSeg(ev.chatKey)
+      if (!seg) { const r = takeRecentSeg(ev.chatKey); if (r) { r.__via = '上一条消息'; seg = r } }
       if (!seg) {
         // ── 被引视频：QQ 里"转发视频"只能**先发视频、再引用它说话**（客户端限制，绕不开）。
         //    内核的引用反查只取文本，视频段变成 `[媒体/富文本]` 且原始段被丢弃（index.js:744），
@@ -280,8 +288,9 @@ export default {
             const q = await bot.onebot.msgById(ev.replyToId)
             const qSeg = q ? videoSegOf({ rawSegments: q.message ?? q.raw_message ?? [] }) : null
             if (qSeg) {
-              seg = qSeg
-              ev._scratch[SLOT] = qSeg
+            qSeg.__via = '引用反查'
+            seg = qSeg
+            ev._scratch[SLOT] = qSeg
             } else {
               noVideo.add(String(ev.replyToId))
               if (noVideo.size > 100) noVideo.delete(noVideo.values().next().value)
@@ -291,9 +300,10 @@ export default {
       }
       if (!seg) {
         // 静默返回最容易让人以为「它不想看」—— 记一行，排障时能看出是"没找到视频"而不是"看到了没抽帧"
-        bot.log.debug?.(`[看视频] 本轮没有可看的视频段（${ev.chatKey}）`)
+        diag('放弃', '三条来路都没找到视频段')
         return
       }
+      diag('命中', '来源=' + (seg.__via || '当前消息'))
 
       // 额度：先查再发请求（别先下载几百 MB 再说超限）
       const q = quotaCheck(bot, ev.chatKey, ev.sender?.qq,
@@ -309,7 +319,7 @@ export default {
         return tell(ev, '这视频我没拿到手，看不了…')
       }
 
-      bot.log.debug?.(`[看视频] 请求侧车：${String(req.url || '').slice(0, 80)}（${req.platform}）`)
+      bot.log.info?.(`[看视频] 请求侧车：${String(req.url || '').slice(0, 90)}（${req.platform}）`)
       const started = Date.now()
       let data = null
       try {
