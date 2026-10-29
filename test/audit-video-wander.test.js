@@ -465,3 +465,32 @@ test('maxPerDay = 0 等于自动关掉', () => {
     assert.equal(s.shared.videoWanderStatus().autoEnabled, false)
   } finally { s.restore() }
 })
+
+test('侧车超时按「秒」解释：默认 180 秒，不是 5 秒（2026-10-29 的线上故障）', async () => {
+  // 踩过的坑：timeoutMs 是子插件配置，storedOf 不做 scale 换算 →
+  // 存的是秒（180）。原代码直接当毫秒：Math.max(5000, 180) = 5 秒，
+  // 比侧车实际耗时还短（实测 6.2 秒出帧），于是每次都被判「超时」，
+  // 用户看到的是「看视频的服务没起来」—— 但服务一直好好的。
+  const fs2 = await import('node:fs')
+  for (const [rel, fallback] of [['../plugins/video-read/index.js', 180], ['../plugins/video-link-read/index.js', 240]]) {
+    const src = fs2.readFileSync(new URL(rel, import.meta.url), 'utf8')
+    assert.match(src, /const timeoutMsOf = \(\) =>/, rel + ' 应有超时换算函数')
+    assert.match(src, /n >= 1000 \? Math\.round\(n\) : Math\.round\(n \* 1000\)/, rel + ' 应兼容秒/毫秒两种历史值')
+    assert.match(src, new RegExp(fallback + ' \\* 1000'), rel + ' 兜底应是 ' + fallback + ' 秒')
+    // 不允许再出现「直接当毫秒」的旧写法
+    assert.doesNotMatch(src, /Math\.max\(5000, Number\(cfg\(\)\.timeoutMs\)/, rel + ' 不应再有旧写法')
+  }
+})
+
+test('超时换算：180/240 秒，以及旧的毫秒值也能认', () => {
+  const conv = (n) => {
+    if (!Number.isFinite(n) || n <= 0) return 180 * 1000
+    return n >= 1000 ? Math.round(n) : Math.round(n * 1000)
+  }
+  assert.equal(conv(180), 180000, '180 秒 → 180000ms')
+  assert.equal(conv(240), 240000)
+  assert.equal(conv(180000), 180000, '旧的毫秒值原样认')
+  assert.equal(conv(undefined), 180000, '缺失 → 默认 180 秒')
+  assert.equal(conv(0), 180000)
+  assert.equal(conv(30), 30000, '30 秒')
+})

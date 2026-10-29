@@ -194,6 +194,21 @@ export default {
   setup(bot) {
     const cfg = () => bot.cfg || {}
     const urlOf = () => String(cfg().sidecarUrl || '').trim()
+    /**
+     * 等侧车的超时（毫秒）。
+     * ⚠️ 这里必须做兼容：控制台的 timeoutMs 是**子插件项**，
+     *    storedOf() 对非 core 项不做 scale 换算，所以配置里存的是**人话单位（秒）**：
+     *    schema 写 default: 240，面板显示 240 秒，存进去也是 240。
+     *    原代码直接当毫秒用 → Math.max(5000, 240) = 5 秒，比侧车实际耗时（6~12 秒）还短，
+     *    于是每次 QQ 短视频都被判「超时」，用户看到的是「看视频的服务没起来」
+     *    （2026-10-29 实测：侧车 6.2 秒出帧，插件 5 秒就放弃）。
+     *    口径与 gate-wake / imagegen / group-welcome 一致：>= 1000 当毫秒，否则当秒。
+     */
+    const timeoutMsOf = () => {
+      const n = Number(cfg().timeoutMs)
+      if (!Number.isFinite(n) || n <= 0) return 240 * 1000
+      return n >= 1000 ? Math.round(n) : Math.round(n * 1000)
+    }
 
     /**
      * 这条消息是不是"冲它来的"（=「只在被叫到时看」的判据）。
@@ -269,7 +284,7 @@ export default {
             maxSide: Number(cfg().maxSide) || 1024,
             maxSeconds: Number(cfg().maxSeconds) || 600,
           }),
-          signal: AbortSignal.timeout(Math.max(5000, Number(cfg().timeoutMs) || 240000)),
+          signal: AbortSignal.timeout(timeoutMsOf()),
         })
         data = await res.json()
       } catch (e) {
