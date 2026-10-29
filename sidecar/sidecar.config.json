@@ -1,0 +1,38 @@
+﻿{
+    "_说明":  "站点私有配置。改完重启侧车生效。空字符串 = 自动找。",
+    "port":  3972,
+    "host":  "127.0.0.1",
+    "token":  "",
+    "_pythonPath":  "留空则用 PATH 里的 yt-dlp；填了就用 python -m yt_dlp",
+    "pythonPath":  "",
+    "_ffmpegPath":  "留空则从 PATH / winget 常见位置自动找",
+    "ffmpegPath":  "",
+    "ffprobePath":  "",
+    "ytdlpPath":  "",
+    "maxMb":  250,
+    "maxSeconds":  600,
+    "maxFrames":  12,
+    "concurrency":  2,
+    "taskTimeoutMs":  300000,
+    "frameTtlMs":  600000,
+    "maxCacheMb":  2048,
+    "_allowLocalDirs":  "允许 /read 读取的本地目录（前缀匹配，realpath 后判定）。通常不用填，默认已含系统临时目录与 .dsh\\dsh-onebot-qq",
+    "allowLocalDirs":  [
+
+                       ],
+    "allowedHosts":  [
+                         "bilibili.com",
+                         "b23.tv",
+                         "bili2233.cn",
+                         "douyin.com",
+                         "iesdouyin.com",
+                         "v.douyin.com",
+                         "qq.com",
+                         "gtimg.com",
+                         "qianp.com",
+                         "myqcloud.com",
+                         "nt.qq.com.cn"
+                     ],
+    "reuseMinutes":  10,
+    "_reuse说明":  "同一链接在这段时间内复用已下载的文件：抽帧（/read）和搬进群（/parse）只下载一次。"
+}

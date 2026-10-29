@@ -1,0 +1,5 @@
+﻿node_modules/
+*.log
+trace.log
+run.json
+sidecar.log

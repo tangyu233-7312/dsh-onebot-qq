@@ -15,3 +15,20 @@ coverage/
 test/fixtures/local-*.json
 *.bak-*
 ops.local.mjs
+
+# ── 定制功能的本地资产（绝不入库）──────────────────────────────
+# 训练出来的 RVC 音色：几十~几百 MB，而且音色等于某个人的声音，不该随仓库分发
+*.pth
+*.index
+# 曲库与转换产物
+music_mp3/
+tools/singing-pack/songs/
+tools/singing-pack/out/
+*.silk
+sing-*.mp3
+_sp_*.wav
+# 侧车/能力包跑起来之后才会有的东西
+tools/singing-pack/.venv/
+sidecar/run.json
+sidecar/trace.log
+sidecar/*.bak-*
