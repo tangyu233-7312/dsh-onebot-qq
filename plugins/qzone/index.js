@@ -20,7 +20,8 @@
  * 三条红线（改之前先读）：
  *  ① **「不写」绝不能进空间**：skip 与 post 是两个工具，skip 一个字都不发；post 里还有正文防呆。
  *  ② **写盘只有一处**：withState()；读取侧永远不写。
- *  ③ **工作区会话只读空间、不碰聊天**：工具入口只放行三个空间工具（内核按 deskSessionIds 拦）。
+ *  ③ **工作区会话只读空间、不碰聊天**：工具入口只放行三个空间工具
+ *     （用内核的通用受限会话 markScope 登记，连 send_message 都调不到）。
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -413,7 +414,10 @@ export default {
       const dsh = bot.dsh
       if (typeof dsh?.ensureSession !== 'function') throw new Error('会话控制器不可用，无法开空间工作区')
       const sessionId = await dsh.ensureSession(DESK_CHAT_KEY, DESK_TITLE)
-      try { bot.core?.desk?.mark?.(sessionId) } catch { /* 老内核没有 desk 槽就退化成普通会话 */ }
+      // 登记成受限会话：这个会话里只放行空间三件套（内核按 scopedSessions 拦）
+      try {
+        bot.core?.markScope?.(sessionId, DESK_TITLE, ['post_qzone', 'skip_qzone', 'qzone_status'])
+      } catch { /* 老内核没有 markScope 就退化成普通会话 */ }
       try { if (typeof dsh.rename === 'function') await dsh.rename(sessionId, DESK_TITLE) } catch { /* 改名失败不影响 */ }
       return sessionId
     }

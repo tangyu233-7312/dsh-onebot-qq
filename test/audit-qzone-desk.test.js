@@ -310,12 +310,16 @@ test('工作区会话里调别的工具会被入口拒掉', async () => {
   })
   try {
     await env.kernel.shared.qzoneDesk.runNow('测试')
-    assert.ok(env.kernel.deskSessionIds.has(deskSessionId), '工作区会话应已登记')
+    // 通用受限会话：qzone 用 core.markScope 登记（2026-10-29 合并掉原来的 deskSessionIds 专用槽）
+    assert.ok(env.kernel.scopedSessions.has(deskSessionId), '工作区会话应已登记为受限会话')
+    const sc = env.kernel.scopedSessions.get(deskSessionId)
+    assert.equal(sc.label, '空间工作区')
+    assert.deepEqual([...sc.tools].sort(), ['post_qzone', 'qzone_status', 'skip_qzone'])
     const send = tool('send_message')
     assert.ok(send, '内核应有 send_message 工具')
     await assert.rejects(
       () => send.execute({ target: 'group:' + GROUP_ID, text: '不该发出去' }, { agent: { session: { id: deskSessionId } } }),
-      /空间工作区只允许/,
+      /「空间工作区」只允许调用/,
     )
     // 空间三件套仍然放行
     const status = await tool('qzone_status').execute({}, { agent: { session: { id: deskSessionId } } })

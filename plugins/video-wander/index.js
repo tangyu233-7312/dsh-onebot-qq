@@ -805,8 +805,14 @@ export default {
       parameters: {},
       async execute(args = {}, exec) {
         const sid = String(exec?.agent?.session?.id || '')
-        // 防递归：在「看视频的地方」会话里不能再触发一次
-        if (sid && bot.core?.scopeOf?.(sid)) {
+        // 防递归：在「看视频的地方」会话里不能再触发一次。
+        // ⚠️ 这里**不能**写成裸的 bot.core?.scopeOf?.(sid) —— 内核要是没暴露 scopeOf，
+        //    可选链会把整句吞掉，防递归静默失效（永远以为"不在观看会话里"）。
+        //    2026-10-29 就踩过：那三个方法只传给了 dsh driver，没挂到 bot.core。
+        const scopeOf = bot.core?.scopeOf
+        if (typeof scopeOf !== 'function') {
+          log.warn('[看视频的地方] 内核没暴露 core.scopeOf，防递归判断不可用（内核版本太老？）')
+        } else if (sid && scopeOf.call(bot.core, sid)) {
           return { ok: false, reason: '现在这个会话就是看视频用的，不能再触发一次' }
         }
         if (!pluginOn()) return { ok: false, reason: '看视频功能没启用' }

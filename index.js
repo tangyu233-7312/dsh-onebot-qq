@@ -408,10 +408,11 @@ export async function apply(ctx, bundleConfig = {}) {
     turnBySession: new Map(), // sessionId → TurnContext（同上；工具执行时按 DSH 会话认线）
     pendingTurns: new Map(), // sessionId → TurnContext[]（prompt 已 admission、等 turn/start 的队列）
     maintSessionIds: new Set(), // 后台任务会话（群记忆积累等）：工具入口只放行 MAINT_ALLOWED_TOOLS（memory_append）
-    deskSessionIds: new Set(), // 空间工作区会话（qzone）：工具入口只放行 DESK_ALLOWED_TOOLS（post/skip/status）
-    // 通用「受限会话」表：sessionId → { label, tools: Set<toolName> }。
-    // 为什么要通用：空间工作区、看视频的地方这类「只做一件事」的系统会话各有各的一套工具，
-    // 不能共用一张写死的白名单，也不该每加一个插件就改一次内核。
+    // 受限会话表：sessionId → { label, tools: Set<toolName> }。
+    // 「只做一件事」的系统会话（空间工作区 / 看视频的地方…）都登记在这里，
+    // 各有各的一套工具白名单，加新插件不用改内核。
+    // （2026-10-29 合并掉原先单独的 deskSessionIds —— 两套做同一件事的机制，
+    //   而且 qzone 曾经调过不存在的 core.desk 却没报错，白名单静默失效。）
     scopedSessions: new Map(),
     dataDir,
     configPath,
@@ -533,17 +534,12 @@ export async function apply(ctx, bundleConfig = {}) {
     if (q.allow && q.triggerId != null) out.replyTo = q.triggerId
   })
 
-  // ── DSH 会话驱动（只保留 in-process） ──────────────────────────
-  const dsh = createDshDriver({
-    ctx,
-    log: logFor('dsh'),
-    sessionsFile: runtime.dsh.sessionsFile,
-    workspacePath: runtime.dsh.qqWorkspacePath,
-    workspaceId: kernel.qqWorkspace?.id || '',
-    agentPreset: runtime.dsh.agentPreset,
-    state,
-    onebot,
-    maintSessionIds: kernel.maintSessionIds,
+  // ── 受限会话 API ───────────────────────────────────────────────
+  // 两个地方都要用：dsh driver（起会话时）和 bot.core（插件登记 / 查询）。
+  // 2026-10-29 之前只传给了 driver，**没暴露到 bot.core** ——
+  // 结果 qzone 调 core.desk.mark（另一个专用槽）能work，而 video-wander 调的
+  // core.scopeOf 一直是 undefined，防递归判断静默失效（永远以为"不在观看会话里"）。
+  const scopeApi = {
     /**
      * 通用受限会话：插件给「系统自己用的会话」登记一套工具白名单。
      * 登记后除白名单之外的一切工具都会被拒（连 send_message 都调不到）——
@@ -561,6 +557,20 @@ export async function apply(ctx, bundleConfig = {}) {
     },
     clearScope: (sessionId) => kernel.scopedSessions.delete(String(sessionId || '')),
     scopeOf: (sessionId) => kernel.scopedSessions.get(String(sessionId || '')) || null,
+  }
+
+  // ── DSH 会话驱动（只保留 in-process） ──────────────────────────
+  const dsh = createDshDriver({
+    ctx,
+    log: logFor('dsh'),
+    sessionsFile: runtime.dsh.sessionsFile,
+    workspacePath: runtime.dsh.qqWorkspacePath,
+    workspaceId: kernel.qqWorkspace?.id || '',
+    agentPreset: runtime.dsh.agentPreset,
+    state,
+    onebot,
+    maintSessionIds: kernel.maintSessionIds,
+    ...scopeApi,
   })
   kernel.dsh = dsh
 
@@ -686,12 +696,8 @@ export async function apply(ctx, bundleConfig = {}) {
     compat: runtime.compat,
     keywordTable: kernel.shared.keywordsTable || {},
     tmp,
-    /** 空间工作区会话登记（qzone 插件用）：登记后工具入口只放行空间三件套 */
-    desk: {
-      mark: (sessionId) => { const s = String(sessionId || ''); if (s) kernel.deskSessionIds.add(s) },
-      unmark: (sessionId) => { kernel.deskSessionIds.delete(String(sessionId || '')) },
-      has: (sessionId) => kernel.deskSessionIds.has(String(sessionId || '')),
-    },
+    // 插件能登记 / 查询「受限会话」（空间工作区、看视频的地方各自登记自己的工具集）
+    ...scopeApi,
   })
   const pluginDisposers = [] // 插件注册的卸载回调（定时器/监听器等），fiber 卸载时逆序执行
   const botProto = {
@@ -924,8 +930,6 @@ export async function apply(ctx, bundleConfig = {}) {
   // 后台任务（群记忆积累）允许调用的工具白名单：只有「提交结果」型的 memory_append。
   // 这样后台会话能结构化提交数据，但调不到 send_message / 生图 / bash 等（防误发、防乱动系统）。
   const MAINT_ALLOWED_TOOLS = new Set(['memory_append'])
-  // 空间工作区会话：只放行「空间三件套」，碰不到聊天/发图/命令（qzone 插件登记 deskSessionIds）
-  const DESK_ALLOWED_TOOLS = new Set(['post_qzone', 'skip_qzone', 'qzone_status'])
   const prefix = String(runtime.toolPrefix || 'mcp__qq__')
   ctx.inject(['tools'], (child) => {
     const tools = child.tools
@@ -946,12 +950,8 @@ export async function apply(ctx, bundleConfig = {}) {
             // ② memory_append 反过来只允许后台任务会话调，普通 QQ 会话调不到（不让它顺手改记忆）。
             const sid = String(exec?.agent?.session?.id || '')
             const isMaint = kernel.maintSessionIds.has(sid)
-            // 空间工作区：只放行三个空间工具，连 send_message 都调不到
-            const isDesk = kernel.deskSessionIds.has(sid)
-            if (isDesk && !DESK_ALLOWED_TOOLS.has(toolName)) {
-              throw new Error('空间工作区只允许调用 post_qzone / skip_qzone / qzone_status（这里不发聊天消息）')
-            }
-            // 通用受限会话（见 coreOf().markScope）：白名单之外一律拒
+            // 受限会话（见 coreOf().markScope）：白名单之外一律拒。
+            // 空间工作区、看视频的地方都走这一条，各自登记自己的工具集。
             const scope = kernel.scopedSessions.get(sid)
             if (scope && !scope.tools.has(toolName)) {
               throw new Error('「' + scope.label + '」只允许调用 ' + [...scope.tools].join(' / ') + '（这里不能调用 ' + toolName + '）')
