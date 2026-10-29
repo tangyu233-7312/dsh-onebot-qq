@@ -1187,6 +1187,15 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
     if (!id) throw new Error('action 需要 id')
     if (!ACTIONS.some((a) => a.id === id)) throw new Error(`未知动作：${id}`)
 
+    // ── 自己找视频看（按钮长在它自己的配置页）──────────────────
+    if (id === 'wander-run-now') {
+      const fn = kernel?.shared?.videoWanderRunNow
+      if (typeof fn !== 'function') return { ok: false, error: '「自己找视频看」插件没启用（或还没装配）' }
+      // 异步：下载 + 抽帧 + 起一轮模型要一两分钟，别让控制台转圈等到超时
+      fn('控制台手动触发').catch(() => {})
+      return { ok: true, message: '已经让它去看了，去「看视频的地方」会话等一会儿' }
+    }
+
     // ── 空间日记（按钮长在「空间日记」配置页）──────────────────
     if (id === 'qzone-run-now') {
       const fn = kernel?.shared?.qzoneRunNow

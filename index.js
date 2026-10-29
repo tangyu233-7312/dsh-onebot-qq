@@ -409,6 +409,10 @@ export async function apply(ctx, bundleConfig = {}) {
     pendingTurns: new Map(), // sessionId → TurnContext[]（prompt 已 admission、等 turn/start 的队列）
     maintSessionIds: new Set(), // 后台任务会话（群记忆积累等）：工具入口只放行 MAINT_ALLOWED_TOOLS（memory_append）
     deskSessionIds: new Set(), // 空间工作区会话（qzone）：工具入口只放行 DESK_ALLOWED_TOOLS（post/skip/status）
+    // 通用「受限会话」表：sessionId → { label, tools: Set<toolName> }。
+    // 为什么要通用：空间工作区、看视频的地方这类「只做一件事」的系统会话各有各的一套工具，
+    // 不能共用一张写死的白名单，也不该每加一个插件就改一次内核。
+    scopedSessions: new Map(),
     dataDir,
     configPath,
     archive,
@@ -540,6 +544,23 @@ export async function apply(ctx, bundleConfig = {}) {
     state,
     onebot,
     maintSessionIds: kernel.maintSessionIds,
+    /**
+     * 通用受限会话：插件给「系统自己用的会话」登记一套工具白名单。
+     * 登记后除白名单之外的一切工具都会被拒（连 send_message 都调不到）——
+     * 这是「让它在后台干活，但别顺手往群里发东西」的硬约束。
+     * @param {string} sessionId DSH 会话 id
+     * @param {string} label 排错用的人类可读名（出现在报错里）
+     * @param {Iterable<string>} tools 允许的工具名（带不带 mcp 前缀都认）
+     */
+    markScope: (sessionId, label, tools) => {
+      const id = String(sessionId || '')
+      if (!id) return
+      // 允许传带前缀的名字（mcp__qq__report_watched），统一剥成裸名再存
+      const set = new Set([...(tools || [])].map((t) => String(t).replace(/^.*__/, '')).filter(Boolean))
+      kernel.scopedSessions.set(id, { label: String(label || id), tools: set })
+    },
+    clearScope: (sessionId) => kernel.scopedSessions.delete(String(sessionId || '')),
+    scopeOf: (sessionId) => kernel.scopedSessions.get(String(sessionId || '')) || null,
   })
   kernel.dsh = dsh
 
@@ -929,6 +950,11 @@ export async function apply(ctx, bundleConfig = {}) {
             const isDesk = kernel.deskSessionIds.has(sid)
             if (isDesk && !DESK_ALLOWED_TOOLS.has(toolName)) {
               throw new Error('空间工作区只允许调用 post_qzone / skip_qzone / qzone_status（这里不发聊天消息）')
+            }
+            // 通用受限会话（见 coreOf().markScope）：白名单之外一律拒
+            const scope = kernel.scopedSessions.get(sid)
+            if (scope && !scope.tools.has(toolName)) {
+              throw new Error('「' + scope.label + '」只允许调用 ' + [...scope.tools].join(' / ') + '（这里不能调用 ' + toolName + '）')
             }
             if (isMaint && !MAINT_ALLOWED_TOOLS.has(toolName)) {
               throw new Error(`后台任务只允许调用 ${[...MAINT_ALLOWED_TOOLS].join('/')}（提交群记忆要点），不要调用其它工具`)

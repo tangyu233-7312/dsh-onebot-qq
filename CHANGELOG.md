@@ -75,7 +75,7 @@
   `toNapCatFileRef` / `fromNapCatFileRef` → `toOneBotFileRef` / `fromOneBotFileRef`，内部 `checkNapcat` → `checkOneBot`；
   测试用假协议端 `test/fake-napcat.mjs` → `test/fake-onebot.mjs`。
 - **日志前缀与验收串**：`[onebot-qq:napcat]` → `[onebot-qq:onebot]`，`NapCat WS 已连接` → `OneBot WS 已连接` 等。
-  ⚠️ **外部脚本要跟着改**：部署机上的监控/巡检脚本（取 `onebot.httpToken`，旧键兜底）与同步脚本（校验新文件名）已同步；
+  ⚠️ **外部脚本要跟着改**：自建的监控/巡检脚本（取 `onebot.httpToken`，旧键兜底）与同步脚本（校验新文件名）需同步；
   自建的监控/巡检若 grep 过 `NapCat WS 已连接`，改成 `OneBot WS 已连接`。
 - 文档、示例配置、`locale`、诊断项、CLI 输出同步为 `onebot.*`。仓库内旧实现名仅剩两处：兼容旧键的字面量（`applyOneBotLegacyKey` 内）与一条防回归守卫测试。
 - 测试 269/269（新增「旧键兼容」2 条：只写旧键能读、两键并存时新键优先）。

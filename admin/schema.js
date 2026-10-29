@@ -403,6 +403,13 @@ export const ACTIONS = [
   { id: 'reset-session', hidden: true, group: '隐藏', label: '重置单条会话', hint: '内部动作：{id:"reset-session", chat:"group:<群号>"}' },
   { id: 'welcome-images', hidden: true, group: '隐藏', label: '入群欢迎图片池', hint: '内部动作：列图片池目录' },
   { id: 'welcome-test', hidden: true, group: '隐藏', label: '模拟入群欢迎', hint: '内部动作：{id:"welcome-test", group_id, confirm?}' },
+
+  // 自己找视频看：按钮长在它自己的配置页底部（onGroup = 不在「运维」页重复出现）
+  {
+    id: 'wander-run-now', group: '自己找视频看', onGroup: true, label: '🎬 立刻看一个',
+    hint: '马上挑一个 B 站视频看一遍，把感想私聊发给你。异步执行（下载 + 抽帧 + 写感想要一两分钟），'
+      + '点完去看「看视频的地方」会话。',
+  },
 ]
 
 /** 控制台「运维」页要渲染的动作按钮（过滤隐藏项；confirm 透传给前端二次确认）。 */
