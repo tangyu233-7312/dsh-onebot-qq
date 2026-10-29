@@ -265,6 +265,59 @@ export const CORE_CONTROLS = [
     default: [],
     hint: '群号列表（空 = 没有群允许主动接话）。推荐在「群聊」页每张群卡片勾「允许主动接话」；这里和群卡片改的是同一份配置。',
   },
+  // ── 私聊主动接话：与群聊分开开关，默认关 ────────────────────────
+  {
+    key: 'pacing.reply.privateEnabled', group: '主动接话', section: '私聊主动接话', type: 'bool', label: '私聊也能主动接话', default: false,
+    hint: '开 = 一对一私聊里，对方有一阵没说话时可以自己起个话头（不必等你先开口）。\n'
+      + '私聊里「没人叫却开口」更容易显得打扰，所以默认间隔比群聊保守：2 小时没说话才考虑、每小时最多 1 次、每天最多 3 次；'
+      + '数值都在下面几项里改。总开关（允许主动接话）关掉时它也不工作；静默时段内同样不开口。',
+  },
+  {
+    key: 'pacing.reply.privateFriendsOnly', group: '主动接话', section: '私聊主动接话', type: 'bool', label: '私聊只对好友开口', default: true,
+    hint: '开（推荐）：只对「好友名单」里的人主动发消息；名单取不到（协议端超时）时本轮一个都不开口，宁可不发也不群发。\n'
+      + '关：白名单里的人都算——陌生人的临时会话也可能收到主动消息，一般不要关。',
+  },
+  {
+    key: 'pacing.reply.privateColdSilenceMs', group: '主动接话', section: '私聊主动接话', type: 'int', label: '私聊安静多久才考虑开口', unit: '分钟',
+    scale: 60000, min: 10, max: 1440, step: 10, default: 7200000,
+    hint: '上一次说话（含它自己的回复）之后，超过这么久没动静才会考虑主动发一条。默认 120 分钟。',
+  },
+  {
+    key: 'pacing.reply.privateHourlyMax', group: '主动接话', section: '私聊主动接话', type: 'int', label: '每个私聊每小时最多', unit: '次',
+    min: 0, max: 5, step: 1, default: 1,
+    hint: '单个私聊每小时最多主动几次；0 = 不主动。和「每天最多」「两次至少间隔」一起，三个闸门都满足才开口。',
+  },
+  {
+    key: 'pacing.reply.privateMaxPerDay', group: '主动接话', section: '私聊主动接话', type: 'int', label: '每个私聊每天最多', unit: '次',
+    min: 0, max: 20, step: 1, default: 3,
+    hint: '单个私聊一天（滚动 24 小时）最多主动几次。',
+  },
+  {
+    key: 'pacing.reply.privateMinGapMs', group: '主动接话', section: '私聊主动接话', type: 'int', label: '两次主动至少间隔', unit: '分钟',
+    scale: 60000, min: 30, max: 1440, step: 30, default: 10800000,
+    hint: '同一个私聊两次主动消息之间至少隔这么久（默认 180 分钟）。',
+  },
+  {
+    key: 'pacing.reply.privateQqs', group: '主动接话', section: '私聊主动接话', advanced: true, type: 'group', label: '只对这些人主动（QQ 号，留空 = 全部好友）',
+    default: [],
+    hint: '留空 = 好友名单里的所有人都可能在冷场时收到主动消息；写了 QQ 号就只对这几个（逗号分隔）。',
+  },
+  // ── 静默时段：这段时间内不主动开口（被叫照常回）──────────────────
+  {
+    key: 'pacing.reply.quietEnabled', group: '主动接话', section: '静默时段', type: 'bool', label: '静默时段内不主动开口', default: true,
+    hint: '开（默认）：在下面这段小时数里，它不会主动起话头（群聊、私聊都停）；被 @ / 被叫时的正常回话不受影响。\n'
+      + '关：24 小时都可能主动开口。',
+  },
+  {
+    key: 'pacing.reply.quietStart', group: '主动接话', section: '静默时段', type: 'int', label: '静默开始', unit: '点',
+    min: 0, max: 23, step: 1, default: 0,
+    hint: '几点开始不主动说话（0~23）。默认 0 点；开始小于结束 = 跨零点区间。',
+  },
+  {
+    key: 'pacing.reply.quietEnd', group: '主动接话', section: '静默时段', type: 'int', label: '静默结束', unit: '点',
+    min: 0, max: 24, step: 1, default: 7,
+    hint: '几点恢复主动说话（0~24）。默认 7 点。起止相同 = 不启用静默。',
+  },
   {
     key: 'pacing.reply.style.splitEnabled', group: '主动接话', type: 'bool', label: '拆条（先短反应再补正话）', default: true,
     hint: '小概率把一条回复拆成两条发（先丢个短反应、隔一会儿补正话），治“每条一个路子”的机器感。',
@@ -570,6 +623,11 @@ function panelValue(entry, rawConfig, kernel) {
   const stored = storedValue(entry, rawConfig, kernel)
   let value = stored === undefined ? entry.default : stored
   if (entry.secret && value) return SECRET_MASK
+  // 列表型（group）：配置里既可能是数组，也可能是 {"编号": true} 这种对象写法（如 pacing.reply.privateQqs），
+  // 面板一律显示成数组，否则前端 join 会得到 "[object Object]"
+  if (entry.type === 'group' && value && typeof value === 'object' && !Array.isArray(value)) {
+    return Object.entries(value).filter(([, on]) => on === true).map(([k]) => k)
+  }
   if (entry.kind === 'core' && entry.scale !== 1 && typeof value === 'number' && Number.isFinite(value)) {
     return round3(value / entry.scale)
   }

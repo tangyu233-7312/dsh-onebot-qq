@@ -1146,24 +1146,39 @@ export async function apply(ctx, bundleConfig = {}) {
   }
 
   // ── 主动接话：没入站也能起一轮候选（走正规管线语义，出站不 @ 不引用由 decorate 钩子硬挡） ──
-  const runProactiveTurn = async ({ chatKey, groupId, reason, humanMsgs, quoteTo }) => {
+  const runProactiveTurn = async ({ chatKey, groupId, reason, humanMsgs, quoteTo, isGroup }) => {
     const isContinuation = reason === 'continuation'
+    // 群聊 / 私聊都走这里：isGroup 由 pacing 传下来，
+    // 缺省时按 chatKey 前缀推断（老的调用点只传 chatKey/groupId）
+    const groupChat = isGroup != null ? !!isGroup : String(chatKey).startsWith('group:')
+    const isPrivateChat = !groupChat
     const ev = createEvent({
-      chatKey, isGroup: true, groupId,
+      chatKey,
+      isGroup: groupChat,
+      groupId: groupChat ? groupId : null,
       messageId: null,
-      sender: { qq: 0, name: '', card: null, isMaster: false },
+      // 主动轮的触发不是「某个人发的消息」，两种场景都不挂说话人前缀；
+      // 私聊仍带上对方 QQ，让门禁 / 人设插件能认出「这是谁」，而不是一个匿名 0
+      sender: { qq: isPrivateChat ? (Number(String(chatKey).slice(8)) || 0) : 0, name: '', card: null, isMaster: false },
       text: '', time: Date.now(),
     })
     ev.wake = { kind: isContinuation ? 'continuation' : 'proactive', reason }
+    if (isPrivateChat) ev.wake.chatType = 'private'
     ev._scratch.silentFailure = true
     // 连续对话：给模型一个"刚才聊过、现在要不要补一句"的语境，并明确允许什么都不做
     ev.hint.push(isContinuation
-      ? `[续聊检查:你刚回过话,之后群里又有 ${Number(humanMsgs) || 0} 条新消息(见上文);想补一句就正常发一条,不想补就什么都别做,这轮不发也没关系]`
-      : reason === 'silence'
-        ? '[主动接话:群里安静一会儿了,可以起个话头或接上一个话题,像群友随口一句;不想说就别发]'
-        : '[主动接话:没人叫你,群里正聊着;想接就自然接一句,不想说这轮就别调发送工具]')
+      ? `[续聊检查:你刚回过话,之后${isPrivateChat ? '对方' : '群里'}又有 ${Number(humanMsgs) || 0} 条新消息(见上文);想补一句就正常发一条,不想补就什么都别做,这轮不发也没关系]`
+      : isPrivateChat
+        // 私聊主动接话：没有「别人在聊」可以插，只有「对方很久没说话了」这一个理由
+        ? '[主动接话:这是私聊,对方已经有一会儿没说话了。可以顺着上文轻轻提一句(关心的、好玩的、或者之前没说完的事),'
+          + '像熟人随手发条消息;不要追问对方为什么不回、不要连发、不要像客服。不想说就别调发送工具,这轮不发完全没关系]'
+        : reason === 'silence'
+          ? '[主动接话:群里安静一会儿了,可以起个话头或接上一个话题,像群友随口一句;不想说就别发]'
+          : '[主动接话:没人叫你,群里正聊着;想接就自然接一句,不想说这轮就别调发送工具]')
+    // 私聊没有「群上文」可拉（协议端也没有私聊历史接口）：上下文来自 DSH 会话本身，
+    // 所以这里只对群拉上文，私聊直接跳过，别去调一个必然失败的接口。
     const ctxCount = Number(runtime.outbound?.groupContextCount ?? runtime.groupContextCount ?? 5)
-    if (ctxCount > 0 && typeof dsh.fetchGroupContext === 'function') {
+    if (groupChat && ctxCount > 0 && typeof dsh.fetchGroupContext === 'function') {
       try {
         const block = await dsh.fetchGroupContext(ev, ctxCount)
         if (block) ev.historyBlock = block.replace(/^\n+/, '')
@@ -1173,12 +1188,14 @@ export async function apply(ctx, bundleConfig = {}) {
     // 续聊可选「引用最后一条人类消息」：把目标 message_id 带进本轮，出站钩子①会用它（其它轮一律清掉）
     if (isContinuation && quoteTo) ev.turnCtx._forceReplyTo = Number(quoteTo) || null
     holdActiveTurn(chatKey, ev.turnCtx)
-    log.info(`[${isContinuation ? '连续对话' : '主动接话'}] ${chatKey} 候选入站（${isContinuation ? '续聊检查' : reason === 'silence' ? '冷场找话' : '话题合适'}）→ 交模型判断接不接`)
+    log.info(`[${isContinuation ? '连续对话' : '主动接话'}] ${chatKey} 候选入站（${isContinuation ? '续聊检查' : isPrivateChat ? '私聊冷场' : reason === 'silence' ? '冷场找话' : '话题合适'}）→ 交模型判断接不接`)
     return turnStore.run(ev.turnCtx, () => state.serialize(ev.chatKey, () => runTurn(ev)))
   }
   pacing.start({
     onProactiveTurn: runProactiveTurn,
     isBusy: (chatKey) => kernel.activeTurns.has(String(chatKey)) || hasPendingTurn(String(chatKey)),
+    // 私聊主动接话的「只对好友开口」：好友名单走白名单视图
+    friendList: () => onebot.friendList(),
   })
 
   // 冷场判据的"起点"：开机时把每个允许主动接话的群的**最后一条消息时间**播种进 ChatState。

@@ -3,7 +3,7 @@
  *
  * 一块是时间维度、一块是"要不要自己开口"，都只有内核知道：
  *   · 合批：同群几百毫秒内的多条**被叫**消息并成一​轮（省 token，也更像"等别人说完"）
- *   · 主动接话：没人叫也偶尔接一句。一次"机会"= 最多一轮模型调用；
+ *   · 主动接话：没人叫也偶尔接一句（群聊 / 私聊都适用）。一次"机会"= 最多一轮模型调用；
  *     到点后等一个**合适的时机**（按语境打分），拿不到就放弃这一次，绝不硬凑。
  *     命中后发一条**候选入站**给模型，由模型自己判断接不接（不调发送工具 = 不接）。
  *
@@ -36,6 +36,20 @@ export const REPLY_DEFAULTS = {
   sensitivity: 0.45,         // 语境敏感度 0~1（越高越挑"值得接"的时机）
   maxChars: 140,             // 主动接话单条字数上限（提示用；超了照发但记日志）
   groups: [],                // 允许主动接话的群号（数组或 {"群号": true} 对象都认）
+  // 静默时段（2026-10-27 线下加的，此前**只在 NAS 生产副本里**，2026-10-29 回流进仓库以生产为准）：
+  // 这段时间内不起念、不主动开口；被 @ / 被叫时的正常回话不受影响。
+  quietEnabled: true,        // 静默时段内不主动接话（被叫照常回）
+  quietStart: 0,             // 静默开始（小时 0~23）
+  quietEnd: 7,               // 静默结束（小时 0~24；小于开始 = 跨零点）
+  // 私聊主动接话（2026-10-29）：对方一段时间没说话，可以自己起个话头。
+  // 社交默认值比群聊保守得多 —— 私聊里"没人叫却开口"更容易显得打扰，所以间隔更长、冷场更久。
+  privateEnabled: false,     // 总开关（默认关；只在「允许主动接话」也开时生效）
+  privateQqs: [],            // 允许主动接话的 QQ 号（数组或 {"QQ号": true} 都认；空 = 全部好友）
+  privateFriendsOnly: true,  // 只对好友开口（协议端 get_friend_list；取不到名单 = 一个都不开口）
+  privateColdSilenceMs: 7200000, // 私聊冷场阈值：对方多久没说话才算"该主动找一句"（2 小时）
+  privateHourlyMax: 1,       // 每个私聊每小时最多几次（内部闸门，比群聊更严）
+  privateMaxPerDay: 3,       // 每个私聊每天最多几次（内部闸门）
+  privateMinGapMs: 10800000, // 两次之间至少隔多久（3 小时）
   // 连续对话（2026-10-27）：被真人叫过、且它回过话之后，等一会儿把这期间的新消息塞回模型再判一次。
   // 只暴露 enabled / delayMs / bonus 三个到控制台；其余是防"自己转"的内部闸门（改这里就够了）。
   continuation: {
@@ -113,6 +127,13 @@ function normalize(rawPacing) {
   } else if (r.groups && typeof r.groups === 'object') {
     for (const [g, on] of Object.entries(r.groups)) if (on === true) groups[String(g)] = true
   }
+  // 私聊白名单：与 groups 同一种写法（数组或 {qq: true}）
+  const privateQqs = {}
+  if (Array.isArray(r.privateQqs)) {
+    for (const q of r.privateQqs) if (String(q || '').trim()) privateQqs[String(q).trim()] = true
+  } else if (r.privateQqs && typeof r.privateQqs === 'object') {
+    for (const [q, on] of Object.entries(r.privateQqs)) if (on === true) privateQqs[String(q)] = true
+  }
   const m = p.merge && typeof p.merge === 'object' ? p.merge : {}
   return {
     reply: {
@@ -122,6 +143,7 @@ function normalize(rawPacing) {
       weights: { ...REPLY_DEFAULTS.weights, ...weights },
       continuation: { ...REPLY_DEFAULTS.continuation, ...(r.continuation && typeof r.continuation === 'object' ? r.continuation : {}) },
       groups,
+      privateQqs,
     },
     merge: { ...MERGE_DEFAULTS, ...m },
   }
@@ -142,6 +164,9 @@ export function createPacing({ log = console, state, clock = null }) {
   let timer = null
   let onProactiveTurn = null
   let isBusy = () => false
+  let wasQuiet = false      // 静默时段状态（进/出各打一行日志，别每 30s 刷）
+  // 宿主注入给 pacing 的只读能力（好友名单等）。缺了就是"没有"，不抛错。
+  const hostHooks = { friendList: null }
 
   // ── 合批 ────────────────────────────────────────────────────
   const pending = new Map()  // chatKey → { evs, firstAt, timer, run }
@@ -165,6 +190,41 @@ export function createPacing({ log = console, state, clock = null }) {
   /** 当前生效的群集合（Set<群号字符串>） */
   function allowedGroups() {
     return new Set(Object.keys(cfg.reply.groups || {}))
+  }
+
+  /** 私聊主动接话的 QQ 集合（空 = 不按人筛，靠 friendsOnly 把关） */
+  function allowedPrivate() {
+    return new Set(Object.keys(cfg.reply.privateQqs || {}))
+  }
+
+  // 好友名单缓存（只为"私聊只对好友开口"这件事服务；懒加载 + 5 分钟 TTL）
+  let friendsCache = { at: 0, ids: new Set(), ok: false }
+  async function friendIds() {
+    if (friendsCache.at && nowMs() - friendsCache.at < 5 * 60000) return friendsCache
+    const fn = hostHooks.friendList
+    if (typeof fn !== 'function') return friendsCache
+    try {
+      const list = await fn()
+      const ids = new Set((Array.isArray(list) ? list : [])
+        .map((f) => Number(f?.user_id ?? f?.qq ?? f))
+        .filter((q) => Number.isInteger(q) && q > 0))
+      friendsCache = { at: nowMs(), ids, ok: true }
+    } catch (e) {
+      // 取不到名单 ≠ 全是好友：保持空集合，宁可这次不开口
+      log.debug(`[主动接话] 好友名单取不到，私聊暂不开口: ${e.message}`)
+    }
+    return friendsCache
+  }
+
+  /** 这个 QQ 号能不能被主动私聊（白名单 +`好友闸门`） */
+  async function privateAllowed(qq) {
+    const id = String(qq || '')
+    if (!/^\d{4,12}$/.test(id)) return false
+    const allow = allowedPrivate()
+    if (allow.size && !allow.has(id)) return false
+    if (cfg.reply.privateFriendsOnly === false) return true
+    const f = await friendIds()
+    return f.ok && f.ids.has(Number(id))
   }
 
   /** 写一条进"最近群消息环"（只收允许主动接话的群；自检也用它造样本） */
@@ -277,19 +337,45 @@ export function createPacing({ log = console, state, clock = null }) {
     return o
   }
 
+  /**
+   * 是否处于「静默时段」（回流自 NAS 生产副本，2026-10-27）。
+   *
+   * 为什么放内核而不是写死人设：主动接话是**内核调度**决定的，跟模型无关；
+   * 人设只能劝模型，拦不住定时器起念。这里拦在 fire() 之前才真的不开口。
+   *
+   * 支持跨零点：quietStart > quietEnd 时（如 23 → 7）判断为 `h >= s || h < e`。
+   * 起止相同 = 不启用静默。
+   * @param {number} [now] 毫秒时间戳（自检可钉住时间）
+   */
+  function inQuietHours(now) {
+    if (cfg.reply.quietEnabled === false) return false
+    const s = Math.max(0, Math.min(23, Math.round(num(cfg.reply.quietStart, 0))))
+    const e = Math.max(0, Math.min(24, Math.round(num(cfg.reply.quietEnd, 7))))
+    if (s === e) return false
+    const h = new Date(Number.isFinite(now) ? now : nowMs()).getHours()
+    return s < e ? (h >= s && h < e) : (h >= s || h < e)
+  }
+
   /** 真正起一轮主动接话：先记账（防止模型/失败反复触发），再交给内核起回合 */
   function fire(chatKey, gid, reason, score) {
+    // 静默时段：不主动开口（被叫时的回话不走这里，不受影响）
+    if (inQuietHours()) {
+      log.debug(`[主动接话] ${chatKey} 处于静默时段，跳过（${reason}）`)
+      return
+    }
     const o = oppOf(chatKey)
     const now = nowMs()
     o.windowUntil = 0
     o.dueAt = now + opportunityGapMs()
     o.fired += 1
-    fired.push({ at: now, chatKey, gid, reason, score: Number(score) || 0, sent: false })
+    // kind：这条机会是群（group）还是私聊（private）——控制台"最近"与统计都按它分开展示
+    const isPrivate = String(chatKey).startsWith('private:')
+    fired.push({ at: now, chatKey, gid, kind: isPrivate ? 'private' : 'group', reason, score: Number(score) || 0, sent: false })
     while (fired.length > 30) fired.shift()
-    log.info(`[主动接话] ${chatKey} 起念（${reason === 'silence' ? '冷场找话' : '话题合适'}，兴趣分 ${(Number(score) * 100).toFixed(0)}%）`)
+    log.info(`[主动接话] ${chatKey} 起念（${isPrivate ? '私聊·' : ''}${reason === 'silence' ? '冷场找话' : '话题合适'}，兴趣分 ${(Number(score) * 100).toFixed(0)}%）`)
     if (typeof onProactiveTurn !== 'function') return
     Promise.resolve()
-      .then(() => onProactiveTurn({ chatKey, groupId: gid, reason, score }))
+      .then(() => onProactiveTurn({ chatKey, groupId: gid, isGroup: !isPrivate, reason, score }))
       .catch((e) => log.error(`[主动接话] 起回合失败 ${chatKey}: ${e.stack || e.message}`))
   }
 
@@ -299,6 +385,7 @@ export function createPacing({ log = console, state, clock = null }) {
    */
   function consider(ev) {
     if (!cfg.reply.enabled || num(cfg.reply.hourlyMax, 0) <= 0) return
+    if (inQuietHours()) return // 静默时段：连评分都不做，省算力（私聊也一起停）
     if (!ev?.isGroup) return
     const key = String(ev.chatKey ?? '')
     if (!key) return
@@ -310,9 +397,11 @@ export function createPacing({ log = console, state, clock = null }) {
     const o = ensureWindow(key, now)
     if (!o) return
     const text = String(ev.text || '').trim()
-    // 窗口里至少得有几条消息才按"话题"挑时机：单条孤零零的消息不接（冷场路径另算）
+    // 窗口里至少得有几条消息才按"话题"挑时机：单条孤零零的消息不接（冷场路径另算）。
+    // 私聊例外：一对一对话本来就话少，n 句话就是一整段对话 —— 只要有一条就够判。
+    const need = Math.max(1, ev.isGroup ? num(cfg.reply.topicMinMsgs, 3) : 1)
     const recent = (rings.get(key) || []).filter((m) => now - m.ts < Math.max(60000, num(cfg.reply.topicWindowMs, 600000) / 2))
-    if (recent.length < Math.max(1, num(cfg.reply.topicMinMsgs, 3))) return
+    if (recent.length < need) return
     const last = recent[recent.length - 1]
     // 纯表情/图/太短的：不按话题接（分值也会很低，这里先挡一道省计算）
     if (!text || last?.placeholderOnly || last?.short) return
@@ -422,6 +511,29 @@ export function createPacing({ log = console, state, clock = null }) {
   /** 冷场：到点了、群又安静够久 → 直接起一轮"找话"（不等消息） */
   function tickSilence(now) {
     if (!cfg.reply.enabled || num(cfg.reply.hourlyMax, 0) <= 0 || !onProactiveTurn) return
+    // 静默时段：不起念，并把「到点时间」一路推后，
+    // 免得静默一结束就补发一条（用户要的是"这段时间别说话"，不是"攒着说"）。
+    if (inQuietHours(now)) {
+      if (!wasQuiet) {
+        wasQuiet = true
+        log.info(`[主动接话] 进入静默时段（${num(cfg.reply.quietStart, 0)}:00~${num(cfg.reply.quietEnd, 7)}:00），暂停主动接话`)
+      }
+      for (const gid of allowedGroups()) {
+        const o = oppOf(`group:${gid}`)
+        o.windowUntil = 0
+        o.dueAt = now + opportunityGapMs()
+      }
+      for (const qq of allowedPrivate()) {
+        const o = oppOf(`private:${qq}`)
+        o.windowUntil = 0
+        o.dueAt = now + opportunityGapMs()
+      }
+      return
+    }
+    if (wasQuiet) {
+      wasQuiet = false
+      log.info('[主动接话] 离开静默时段，重新计时')
+    }
     for (const gid of allowedGroups()) {
       const key = `group:${gid}`
       const st = state.get(key)
@@ -433,12 +545,83 @@ export function createPacing({ log = console, state, clock = null }) {
       o.windowUntil = now // 立即用掉窗口，避免下个 tick 重复
       fire(key, gid, 'silence', 1)
     }
+    if (privateEnabled()) tickPrivateSilence(now)
   }
 
-  /** 定时器入口：冷场找话（可选）+ 连续对话（可选） */
+  // ── 私聊主动接话（2026-10-29）────────────────────────────────
+  // 与群聊的区别：私聊没有"上下文在流动"可判断，只剩"对方多久没说话"这一个信号。
+  // 所以只看冷场 + 自己的三条闸门（每小时 / 每天 / 最小间隔），不参与话题打分。
+  const privateRings = new Map() // qq → [ts…]（最近几个 tick 的判定记录，只用于控制台/日志）
+
+  /** 私聊主动接话总开关：外层总闸 + 私聊开关 */
+  function privateEnabled() {
+    return cfg.reply.enabled !== false && cfg.reply.privateEnabled === true
+  }
+
+  /** 单个私聊的配额是否还有（每小时 / 每天 / 最小间隔） */
+  function privateQuotaOk(qq, now) {
+    const fires = (privateRings.get(qq) || []).filter((t) => now - t < 24 * HOUR)
+    privateRings.set(qq, fires)
+    const lastHour = fires.filter((t) => now - t < HOUR).length
+    if (lastHour >= Math.max(0, num(cfg.reply.privateHourlyMax, 1))) return false
+    if (fires.length >= Math.max(0, num(cfg.reply.privateMaxPerDay, 3))) return false
+    const last = fires[fires.length - 1] || 0
+    if (last && now - last < Math.max(60000, num(cfg.reply.privateMinGapMs, 3 * HOUR))) return false
+    return true
+  }
+
+  /** 私聊冷场轮询：对每个"说过话的私聊"看是不是静太久了 */
+  function tickPrivateSilence(now) {
+    const coldMs = Math.max(60000, num(cfg.reply.privateColdSilenceMs, 2 * HOUR))
+    // state.keys() 是 ChatState 的 map 键（group:xxx / private:xxx）；没有 keys() 的桩一律不扫
+    const allKeys = typeof state.keys === 'function' ? [...state.keys()] : []
+    for (const key of allKeys) {
+      if (!String(key).startsWith('private:')) continue
+      const qq = String(key).slice(8)
+      const st = state.get(key)
+      const lastAt = Number(st.lastInboundAt || 0)
+      // 从没说过话 / 刚被回复过 都从"它时间线"算：取最近一次入站与出站里较晚的那个
+      const lastTouch = Math.max(lastAt, Number(st.lastSendAt || 0))
+      if (!lastTouch || now - lastTouch < coldMs) continue
+      if (isBusy(key) || contPending(key)) continue
+      if (!privateQuotaOk(qq, now)) continue // 配额便宜的检查放前面，好友名单要联网所以放后面
+      if (typeof onProactiveTurn !== 'function') continue
+      // 当天最晚一条由核心循环统一判（这里只筛选"静太久了"）
+      privateBeforeFire(qq, key, now)
+    }
+  }
+
+  /**
+   * 私聊起念前的最后一道闸：好友名单是异步的 → 先在这里 await，通过了再 fire。
+   * 用"占位时间戳"防止同一 tick 里重复排（每次 tick 30 秒，重复排队会连发）。
+   */
+  let privatePending = new Set()
+  function privateBeforeFire(qq, key, now) {
+    if (privatePending.has(qq)) return
+    privatePending.add(qq)
+    Promise.resolve()
+      .then(() => privateAllowed(qq))
+      .then((ok) => {
+        if (!ok) {
+          log.debug(`[主动接话] 私聊 ${key} 不在白名单/已不是好友 → 不开口`)
+          return
+        }
+        // 先记一条"已开口"的时间戳（配额就是靠它算的），再起回合
+        const stamps = privateRings.get(qq) || []
+        stamps.push(nowMs())
+        privateRings.set(qq, stamps)
+        fire(key, qq, 'private-silence', 1)
+      })
+      .catch((e) => log.error(`[主动接话] 私聊起念失败 ${key}: ${e.stack || e.message}`))
+      .finally(() => { privatePending.delete(qq) })
+  }
+
+  /** 定时器入口：冷场找话（群 + 私聊，可选）+ 连续对话（可选） */
   function tick() {
     const now = nowMs()
+    // 群冷场开关关掉时，私聊冷场仍要单独跑（两者是不同场景，不该互相拖累）
     if (silenceOn()) tickSilence(now)
+    else if (privateEnabled()) tickPrivateSilence(now)
     tickContinuation(now)
   }
 
@@ -449,11 +632,14 @@ export function createPacing({ log = console, state, clock = null }) {
   function start(opts = {}) {
     if (typeof opts.onProactiveTurn === 'function') onProactiveTurn = opts.onProactiveTurn
     if (typeof opts.isBusy === 'function') isBusy = opts.isBusy
+    if (typeof opts.friendList === 'function') hostHooks.friendList = opts.friendList
     if (timer) clearInterval(timer)
     timer = null
     if (!proactiveEnabled()) return null
-    // 冷场找话与连续对话都关掉时不需要定时器：接话机会只由入站消息触发（topic 路径）
-    if (!silenceOn() && !cfg.reply.continuation.enabled) return null
+    // 冷场找话、连续对话、私聊冷场三者都关掉时不需要定时器：接话机会只由入站消息触发（topic 路径）
+    // 私聊冷场挂在 tickSilence 里，但它独立于「群冷场找话」开关 —— 两个都要算进"要不要装定时器"
+    const needPrivate = privateEnabled() && cfg.reply.privateFriendsOnly === false // 好友闸门要联网，放 tick 里做
+    if (!silenceOn() && !cfg.reply.continuation.enabled && !needPrivate) return null
     timer = setInterval(() => {
       try { tick() } catch (e) { log.error(`[主动接话] tick 异常: ${e.message}`) }
     }, 30000)
@@ -533,11 +719,13 @@ export function createPacing({ log = console, state, clock = null }) {
     cfg = normalize(pacingCfg)
     // 群集合变了：清掉不再允许的群的调度状态（防止旧群继续按旧间隔起念）
     const allow = allowedGroups()
+    // 私聊 key（private:xxx）不归群白名单管，只清 group:*，否则私聊机会每改一次配置就被抹掉
+    const staleGroup = (key) => String(key).startsWith('group:') && !allow.has(String(key).replace(/^group:/, ''))
     for (const key of [...opp.keys()]) {
-      if (!allow.has(key.replace(/^group:/, ''))) opp.delete(key)
+      if (staleGroup(key)) opp.delete(key)
     }
     for (const key of [...rings.keys()]) {
-      if (!allow.has(key.replace(/^group:/, ''))) rings.delete(key)
+      if (staleGroup(key)) rings.delete(key)
     }
     // 开关热更新：开了就装调度，关了就连定时器一起停（不空跑）
     if (proactiveEnabled() && !timer && onProactiveTurn) start()
@@ -551,7 +739,11 @@ export function createPacing({ log = console, state, clock = null }) {
       log.info(`节奏：主动接话=${r.enabled && r.hourlyMax > 0 ? '开' : '关'}`
         + `（每小时≤${r.hourlyMax}次，间隔≥${Math.round(opportunityGapMs() / 60000)}分钟，`
         + (silenceOn() ? `冷场≥${Math.round(num(r.coldSilenceMs, 300000) / 60000)}分钟` : '只在群里有新消息时接')
-        + `，敏感度${Math.round(clamp01(r.sensitivity) * 100)}%，群${Object.keys(r.groups).join('/') || '（无）'}）`
+        + `，敏感度${Math.round(clamp01(r.sensitivity) * 100)}%，群${Object.keys(r.groups).join('/') || '（无）'}`
+        + (privateEnabled()
+          ? `，私聊=开（冷场≥${Math.round(num(r.privateColdSilenceMs, 2 * HOUR) / 60000)}分钟，每私聊≤${r.privateHourlyMax}次/时、${r.privateMaxPerDay}次/天，${Object.keys(r.privateQqs || {}).join('/') || '全部好友'}）`
+          : '，私聊=关')
+        + '）'
         + ` 合批=${cfg.merge.enabled ? '开' : '关'}(${num(cfg.merge.windowMs, 800)}/${num(cfg.merge.windowActiveMs, 4000)}ms 冷清/在聊)`)
     } catch { /* 日志失败不影响配置生效 */ }
     return cfg
@@ -590,6 +782,12 @@ export function createPacing({ log = console, state, clock = null }) {
     return {
       ok: true,
       enabled: proactiveEnabled(),
+      quiet: {
+        enabled: cfg.reply.quietEnabled !== false,
+        start: num(cfg.reply.quietStart, 0),
+        end: num(cfg.reply.quietEnd, 7),
+        active: inQuietHours(),
+      },
       hourlyMax: Math.max(0, num(cfg.reply.hourlyMax, 0)),
       minGapMs: opportunityGapMs(),
       sensitivity: clamp01(cfg.reply.sensitivity),
@@ -601,9 +799,22 @@ export function createPacing({ log = console, state, clock = null }) {
         pending: [...cont.keys()].length,
         firedThisHour: [...contFires.values()].reduce((n, list) => n + list.filter((t) => now - t < HOUR).length, 0),
       },
+      // 私聊主动接话：开关 + 最近开口过的私聊（控制台「主动接话」页展示）
+      private: {
+        enabled: privateEnabled(),
+        friendsOnly: cfg.reply.privateFriendsOnly !== false,
+        qqs: [...allowedPrivate()],
+        coldSilenceMs: Math.max(60000, num(cfg.reply.privateColdSilenceMs, 2 * HOUR)),
+        hourlyMax: Math.max(0, num(cfg.reply.privateHourlyMax, 1)),
+        maxPerDay: Math.max(0, num(cfg.reply.privateMaxPerDay, 3)),
+        minGapMs: Math.max(60000, num(cfg.reply.privateMinGapMs, 3 * HOUR)),
+        recent: fired.filter((e) => e.kind === 'private').slice(-6).reverse().map((e) => ({
+          at: e.at, qq: e.gid, reason: e.reason, sent: !!e.sent,
+        })),
+      },
       groups,
       recent: fired.slice(-8).reverse().map((e) => ({
-        at: e.at, groupId: e.gid, reason: e.reason, sent: !!e.sent, score: e.score,
+        at: e.at, kind: e.kind || 'group', groupId: e.gid, reason: e.reason, sent: !!e.sent, score: e.score,
       })),
     }
   }
@@ -617,6 +828,7 @@ export function createPacing({ log = console, state, clock = null }) {
     consider,
     interestFor,
     proactiveEnabled, allowedGroupIds, stats,
+    privateEnabled, allowedPrivateQqs: () => [...allowedPrivate()], privateAllowed,
     nextOpportunityAt: (chatKey) => {
       const o = opp.get(String(chatKey))
       return o && Number.isFinite(o.dueAt) ? o.dueAt : null

@@ -86,6 +86,18 @@ export function defaultConfig() {
         sensitivity: 0.45,
         maxChars: 140,
         groups: [],
+        // 静默时段（回流自 NAS 生产副本）：这段时间内不主动开口，被叫照常回
+        quietEnabled: true,
+        quietStart: 0,
+        quietEnd: 7,
+        // 私聊主动接话（2026-10-29）：默认关；开启后按"对方多久没说话"判断，比群聊保守
+        privateEnabled: false,
+        privateQqs: [],
+        privateFriendsOnly: true,
+        privateColdSilenceMs: 7200000,
+        privateHourlyMax: 1,
+        privateMaxPerDay: 3,
+        privateMinGapMs: 10800000,
         // 连续对话（只暴露 3 个可调项，其余是内部闸门；见 kernel/pacing.js 的同名默认值）
         continuation: {
           enabled: false,

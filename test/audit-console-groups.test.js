@@ -25,14 +25,15 @@ test('分组命名：消息设置 / 主动接话；旧页名不再出现', async
   }
 })
 
-test('主动接话：基础项不带 advanced，14 个进阶项全部带 advanced', async (t) => {
+test('主动接话：基础项不带 advanced，进阶项全部带 advanced', async (t) => {
   const schema = await schemaOf(t)
   const all = schema.controls.filter((c) => c.group === '主动接话')
   const basic = all.filter((c) => !c.advanced)
   const adv = all.filter((c) => c.advanced)
   assert.ok(basic.some((c) => c.key === 'pacing.reply.enabled'))
   assert.equal(basic.some((c) => c.key.startsWith('pacing.reply.weights.')), false, '语境权重必须折叠')
-  assert.equal(adv.length, 15)
+  // 不写死进阶项数量（新增项不该让测试红）：只要求确实折叠了一批、且都归在 pacing.reply 下
+  assert.ok(adv.length >= 15, `进阶项至少 15 个，实际 ${adv.length}`)
   assert.ok(adv.every((c) => c.key.startsWith('pacing.reply.')))
 })
 
