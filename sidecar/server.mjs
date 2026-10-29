@@ -341,11 +341,44 @@ async function directDownload(url, outDir) {
   }
 }
 
-async function extractFrames(file, { frames, maxSide, outDir }) {
+/**
+ * 请求里带的限制优先，配置文件只当默认值。
+ * 为什么要这样：插件（控制台）里的「最长看多久 / 抽几帧」是用户真正在调的东西，
+ * 侧车配置是部署时的兜底。原来这里只用 CFG，用户在控制台调多大都没用 ——
+ * 表现出来就是「我把上限调到 1500 秒了，676 秒的视频还是说太长」（2026-10-29 踩过）。
+ * 硬上限只是防失控：别让人填个 999999 把侧车挂在那儿下一整天。
+ */
+const HARD_CAP_SECONDS = 7200    // 2 小时
+const HARD_CAP_FRAMES = 24
+
+/**
+ * 动态抽帧：短视频少抽、长视频多抽。
+ * 为什么按时长走而不是固定：10 分钟的片子用 8 帧概括还行，11 分钟以上就开始"漏内容"了，
+ * 多给 3 帧能明显把"讲了哪几段"接上；而 1 分钟的小视频抽 11 帧纯属浪费（相邻帧几乎一样）。
+ * 阈值和帧数都由**插件传过来**（控制台可调），侧车只负责按实际时长选一个并卡硬上限。
+ */
+function pickFrames(durSec, { frames, framesLong, framesSplitSec }) {
+  const short = Number(frames) > 0 ? Math.round(Number(frames)) : CFG.maxFrames
+  const long = Number(framesLong) > 0 ? Math.round(Number(framesLong)) : short
+  const split = Number(framesSplitSec) > 0 ? Number(framesSplitSec) : 600
+  const want = Number(durSec) > split ? long : short
+  return Math.max(1, Math.min(HARD_CAP_FRAMES, want))
+}
+function limitOf(body) {
+  const wantSec = Number(body?.maxSeconds) > 0 ? Number(body.maxSeconds) : CFG.maxSeconds
+  const wantFrames = Number(body?.frames) > 0 ? Number(body.frames) : CFG.maxFrames
+  return {
+    seconds: Math.min(wantSec, HARD_CAP_SECONDS),
+    frames: Math.min(wantFrames, HARD_CAP_FRAMES),
+  }
+}
+
+async function extractFrames(file, { frames, framesLong, framesSplitSec, maxSide, outDir }) {
   if (!FFMPEG) return { ok: false, code: 'no_ffmpeg', error: '找不到 ffmpeg' }
   const duration = await probeDuration(file)
   if (!duration) return { ok: false, code: 'no_frames', error: 'ffprobe 读不出时长（不是视频？）' }
-  const n = Math.max(1, Math.min(CFG.maxFrames, Number(frames) || 8))
+  // 帧数按**实际时长**动态选（短视频少、长视频多），不再只看请求里那个固定值
+  const n = pickFrames(duration, { frames, framesLong, framesSplitSec })
   const side = Math.max(256, Math.min(2048, Number(maxSide) || 1024))
   const out = []
   for (let i = 0; i < n; i++) {
@@ -379,6 +412,8 @@ async function handleRead(body) {
   running++
   const jobDir = path.join(FRAME_DIR, `${Date.now().toString(36)}-${rand()}`)
   const dlDir = path.join(DL_DIR, `${Date.now().toString(36)}-${rand()}`)
+  // 本次请求实际生效的限制（请求优先，配置文件兜底，另有硬上限防失控）
+  const LIM = limitOf(body)
   let source = ''
   try {
     // ① 拿源文件
@@ -397,8 +432,8 @@ async function handleRead(body) {
       }
       const dur = await probeDuration(source)
       meta.durationSec = dur
-      if (dur > CFG.maxSeconds) {
-        return { ok: false, code: 'too_long', error: `视频 ${Math.round(dur)} 秒，超过上限 ${CFG.maxSeconds} 秒` }
+      if (dur > LIM.seconds) {
+        return { ok: false, code: 'too_long', error: `视频 ${Math.round(dur)} 秒，超过上限 ${LIM.seconds} 秒` }
       }
     } else {
       const allow = hostAllowed(url)
@@ -409,6 +444,10 @@ async function handleRead(body) {
         meta = hit.meta || { title: '', durationSec: 0, platform }
         source = hit.file
         log(`/read 复用 ${Math.round((nowMs() - hit.at) / 1000)} 秒前下载的文件（跳过重复下载）`)
+        // 复用也不能跳过时长检查：上一次可能是在别的 maxSeconds 下下过的
+        if (meta.durationSec > LIM.seconds) {
+          return { ok: false, code: 'too_long', error: `视频 ${Math.round(meta.durationSec)} 秒，超过上限 ${LIM.seconds} 秒` }
+        }
       } else {
         // 分流：B站/抖音 → yt-dlp（它认识这些平台）；其它直链（QQ CDN 等）→ 直接 fetch。
         // 之前一律走 yt-dlp，"multimedia.nt.qq.com.cn/download?appid=..." 会被当成文件名，
@@ -419,8 +458,8 @@ async function handleRead(body) {
           const m = await ytdlpMeta(url)
           if (!m) return { ok: false, code: 'nomatch', error: 'yt-dlp 认不出这个链接' }
           meta = m
-          if (meta.durationSec > CFG.maxSeconds) {
-            return { ok: false, code: 'too_long', error: `视频 ${Math.round(meta.durationSec)} 秒，超过上限 ${CFG.maxSeconds} 秒` }
+          if (meta.durationSec > LIM.seconds) {
+            return { ok: false, code: 'too_long', error: `视频 ${Math.round(meta.durationSec)} 秒，超过上限 ${LIM.seconds} 秒` }
           }
           await fsp.mkdir(dlDir, { recursive: true })
           dl = await ytdlpDownload(url, dlDir, { maxHeight: 480 })
@@ -443,7 +482,11 @@ async function handleRead(body) {
     // ② 抽帧
     await fsp.mkdir(jobDir, { recursive: true })
     const ext = await extractFrames(source, {
-      frames: body.frames, maxSide: body.maxSide, outDir: jobDir,
+      frames: LIM.frames,
+      framesLong: body.framesLong,
+      framesSplitSec: body.framesSplitSec,
+      maxSide: body.maxSide,
+      outDir: jobDir,
     })
     if (!ext.ok) return ext
     log(`/read ok ${platform} ${meta.durationSec || ext.durationSec}s → ${ext.frames.length} 帧`)

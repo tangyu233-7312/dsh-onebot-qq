@@ -200,9 +200,23 @@ export default {
         + '0 = 不接（只认「视频和 @ 在同一条消息里」以及「引用视频」两种）。',
     },
     frames: {
-      type: 'int', default: 8, min: 1, max: 12, step: 1, group: '文件与图片',
-      label: '抽几帧',
+      type: 'int', default: 8, min: 1, max: 24, step: 1, group: '文件与图片',
+      label: '短视频抽几帧',
       hint: '越大越"看得全"，但一次多模态调用也越贵。10 分钟以内的视频，8 帧够描述"讲了什么"。',
+    },
+    framesLong: {
+      type: 'int', default: 11, min: 1, max: 24, step: 1, group: '文件与图片',
+      label: '长视频抽几帧',
+      hint: '视频超过下面那个"多长算长"的秒数时，改用这个帧数。\n'
+        + '为什么分开：10 分钟的片子 8 帧够概括，11 分钟以上开始漏内容，多给几帧能接上"讲了哪几段"；'
+        + '而 1 分钟的小视频抽 11 帧纯属浪费（相邻帧几乎一样）。',
+    },
+    framesSplitSec: {
+      type: 'int', default: 600, unit: '秒', group: '文件与图片',
+      min: 30, max: 3600, step: 30,
+      label: '多长算"长视频"',
+      hint: '默认 600 秒 = 10 分钟。超过就用「长视频抽几帧」。只影响抽帧数量，'
+        + '不影响「最长看多久」（那个超了直接不看）。',
     },
     maxSide: {
       type: 'int', default: 1024, min: 256, max: 2048, step: 64, group: '文件与图片',
@@ -380,6 +394,9 @@ export default {
             url: req.url,
             platform: req.platform,
             frames: Number(cfg().frames) || 8,
+            // 动态抽帧：超过 framesSplitSec 就用 framesLong 帧（侧车按实际时长选）
+            framesLong: Number(cfg().framesLong) || 11,
+            framesSplitSec: Number(cfg().framesSplitSec) || 600,
             maxSide: Number(cfg().maxSide) || 1024,
             maxSeconds: Number(cfg().maxSeconds) || 600,
           }),
