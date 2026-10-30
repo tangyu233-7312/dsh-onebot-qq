@@ -107,6 +107,9 @@ function setup(over = {}) {
       },
     },
     async deliver(to, text) { delivered.push({ to, text }) },
+    // 2026-10-30：watch_video 现在按 _wakeKind 区分「自己起的念头(self)」和「主人叫的(master)」。
+    // 默认给 null = 主人叫的（不占额度）；要测 self 通道就在 over.turnCtx 里传 { _wakeKind: 'proactive' }
+    currentTurn() { return over.turnCtx || null },
     registerTool(name, def) { tools[name] = def },
     onDispose(fn) { shared.__dispose = fn },
     on() {},
@@ -130,7 +133,7 @@ test('默认：插件启用但自动看关', () => {
 test('配置项都是控制台可调：20 项且都有默认值', () => {
   const schema = plugin.configSchema
   const keys = Object.keys(schema)
-  assert.equal(keys.length, 26, '配置项数量变了要顺手看文档：' + keys.join(','))
+  assert.equal(keys.length, 27, '配置项数量变了要顺手看文档：' + keys.join(','))
   for (const k of keys) assert.ok(schema[k].default !== undefined, k + ' 必须有默认值')
   // 关键数字项都得有 min/max，不能让用户填出界
   for (const k of ['everyHours', 'maxPerDay', 'thoughtMaxChars', 'frames', 'maxMinutes', 'retryMinutes', 'excludeDays']) {
@@ -344,7 +347,8 @@ test('两条路的配额互不占用：定时器刚看过，对话里照样能�
 })
 
 test('对话那条路有自己的冷却（chatCooldownMin），不看定时器的', async () => {
-  const s = setup({ cfg: { autoEnabled: true, chatCooldownMin: 30 } })
+  // 2026-10-30：额度只对「它自己起的念头」生效，所以这里要模拟 proactive 轮
+  const s = setup({ turnCtx: { _wakeKind: 'proactive' }, cfg: { autoEnabled: true, chatCooldownMin: 30 } })
   try {
     const r1 = await s.tools.watch_video.execute({}, { agent: { session: { id: 's1' } } })
     assert.equal(r1.ok, true)
@@ -356,7 +360,7 @@ test('对话那条路有自己的冷却（chatCooldownMin），不看定时器�
 })
 
 test('对话那条路有自己的每日上限（chatMaxPerDay）', async () => {
-  const s = setup({ cfg: { autoEnabled: true, chatCooldownMin: 0, chatMaxPerDay: 1 } })
+  const s = setup({ turnCtx: { _wakeKind: 'proactive' }, cfg: { autoEnabled: true, chatCooldownMin: 0, chatMaxPerDay: 1 } })
   try {
     const r1 = await s.tools.watch_video.execute({}, { agent: { session: { id: 's1' } } })
     assert.equal(r1.ok, true)
@@ -368,7 +372,7 @@ test('对话那条路有自己的每日上限（chatMaxPerDay）', async () => {
 })
 
 test('chatMaxPerDay=0：对话里完全不允许，定时器不受影响', async () => {
-  const s = setup({ cfg: { autoEnabled: true, chatMaxPerDay: 0 } })
+  const s = setup({ turnCtx: { _wakeKind: 'proactive' }, cfg: { autoEnabled: true, chatMaxPerDay: 0 } })
   try {
     const r = await s.tools.watch_video.execute({}, { agent: { session: { id: 's1' } } })
     assert.equal(r.ok, false)

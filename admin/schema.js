@@ -303,6 +303,12 @@ export const CORE_CONTROLS = [
     hint: '同一个私聊两次主动消息之间至少隔这么久（默认 180 分钟）。',
   },
   {
+    key: 'pacing.reply.privateMinHourGap', group: '主动接话', section: '私聊主动接话', type: 'int', label: '两次之间至少隔（小时）', unit: '小时',
+    min: 0, max: 24, step: 1, default: 1,
+    hint: '同一个私聊两次主动开口至少隔几小时（默认 1 小时，2026-10-30 定的）。\n'
+      + '和上面「两次主动至少间隔（分钟）」取更严的那个 —— 想整体放宽就两个一起调。',
+  },
+  {
     key: 'pacing.reply.privateQqs', group: '主动接话', section: '私聊主动接话', advanced: true, type: 'group', label: '只对这些人主动（QQ 号，留空 = 全部好友）',
     default: [],
     hint: '留空 = 好友名单里的所有人都可能在冷场时收到主动消息；写了 QQ 号就只对这几个（逗号分隔）。',
@@ -311,6 +317,7 @@ export const CORE_CONTROLS = [
   {
     key: 'pacing.reply.quietEnabled', group: '主动接话', section: '静默时段', type: 'bool', label: '静默时段内不主动开口', default: true,
     hint: '开（默认）：在下面这段小时数里，它不会主动起话头（群聊、私聊都停）；被 @ / 被叫时的正常回话不受影响。\n'
+      + '**换个读法更直观**：把这里设成 0 点~7 点，就等于「7:00-24:00 允许它自己来找你，凌晨别打扰」。\n'
       + '关：24 小时都可能主动开口。',
   },
   {
@@ -330,7 +337,8 @@ export const CORE_CONTROLS = [
     default: REPLY_DEFAULTS.prompts.private,
     label: '私聊主动开口时给它的提示',
     hint: '对方安静够久、它准备主动开口时，把这段话塞给模型。想加/去要求直接改这里 —— 比如不喜欢某句叮嘱就删掉。\n'
-      + '这段末尾提到 watch_video（「自己找视频看」的工具），不想让它用就删掉那半句。',
+      + '这段列了它能自己做的事（browse_groups 翻群 / watch_video 看视频 / 写空间），不想让它做哪件就删掉那半句。\n'
+      + '**「今天我做过什么、还剩多少额度」不在这段里** —— 那是内核每轮按流水账实时拼的，改这里改不到它。',
   },
   {
     key: 'pacing.reply.prompts.privateContinuation', group: '主动接话', section: '提示词（可改）', type: 'text',

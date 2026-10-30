@@ -61,6 +61,61 @@ export function listPersonas(personaDir) {
     .sort()
 }
 
+/**
+ * 从一串人设名里挑**最新的一版**（2026-10-30 人设版本化）。
+ *
+ * 版本化命名约定（用户定的）：
+ *   `<角色><YYYYMMDD>.md`、同一天改多次就 `<角色><YYYYMMDD>-2.md`、`-3`…
+ * 排序键 = [日期数字, 序号]，**跟字符串字典序一致**（日期在前、序号定宽补零），
+ * 所以"文件名排序 = 时间排序"这条不变量可以被直接信任。
+ *
+ * 没有日期的名字（老的人设，如 `蓝色大肥鱼`）= 基线版本，永远排最后：
+ * 一旦出现了带日期的版本，就说明它开始"自己长了"，老的只是起点。
+ *
+ * @param {string[]} names 人选名（通常来自 listPersonas 或 app/list 目录）
+ * @param {string} [prefix] 只考虑以这个前缀开头的版本（角色名）；空 = 全部一起比
+ * @returns {string} 最新一版的名字；一个都没有就返回 ''
+ */
+export function newestVersionOf(names, prefix = '') {
+  const list = (Array.isArray(names) ? names : [])
+    .map((n) => String(n || '').trim())
+    .filter(Boolean)
+    .filter((n) => !prefix || n === prefix || n.startsWith(prefix))
+  if (!list.length) return ''
+  // 解析成可比较的 key：{ dated:boolean, order:stringNumber }
+  const parse = (n) => {
+    // 去掉前缀后找「8 位日期 + 可选 -N」
+    const rest = prefix ? n.slice(prefix.length) : n
+    const m = /(?:^|[^0-9])(\d{8})(?:[-_]?(\d+))?$/.exec(rest)
+    if (!m) return { dated: false, order: '', name: n }
+    const seq = String(Number(m[2] || 1)).padStart(6, '0')
+    return { dated: true, order: m[1] + '-' + seq, name: n }
+  }
+  const parsed = list.map(parse)
+  const dated = parsed.filter((p) => p.dated).sort((a, b) => a.order.localeCompare(b.order))
+  if (dated.length) return dated[dated.length - 1].name
+  return prefix && list.includes(prefix) ? prefix : list[list.length - 1]
+}
+
+/**
+ * 人设库里的「角色」列表：把 `角色YYYYMMDD[-N]` 归并成 `角色`。
+ * 用来在控制台只显示一个角色，而不是几十个日期版本。
+ */
+export function personaRoles(personaDir) {
+  const roles = new Map()
+  for (const name of listPersonas(personaDir)) {
+    const m = /^(.*?)(?:\d{8})(?:[-_]\d+)?$/.exec(name)
+    const role = m && m[1] ? m[1] : name
+    if (!roles.has(role)) roles.set(role, [])
+    roles.get(role).push(name)
+  }
+  return [...roles.entries()].map(([role, versions]) => ({
+    role,
+    versions: versions.sort(),
+    latest: newestVersionOf(versions, versions.some((v) => v !== role) ? role : ''),
+  }))
+}
+
 function firstExisting(candidates) {
   for (const p of candidates) {
     try {

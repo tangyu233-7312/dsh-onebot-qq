@@ -2,8 +2,10 @@
  * kernel/onebot-adapter.js — 唯一碰外部的地方（OneBot v11 正向 WS + HTTP API）。
  *
  * 纪律：
- *  · **不导出任何"裸 send"给插件**。所有出站只能走 `bot.deliver()`（脱敏/长度/引用/留档的唯一实现）；
+ *  · **不导出任何"裸 send"给插件**。聊天出站只能走 `bot.deliver()`（脱敏/长度/引用/留档的唯一实现）；
  *    这里只负责"把已经拼好的 CQ 串发出去"，不脱敏、不留档、不判断该不该发。
+ *  · 例外（2026-10-30）：**QQ 空间说说**不经过 deliver，所以 `sendQzoneMsg` 自己过一遍六项脱敏 ——
+ *    群里发错还能撤回，空间发出去是公开的、收不回来。以后再加"不经 deliver 的出站"，同样在这里脱敏。
  *  · 加一个新外部接口 = 在这个类里加一个方法；别让 fetch/WebSocket 散到别的文件去。
  *  · 所有平台差异（默认目录 / 本地文件引用格式）走 `platform/`，本文件不出现私有绝对路径。
  */
@@ -14,6 +16,7 @@ import { randomUUID } from 'node:crypto'
 import { resolveDataDir } from '../platform/paths.js'
 import { fromOneBotFileRef } from '../platform/cq-file.js'
 import { atomicWriteFileSync } from '../platform/atomic.js'
+import { sanitizeSensitive } from './format.js'
 
 const SEND_TIMEOUT_MS = 12000   // 单条发送超时：协议端 HTTP 半死时不能让一条消息把整轮对话拖死
 const SEND_MAX_RETRY = 2        // 超时/网络错误/5xx 才重试，4xx 直接放弃（请求本身有问题，重试无意义）
@@ -410,7 +413,13 @@ export class OneBotAdapter {
    *   images  — 可选，本地图片绝对路径数组（最多 9 张，协议端限制）
    */
   async sendQzoneMsg({ content = '', images = [] } = {}) {
-    const text = String(content || '').trim()
+    // ⚠️ 说说也是**出站**，一样要过六项脱敏（2026-10-30 补）。
+    // 这条路径原来声明"不脱敏"，而 qzone 直接调它 —— 于是「红线：文本只走 deliver()」被绕开：
+    // 群里发错还能撤回，空间发出去是公开的、收不回来。这里和 deliver 用**同一份**实现，
+    // 不另写第二套（改一处忘一处的老毛病）。
+    const { text: safe, hits } = sanitizeSensitive(content || '')
+    if (hits.length) this.log.warn(`[空间] 说说里有敏感内容，已隐去 ${hits.join('/')}`)
+    const text = String(safe || '').trim()
     if (!text) return { ok: false, msg: '说说内容不能为空' }
     const params = { content: text }
     const list = (Array.isArray(images) ? images : [images]).filter(Boolean).map(String)

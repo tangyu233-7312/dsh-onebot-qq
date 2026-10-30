@@ -68,6 +68,24 @@ function setup(opts = {}) {
   }
 }
 
+
+/** 局部 mock setInterval：算出「start() 到底装不装定时器」以及周期（验证 privateFriendsOnly 那个 bug） */
+function timerInstalled(opts = {}) {
+  const realSetInterval = globalThis.setInterval
+  const realClear = globalThis.clearInterval
+  let installed = false
+  let period = 0
+  globalThis.setInterval = (fn, ms) => { installed = true; period = ms; return { unref() {}, close() {} } }
+  globalThis.clearInterval = () => {}
+  try {
+    const h = setup(opts)
+    return { installed, period, p: h.p }
+  } finally {
+    globalThis.setInterval = realSetInterval
+    globalThis.clearInterval = realClear
+  }
+}
+
 const flush = () => new Promise((r) => setImmediate(r))
 
 /** 「本地时区 2026-10-29 的 h 点」—— 不写死 +08:00，见 setNow 的注释 */
@@ -224,4 +242,48 @@ test('静默时段状态在 stats 里可见', async () => {
   assert.equal(st.quiet.start, 0)
   assert.equal(st.quiet.end, 7)
   assert.equal(typeof st.quiet.active, 'boolean')
+})
+
+// ── 2026-10-30 回归：两处让「私聊主动接话」静默失效的 bug ─────────────────
+// 线上症状：控制台明明勾着「私聊也能主动接话」，但"最近状态"里一条私聊记录都没有，
+// 全是群 573144674 的"没接（冷场找话）"。
+
+test('回归：群冷场开着时，私聊冷场仍要跑（原来是 else if，被群吃掉）', async () => {
+  // 群冷场开、私聊也开：两边互不依赖，私聊必须照样起念
+  const { p, fired, advance } = setup({
+    reply: { silenceEnabled: true, groups: { 900001: true }, coldSilenceMs: 300000 },
+    seed: { 'private:10001': { lastInboundAt: T0900 } },
+  })
+  advance(3 * 3600000)
+  p.tickNow()
+  await flush()
+  const priv = fired.filter((x) => x.isGroup === false)
+  assert.equal(priv.length, 1, '私聊冷场被群冷场挡住了')
+  assert.equal(priv[0].chatKey, 'private:10001')
+})
+
+test('回归：只对好友开口（privateFriendsOnly=true）时，定时器照样要装', async () => {
+  // 原实现 start() 里要求 privateFriendsOnly === false 才装定时器 →
+  // 控制台默认勾着"私聊只对好友开口"，结果定时器压根不装，私聊冷场一次都不会发生。
+  // 这条必须真的去调 start()，不能像别的用例那样 p.stop() 后手动 tickNow —— 那样测不到装定时器那行。
+  const on = timerInstalled({ reply: { privateFriendsOnly: true } })
+  assert.equal(on.installed, true, '「只对好友开口」把整个私聊主动接话搞死了（定时器没装）')
+  assert.equal(on.period, 30000)
+})
+
+test('回归：私聊冷场关着、群冷场也关时，不装定时器（别空转）', () => {
+  const off = timerInstalled({ privateEnabledOn: false, reply: { silenceEnabled: false, continuation: { enabled: false } } })
+  assert.equal(off.installed, false)
+})
+
+test('回归：两个入口都开时，私聊只跑一次不重复起念', async () => {
+  const { p, fired, advance } = setup({
+    reply: { silenceEnabled: true, groups: {}, coldSilenceMs: 300000 },
+    seed: { 'private:10001': { lastInboundAt: T0900 } },
+  })
+  advance(3 * 3600000)
+  p.tickNow()
+  await flush()
+  const priv = fired.filter((x) => x.isGroup === false)
+  assert.equal(priv.length, 1, '同一 tick 里私聊被跑了两次')
 })

@@ -33,11 +33,13 @@ import {
 import { OneBotAdapter } from './kernel/onebot-adapter.js'
 import { ChatState, Pipeline, createDeliver, turnStore } from './kernel/state-pipeline.js'
 import { createPacing, REPLY_DEFAULTS } from './kernel/pacing.js'
+import { createSelfLog } from './kernel/self-log.js'
 import { createDshDriver } from './kernel/dsh-driver.js'
 import { startCompatServer } from './kernel/compat-server.js'
 import { loadConfig, validateConfig, resolveRuntimePaths, saveConfig } from './kernel/config-store.js'
 import { ensureDir, resolveTmpDir, normForCompare } from './platform/paths.js'
 import { DEFAULT_PERSONA_NAME, ensureDefaultPersona } from './platform/persona-seed.js'
+import { newestVersionOf } from './platform/persona-ref.js'
 
 const require = createRequire(import.meta.url)
 
@@ -421,6 +423,47 @@ export async function apply(ctx, bundleConfig = {}) {
   }
   kernel.tools = kernel.toolDefs // 兼容旧测试面：工具注册表
 
+  // ── 我自己的流水账（跨会话的自我记录，2026-10-30）───────────────
+  // 为什么放内核而不是某个插件：所有插件 + 内核自己都要写它，且要能热改配置（保留天数）。
+  // 「谁干活谁 append」，读取方是每轮 before-turn 的那一行「我今天的经历」。
+  /**
+   * 当前生效的人设版本名（2026-10-30 人设版本化）。
+   * 唯一真相是 workspace/.persona.json 的 name / 配置里的 activePersona ——
+   * 这里只是把它读出来，并**尽量解析成最新一版**（角色 + 日期 + 序号）。
+   * 目的：每轮头顶那行「我：角色·版本」让它在任何时候都知道自己是哪一版，
+   * 也顺便解决「改了人设没生效」这种查起来最费劲的问题。
+   */
+  kernel.personaLabel = () => {
+    try {
+      const directed = path.join(kernelPaths.workspaceDir || runtime.dsh?.qqWorkspacePath || '', '.persona.json')
+      let name = ''
+      try {
+        const p = JSON.parse(fs.readFileSync(directed, 'utf8'))
+        name = String(p?.name || '')
+      } catch { /* 没有指针文件就往下走 */ }
+      if (!name) {
+        const pv = runtime.pluginConfig?.['persona-voice']
+        name = String(pv?.activePersona || '')
+      }
+      if (!name) return ''
+      // 有同角色的多个日期版本时，取最新那版（控制台存的是角色名而不是带日期的版本名）
+      try {
+        const dir = path.resolve(String(kernelPaths.personaDir || '') || path.join(dataDir, 'personas'))
+        const all = fs.readdirSync(dir).filter((n) => n.toLowerCase().endsWith('.md')).map((n) => n.slice(0, -3))
+        const newest = newestVersionOf(all, name)
+        if (newest) name = newest
+      } catch { /* 目录读不到就按文件里的名字 */ }
+      return name
+    } catch {
+      return ''
+    }
+  }
+  kernel.selfLog = createSelfLog({
+    dataDir,
+    log: logFor('self-log'),
+    keepDays: Number(runtime.selfLog?.keepDays) || 14,
+  });
+
   // ── QQ 工作区自举：安装/启动时自动在 DSH 侧栏建一个「QQ 聊天」工作区 ──
   // 路径 = dsh.qqWorkspacePath（默认 <dataDir>/workspace），名称 = dsh.workspaceTitle。
   // 已注册则复用（幂等）；宿主没有 workspaceRegistry 时跳过，会话仍按 cwd 建（不影响收发）。
@@ -696,6 +739,38 @@ export async function apply(ctx, bundleConfig = {}) {
     compat: runtime.compat,
     keywordTable: kernel.shared.keywordsTable || {},
     tmp,
+    // 人设版本化（2026-10-30）：插件要靠它找到人设库、读「现在生效的是哪一版」、切版本
+    paths: kernelPaths,
+    personaLabel: () => kernel.personaLabel(),
+    switchPersona: (name) => {
+      const target = String(name || '').trim()
+      if (!target) throw new Error('人设名不能为空')
+      // 和 bin / 控制台切人设走同一套投递（软链 → 复制降级），权威指针是 workspace/.persona.json
+      const r = switchPersona({
+        workspaceDir: kernelPaths.workspaceDir,
+        personaDir: kernelPaths.personaDir,
+        name: target,
+        mode: 'auto',
+      })
+      // 配置里如果**钉死**了 activePersona，它会盖过指针 —— 这种情况不去改配置文件（那是控制台的活），
+      // 只回一条 warn，免得用户以为"切了没生效"却查不出原因。
+      const pinned = String(runtime.pluginConfig?.['persona-voice']?.activePersona || '').trim()
+      if (pinned && pinned !== target) {
+        log.warn(`[人设版本] 配置里钉死了 activePersona=${pinned}，可能盖过指针 ${target}；` +
+          '要长期生效请到控制台「人设」页切换（它会同步改配置）')
+      } else if (!pinned) {
+        // 没钉死时顺手把配置也记成目标（和安装时写默认人设同口径），下次重启仍然指向它
+        try {
+          runtime.pluginConfig['persona-voice'] = {
+            ...(runtime.pluginConfig['persona-voice'] || {}),
+            activePersona: target,
+          }
+        } catch (e) {
+          log.warn('人设切换后同步内存配置失败：' + e.message)
+        }
+      }
+      return r
+    },
     // 插件能登记 / 查询「受限会话」（空间工作区、看视频的地方各自登记自己的工具集）
     ...scopeApi,
   })
@@ -737,6 +812,10 @@ export async function apply(ctx, bundleConfig = {}) {
       }
     },
     get dsh() { return dsh },
+    /** 我自己的流水账（跨会话）：插件用它记「我今天干了什么」，内核用它拼每轮的一行提示。 */
+    get selfLog() { return kernel.selfLog },
+    /** 当前生效的人设版本名（人设版本化）：工具回执与每轮头顶那行都用它。 */
+    get personaLabel() { return kernel.personaLabel() },
     /** 跨插件共享能力槽（只读视图）：插件把自己的能力挂上来供内核/控制台调用（如 memoryAccumulate）。 */
     get shared() { return kernel.shared },
     /** 回复节奏能力（合批窗口 / 主动接话调度 + 状态）：插件可读 `config`、`stats()` 做控制台/自检 */
@@ -826,6 +905,36 @@ export async function apply(ctx, bundleConfig = {}) {
     const def = kernel.commands.get(String(head || '').toLowerCase())
     if (def) await def.handler(ev, rest)
   }, { order: 5, pluginId: 'kernel:commands' })
+
+  // ── 内置管线钩子 1.5：before-turn 注入「我今天的经历」一行（2026-10-30）──────
+  // 这是「跨会话的自我」：DSH 的会话是一条 QQ 线一个，它在家（私聊）不知道自己在群里/看视频的地方
+  // 干过什么 —— 于是会出现「唉？已经看了吗？」。这里把它自己的流水账压成一行，每轮都带上。
+  //
+  // 只给**有唤醒**（真要进模型）的轮加，且只在一轮开头顶一次（ev._scratch 兜底防重复）。
+  // 群里只给极简一句（防止它在群里莫名其妙自曝"我早上看了个视频"），私聊给完整一行。
+  pipeline.use('before-turn', async (ev) => {
+    if (ev.stopped || !ev.wake) return
+    if (ev._scratch.selfLogInjected) return
+    ev._scratch.selfLogInjected = true
+    try {
+      const tl = kernel.selfLog?.todayLine?.() || ''
+      const me0 = kernel.personaLabel?.() || ''
+      if (!tl) {
+        // 没有经历也要报"我现在是哪一版"：人设版本化之后，这一行是它认识自己的唯一依据
+        if (me0) ev.hint.push('[我：' + me0 + ']')
+        return
+      }
+      const me = kernel.personaLabel?.() || ''
+      const who = me ? '[我：' + me + '] ' : ''
+      if (ev.isGroup) {
+        ev.hint.push(who + '[我自己的事] 你今天还做过这些（跟这个群无关，别主动说出来）：' + tl)
+      } else {
+        ev.hint.push(who + '[我今天的经历] ' + tl + '（这些是你自己做的，不是在别的地方听到的）')
+      }
+    } catch (e) {
+      log.warn(`注入今日经历失败（不影响本轮）: ${e.message}`)
+    }
+  }, { order: 90, pluginId: 'kernel:self-log' })
 
   // ── 内置管线钩子 2：before-turn 补齐群聊增量上文、引用消息与多模态识图缩放 ──────────
   pipeline.use('before-turn', async (ev) => {
@@ -1194,6 +1303,11 @@ export async function apply(ctx, bundleConfig = {}) {
       } catch (e) { log.warn(`[主动接话] 拉取群上文失败: ${e.message}`) }
     }
     ev.turnCtx = createTurnContext(ev)
+    // 2026-10-30：给工具留一个"这一轮是谁起的"的标记。
+    // watch_video 靠它区分「它自己起的念头（占额度）」和「主人叫的（不占额度）——
+    // 不给这个标记，工具只能一律当"对话里自己看"，就会出现
+    // 「自己看了 2 个、主人叫了 1 个，可额度显示 3/7」的矛盾。
+    ev.turnCtx._wakeKind = ev.wake?.kind || 'proactive'
     // 续聊可选「引用最后一条人类消息」：把目标 message_id 带进本轮，出站钩子①会用它（其它轮一律清掉）
     if (isContinuation && quoteTo) ev.turnCtx._forceReplyTo = Number(quoteTo) || null
     holdActiveTurn(chatKey, ev.turnCtx)

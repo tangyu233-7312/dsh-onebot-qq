@@ -50,16 +50,20 @@ export const REPLY_DEFAULTS = {
   privateHourlyMax: 1,       // 每个私聊每小时最多几次（内部闸门，比群聊更严）
   privateMaxPerDay: 3,       // 每个私聊每天最多几次（内部闸门）
   privateMinGapMs: 10800000, // 两次之间至少隔多久（3 小时）
+  privateMinHourGap: 1,      // 两次私聊主动开口至少隔几小时（用户 2026-10-30 定：1 小时）
   // 主动开口 / 续聊时给模型的提示词（2026-10-29 从代码里搬出来，控制台可改）。
   // 为什么不写死在代码里：这类话术是「口味」问题，不是逻辑问题 ——
   // 改一句语气不该动代码、不该发版。默认值就是原来写死的那几句。
   // 占位符 {n} = 这期间的新消息条数，会在拼接时替换掉。
   prompts: {
     // 私聊主动开口：一对一里没有「别人在聊」可以插，唯一的理由是对方安静了一阵
-    private: '[这是你和主人的私聊，对方已经安静了一阵。'
-      + '想说什么就说 —— 分享刚看到的、想起的事、或者轻轻问一句；'
-      + '想找点话题又没头绪的话，可以调 watch_video 自己去翻个视频看（看完会发过来）。'
-      + '不想说就什么都不发，这轮不发完全没问题]',
+    private: '[这是你和主人的私聊（你的家），对方已经安静了一阵。'
+      + '你可以：说点什么（刚看到的、想起的事，或者轻轻问一句）；'
+      + '自己找点事做 —— 调 browse_groups 看看群里在聊什么、调 watch_video 去看个视频、'
+      + '想记点什么就写空间；也可以什么都不做。'
+      // 这一行是**口径**：具体数值由内核按流水账实时拼进 ev.hint，这里只说去哪看
+      + '今天已经做过什么、还剩多少额度，看上面「我今天的经历」那行（没有那行就是今天还没做什么），别自己猜。'
+      + '不想说话就不发，这轮不发完全没问题]',
     // 私聊续聊：刚回过话，对方还没接
     privateContinuation: '[你刚回过话，对方还没接。之后对方又说了 {n} 句（见上文）。'
       + '想补一句就补（比如刚想到的补充、或者换个话头）；不想补就什么都不做，这轮不发也没关系]',
@@ -567,7 +571,7 @@ export function createPacing({ log = console, state, clock = null }) {
       o.windowUntil = now // 立即用掉窗口，避免下个 tick 重复
       fire(key, gid, 'silence', 1)
     }
-    if (privateEnabled()) tickPrivateSilence(now)
+    // 私聊冷场不在这里调：tick() 已经独立调一次，放这里会在两个开关都开时跑两遍
   }
 
   // ── 私聊主动接话（2026-10-29）────────────────────────────────
@@ -588,7 +592,10 @@ export function createPacing({ log = console, state, clock = null }) {
     if (lastHour >= Math.max(0, num(cfg.reply.privateHourlyMax, 1))) return false
     if (fires.length >= Math.max(0, num(cfg.reply.privateMaxPerDay, 3))) return false
     const last = fires[fires.length - 1] || 0
-    if (last && now - last < Math.max(60000, num(cfg.reply.privateMinGapMs, 3 * HOUR))) return false
+    // 两次之间至少隔多久：取「privateMinGapMs」和「privateMinHourGap 小时」里**更严**的那个。
+    // 2026-10-30 用户把间隔定成 1 小时（原来内部闸门是 3 小时，比群里还严格）。
+    const gapMs = Math.max(60000, num(cfg.reply.privateMinGapMs, 3 * HOUR), Math.max(0, num(cfg.reply.privateMinHourGap, 1)) * HOUR)
+    if (last && now - last < gapMs) return false
     return true
   }
 
@@ -642,8 +649,11 @@ export function createPacing({ log = console, state, clock = null }) {
   function tick() {
     const now = nowMs()
     // 群冷场开关关掉时，私聊冷场仍要单独跑（两者是不同场景，不该互相拖累）
+    // ⚠️ 2026-10-30 修：原来是 else if —— 群冷场只要开着，私聊冷场就永远轮不到，
+    //    而群冷场默认是开的（silenceEnabled 默认 true），等于"私聊主动接话"静默失效。
+    //    两者互不依赖，改成两个独立的 if。
     if (silenceOn()) tickSilence(now)
-    else if (privateEnabled()) tickPrivateSilence(now)
+    if (privateEnabled()) tickPrivateSilence(now)
     tickContinuation(now)
   }
 
@@ -659,9 +669,11 @@ export function createPacing({ log = console, state, clock = null }) {
     timer = null
     if (!proactiveEnabled()) return null
     // 冷场找话、连续对话、私聊冷场三者都关掉时不需要定时器：接话机会只由入站消息触发（topic 路径）
-    // 私聊冷场挂在 tickSilence 里，但它独立于「群冷场找话」开关 —— 两个都要算进"要不要装定时器"
-    const needPrivate = privateEnabled() && cfg.reply.privateFriendsOnly === false // 好友闸门要联网，放 tick 里做
-    if (!silenceOn() && !cfg.reply.continuation.enabled && !needPrivate) return null
+    // ⚠️ 2026-10-30 修：原来还要求 privateFriendsOnly === false 才装定时器 ——
+    //    "私聊只对好友开口"（默认 true，控制台默认勾选）一开，定时器干脆不装，
+    //    私聊冷场永远不触发。好友闸门本来就是异步的、在 privateBeforeFire() 里做，
+    //    不该用它来决定"要不要装定时器"。
+    if (!silenceOn() && !cfg.reply.continuation.enabled && !privateEnabled()) return null
     timer = setInterval(() => {
       try { tick() } catch (e) { log.error(`[主动接话] tick 异常: ${e.message}`) }
     }, 30000)

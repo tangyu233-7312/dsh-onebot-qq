@@ -83,7 +83,7 @@ function dayOf(all, date) {
   }
   const fresh = {
     date: d, posted: 0, chars: 0, images: 0, at: 0, text: '', source: '',
-    skipped: false, skipReason: '', decidedAt: 0, nudgedAt: 0, attempts: 0, retryAt: 0,
+    skipped: false, skipReason: '', decidedAt: 0, nudgedAt: 0, nudged2At: 0, attempts: 0, retryAt: 0,
     sessionId: '', material: null,
   }
   all.days[d] = fresh
@@ -153,13 +153,25 @@ export default {
     },
     nudgeHour: {
       type: 'int', default: 22, min: 0, max: 23, step: 1, group: '空间日记',
-      label: '每天几点兜底提醒',
-      hint: '24 小时制。到点还没写也没跳过，就推一次当日回顾。填 0 = 不兜底（全靠它自己想起来）。',
+      label: '每天几点提醒它写空间',
+      hint: '24 小时制。到点还没写也没跳过，就**在私聊里问一句**（不自动写、不催第三句）。'
+        + '填 0 = 不提醒（全靠它自己想起来）。',
     },
     nudgeMinute: {
       type: 'int', default: 30, min: 0, max: 59, step: 1, group: '空间日记',
-      label: '兜底提醒的分钟',
+      label: '提醒的分钟',
       hint: '配合上一项，默认 22:30。',
+    },
+    nudgeMinute2: {
+      type: 'int', default: 30, min: 1, max: 240, step: 5, group: '空间日记',
+      label: '第二次提醒隔多久（分钟）',
+      hint: '第一次提醒后它还没决定写不写，隔这么多分钟再问一句（默认 30 = 23:00）。\n'
+        + '**只问两次**，之后不再打扰 —— 写不写是它自己的事。',
+    },
+    nudgeTo: {
+      type: 'str', default: '', group: '空间日记',
+      label: '提醒发到哪',
+      hint: '留空 = 不推（只记日志）；填 private:<主人QQ> 就在私聊里问它。例：private:10001',
     },
     dailyLimit: {
       type: 'int', default: 1, min: 1, max: 5, step: 1, group: '空间日记',
@@ -349,6 +361,16 @@ export default {
         })
         bot.log?.info?.('[空间] 发出说说 ' + body.length + ' 字' + (paths.length ? ' + ' + paths.length + ' 张图' : '')
           + '（今天第 ' + (day.posted + 1) + '/' + limit() + ' 条，来源 ' + String(args.target || '未知') + '）')
+        // 跨会话流水账（2026-10-30）：写说说多半发生在「空间工作区」这个专用会话里，
+        // 私聊里的它根本不知道，于是会问「我是不是还没写」。记一行，家里那轮就能看到。
+        try {
+          bot.selfLog?.append?.({
+            kind: 'qzone',
+            what: '在 QQ 空间发了一条说说（' + body.length + ' 字' + (paths.length ? ' + ' + paths.length + ' 张图' : '') + '）',
+            why: '我自己想记一笔',
+            where: '空间工作区',
+          })
+        } catch { /* 记账失败不影响已经发出去的说说 */ }
         return { ok: true, posted: true, chars: body.length, images: paths.length }
       },
     })
@@ -377,13 +399,17 @@ export default {
           d.decidedAt = Date.now()
         })
         bot.log?.info?.('[空间] 今天决定不写：' + why)
+        try {
+          bot.selfLog?.append?.({ kind: 'qzone', what: '今天不写说说（' + why.slice(0, 40) + '）', why: '自己决定的', where: '空间工作区' })
+        } catch { /* ignore */ }
         return { ok: true, skipped: true, global: true }
       },
     })
 
     // ── 工具 ③：查状态 ────────────────────────────────────────
     bot.registerTool('qzone_status', {
-      description: '查今天这块空间的状况（写过没有、还剩几次机会、素材覆盖了多少会话）。一般不用调，回顾里已经写了。',
+      description: '查今天这块空间的状况（写过没有、还剩几次机会、素材覆盖了多少会话）。'
+        + '在任何会话里都能调；想确认「今天我是不是已经写过了」就用它。',
       parameters: {
         target: { type: 'string', description: '可留空' },
       },
@@ -592,23 +618,61 @@ export default {
       return h * 60 + m
     }
 
+    /**
+     * 到点提醒（2026-10-30 改语义：**只提醒，不自动写**）。
+     *
+     * 用户要的是「它自己决定什么时候写」，不是「到点被塞着写」。所以这里只：
+     *   ① 到 nudgeHour:nudgeMinute 往**发起会话**（私聊/群）说一句话；
+     *   ② 如果它还是没决定，再等 nudgeHour2 分钟说第二句；
+     *   ③ 说完就完 —— 不催第三次，也不自动 runDesk。
+     *
+     * 真写还是走 runDesk（它自己在空间工作区里调 post_qzone），那条路没变。
+     * 提醒的记录落在当日状态里（nudgedAt / nudged2At），重启不会重复提醒。
+     */
     async function tick() {
       if (cfg().enabled === false) return
       const start = nudgeMinutes()
       if (!start || currentMinutes() < start) return
       const d = today()
       if (decided(d)) return
-      if (cfg().deskDryRun === true && Number(d.attempts) > 0) return // 演练只跑一次，别刷屏
-      if (Number(d.attempts) >= 5) return
-      if (Number(d.retryAt) > Date.now()) return
       if (deskRunning) return
-      await runDesk('到点回顾')
+      // 演练模式下不推（否则每小时都可能往私聊塞一句）
+      const dry = cfg().deskDryRun === true
+
+      const now = Date.now()
+      const secondAt = Math.max(start + 1, Number(cfg().nudgeMinute2) ? start + Math.max(1, Number(cfg().nudgeMinute2)) : start + 30)
+      const firstDone = Number(d.nudgedAt) > 0
+      const secondDone = Number(d.nudged2At) > 0
+      if (firstDone && (secondDone || currentMinutes() < secondAt)) return
+
+      const round = firstDone ? 2 : 1
+      withState((all) => {
+        const x = dayOf(all, localDateOf(Date.now()))
+        if (round === 1) x.nudgedAt = now
+        else x.nudged2At = now
+      })
+      if (dry) {
+        bot.log?.info?.('[空间] 演练模式：到点了，但不推提醒（第 ' + round + ' 次）')
+        return
+      }
+      // 在哪说话：优先发到配置里的提醒会话（默认主人私聊）；没有就只记日志
+      const to = String(cfg().nudgeTo || '').trim()
+      const line = round === 1
+        ? '今天快过完了，要不要记点什么到空间？（不写也完全没关系，明天照常）'
+        : '再问一次：今天想不想记点什么？不写也行，以后不问了。'
+      bot.log?.info?.('[空间] 到点提醒（第 ' + round + ' 次）' + (to ? ' → ' + to : '（没配提醒会话，只记日志）'))
+      if (!to) return
+      try { await bot.deliver(to, line) } catch (e) { bot.log?.warn?.('[空间] 提醒发送失败: ' + (e?.message || e)) }
     }
 
     const timer = setInterval(() => { tick().catch(() => {}) }, 60 * 1000)
     timer.unref?.()
     bot.onDispose?.(() => clearInterval(timer))
-    const boot = setTimeout(() => { tick().catch(() => {}) }, 90 * 1000)
+    // 开机那次 tick 原来把异常整个吞了（catch(() => {})）：
+    // 主循环里有 catch，这里再吞一次 = 开机那一次失败永远查不到原因。
+    const boot = setTimeout(() => {
+      tick().catch((e) => bot.log?.warn?.('[空间] 开机检查失败（不影响聊天）: ' + (e?.message || e)))
+    }, 90 * 1000)
     boot.unref?.()
     bot.onDispose?.(() => clearTimeout(boot))
     // 老内核没有 bot.onDispose（2026-10 之前的副本）：用进程级槽兜底，
@@ -679,6 +743,7 @@ export default {
         x.skipReason = ''
         x.decidedAt = 0
         x.nudgedAt = 0
+        x.nudged2At = 0
         x.attempts = 0
         x.retryAt = 0
       })

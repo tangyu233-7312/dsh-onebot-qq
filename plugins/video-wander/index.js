@@ -212,9 +212,16 @@ export default {
     chatMaxPerDay: {
       type: 'int', default: 6, unit: '次', group: '自己找视频看',
       min: 0, max: 24, step: 1,
-      label: '对话里每天最多看几次',
-      hint: '单独计数，不占「每天最多看几次」的名额。\n'
-        + '防的是「聊着聊着一直看」—— 0 = 对话里完全不允许它主动看。',
+      label: '它自己起的念头每天最多看几次',
+      hint: '**只算它自己想去看的那几次**（主动接话起念后决定的），不占「每天最多看几次」的名额。\n'
+        + '主人叫它看的不算在这里、也不占额度。0 = 它自己不许主动看。',
+    },
+    masterMaxPerDay: {
+      type: 'int', default: 20, unit: '次', group: '自己找视频看',
+      min: 0, max: 100, step: 1,
+      label: '主人叫它看，每天最多几次',
+      hint: '主人叫它看的**不占额度、不受冷却**，这里只是一个很宽的防手滑上限（防止一次要它连看二十个）。\n'
+        + '0 = 不限。',
     },
 
     regions: {
@@ -388,10 +395,34 @@ export default {
      * 两条路各自有配额，互不占用（2026-10-29 改：原来共用一份，
      * 定时器刚看过就会把「主人让它看」也挡掉，用户体感是「不是我要它看，是插件硬塞的」）。
      */
+    /**
+     * 今天某条通道看了几个。
+     * trigger: 'timer' | 'chat'(=它自己起的念头) | 'master' | 'manual' | undefined(全部)
+     * ⚠️ 额度统计必须按 run 行上的 quota 字段算，**不能按 trigger 算**：
+     *    'chat' 是 2026-10-30 之前的旧名字，现在自己起念写 'self'，
+     *    用 trigger 比会出现"这次看了却没扣额度"的静默 bug。
+     */
     const runsToday = (st, trigger) => (st.runs || [])
       .filter((r) => localDate(Number(r.at) || 0) === localDate())
-      .filter((r) => !trigger || String(r.trigger || 'timer') === trigger)
+      .filter((r) => {
+        if (!trigger) return true
+        const t2 = String(r.trigger || 'timer')
+        if (trigger === 'chat' || trigger === 'self') return (r.quota || (t2 === 'master' || t2 === 'manual' ? 'free' : 'self')) === 'self'
+        if (trigger === 'master') return t2 === 'master'
+        if (trigger === 'manual') return t2 === 'manual'
+        return t2 === trigger
+      })
       .length
+
+    /**
+     * 写一行「我自己的流水账」（2026-10-30）。
+     * 为什么要它：DSH 会话是一条 QQ 线一个 —— 它在「看视频的地方」看完，
+     * 私聊里的它根本不知道，于是出现「唉？已经看了吗？」。台账是跨会话的唯一真相。
+     * 内核没暴露 selfLog（老副本 / 单测）时静默降级，不影响看视频。
+     */
+    const logSelf = (entry) => {
+      try { bot.selfLog?.append?.({ kind: 'watch', ...entry }) } catch { /* 记账失败不许影响看视频 */ }
+    }
 
     /** 正常节奏下的下次到点时间 */
     const dueAt = (st) => Number(st.lastRunAt || 0) + Math.max(1, num(cfg().everyHours, 4)) * 3600 * 1000
@@ -669,19 +700,33 @@ export default {
 
         // 标记「看过」：不管它写没写，视频是真的看了，避免下次又挑同一条
         st.seen = { ...(st.seen || {}), [video.bvid]: now() }
-        if (trigger === 'chat') st.chatLastAt = now()
-        else st.lastRunAt = now()
+        // 跨会话台账：不管它写没写感想，视频是真的看了（写成一行，私聊里的它也能知道）
+        logSelf({
+          what: '看了 B 站视频「' + String(video.title || video.bvid).slice(0, 40) + '」',
+          why: trigger === 'self' ? '我自己想看的' : (trigger === 'master' ? '主人让我看的' : trigger === 'timer' ? '到点自己看的' : '手动触发'),
+          where: '私聊',
+          channel: trigger,
+          bvid: video.bvid,
+        })
+        // 三条通道各记各的账（2026-10-30）：
+        //   timer  → 定时器自己看（现在默认关）
+        //   self   → 它自己起的念头（**只有这条占额度**）
+        //   master → 主人叫它看（不占额度，只留痕）
+        //   manual → 控制台按钮（不占额度，只留痕）
+        if (trigger === 'self') st.chatLastAt = now()
+        else if (trigger === 'timer') st.lastRunAt = now()
+        // master / manual 不推进任何配额时间戳 —— 主人叫的不该占它自己的名额
 
         const got = turn.got
         pending = null
         if (!got) {
-          st.runs.push({ at: now(), trigger, bvid: video.bvid, title: video.title.slice(0, 60), ok: false, reason: turn.timeout ? 'timeout' : 'no_report' })
+          st.runs.push({ at: now(), trigger, quota: trigger === 'self' ? 'self' : 'free', bvid: video.bvid, title: video.title.slice(0, 60), ok: false, reason: turn.timeout ? 'timeout' : 'no_report' })
           save(st)
           log.warn('[看视频的地方] 看完了但它没交感想（' + (turn.timeout ? '超时' : '只回了话没调工具') + '）—— 不打扰主人')
           return { ok: false, reason: 'no_report' }
         }
         if (got.kind === 'skip') {
-          st.runs.push({ at: now(), trigger, bvid: video.bvid, title: video.title.slice(0, 60), ok: true, reason: 'skip:' + String(got.reason || '').slice(0, 80) })
+          st.runs.push({ at: now(), trigger, quota: trigger === 'self' ? 'self' : 'free', bvid: video.bvid, title: video.title.slice(0, 60), ok: true, reason: 'skip:' + String(got.reason || '').slice(0, 80) })
           save(st)
           log.info('[看视频的地方] 它决定不写这条（' + String(got.reason || '未说原因').slice(0, 60) + '）—— 不打扰主人')
           return { ok: true, skipped: true }
@@ -691,20 +736,20 @@ export default {
         const to = masterTarget()
         if (!to) {
           log.warn('[看视频的地方] 没有可用的主人 QQ（masterQq 与 adminQq 都为空），本次不发')
-          st.runs.push({ at: now(), trigger, bvid: video.bvid, title: video.title.slice(0, 60), ok: false, reason: 'no_master' })
+          st.runs.push({ at: now(), trigger, quota: trigger === 'self' ? 'self' : 'free', bvid: video.bvid, title: video.title.slice(0, 60), ok: false, reason: 'no_master' })
           save(st)
           return { ok: false, reason: 'no_master' }
         }
         await bot.deliver(to, text)
-        st.runs.push({ at: now(), trigger, bvid: video.bvid, title: video.title.slice(0, 60), ok: true, reason: 'sent' })
+        st.runs.push({ at: now(), trigger, quota: trigger === 'self' ? 'self' : 'free', bvid: video.bvid, title: video.title.slice(0, 60), ok: true, reason: 'sent' })
         save(st)
         log.info('[看视频的地方] 已发给 ' + to + '：' + video.bvid + '（' + got.thought.length + ' 字）')
         return { ok: true, sent: true, to, bvid: video.bvid }
       } catch (e) {
         log.error('[看视频的地方] 本轮失败: ' + (e?.stack || e?.message || e))
-        // 记一次，避免失败后每 60 秒重试一次刷日志（两条路各记各的）
-        if (trigger === 'chat') st.chatLastAt = now()
-        else st.lastRunAt = now()
+        // 记一次，避免失败后每 60 秒重试一次刷日志（几条路各记各的）
+        if (trigger === 'self') st.chatLastAt = now()
+        else if (trigger === 'timer') st.lastRunAt = now()
         save(st)
         return { ok: false, reason: String(e?.message || e) }
       } finally {
@@ -771,21 +816,32 @@ export default {
       async execute() {
         const st = state()
         const last = [...(st.runs || [])].reverse().find((r) => r.ok)
+        const selfToday = runsToday(st, 'chat')
+        const selfCap = Math.max(0, num(cfg().chatMaxPerDay, 6))
+        const masterToday = runsToday(st, 'master')
         return {
           ok: true,
           enabled: pluginOn(),
           autoEnabled: autoOn(),
-          everyHours: num(cfg().everyHours, 4),
-          maxPerDay: num(cfg().maxPerDay, 6),
-          todayCount: runsToday(st, 'timer'),
-          lastRunAt: Number(st.lastRunAt) || null,
-          nextDueAt: dueAt(st),
-          // 对话那条路是独立的一套
-          chat: {
+          // 一句话对账（2026-10-30）：把三种来源分开说，别只报总数——
+          // 只报总数就会出现「自己看 2 个 + 主人叫 1 个 = 3/7，可我明明只自己看了 2 个」的矛盾。
+          summary: '今天看了 ' + (selfToday + masterToday + runsToday(st, 'timer')) + ' 个：'
+            + '自己起的 ' + selfToday + ' 个（额度 ' + selfToday + '/' + selfCap + '）'
+            + '，主人叫我 ' + masterToday + ' 个（不占额度）',
+          quota: {
+            selfUsed: selfToday,
+            selfMax: selfCap,
+            selfLeft: Math.max(0, selfCap - selfToday),
+            masterUsed: masterToday,
             cooldownMin: Math.max(0, num(cfg().chatCooldownMin, 30)),
-            maxPerDay: Math.max(0, num(cfg().chatMaxPerDay, 6)),
-            todayCount: runsToday(st, 'chat'),
-            lastAt: Number(st.chatLastAt) || null,
+            lastSelfAt: Number(st.chatLastAt) || null,
+          },
+          timer: {
+            everyHours: num(cfg().everyHours, 4),
+            maxPerDay: num(cfg().maxPerDay, 6),
+            todayCount: runsToday(st, 'timer'),
+            lastRunAt: Number(st.lastRunAt) || null,
+            nextDueAt: dueAt(st),
           },
           lastWatched: last ? { at: last.at, bvid: last.bvid, title: last.title } : null,
           quiet: { enabled: quietOn(), start: num(cfg().quietStart, 1), end: num(cfg().quietEnd, 8), active: inQuiet() },
@@ -800,7 +856,8 @@ export default {
       description: '自己挑一个 B 站热门视频看（不需要对方给链接）。'
         + '调用后会**真的去看**：挑视频 → 下载抽帧 → 写感想 → 把「看了什么 + 感想 + 链接」私聊发给主人。'
         + '当前这一轮只要回一句「我去翻翻」之类的就行，不用等结果。'
-        + '受配额限制（每几小时一次、每天上限），超了会返回 ok:false，如实告诉对方就行。'
+        + '主人叫你看的**不占额度、不受冷却**；只有你自己起的念头才占「每天自己看几次」的额度。'
+        + '想知道今天看过几个、还剩多少额度，看上面「我今天的经历」那一行，或者调 watch_status。'
         + '想用的时候：对方让你随便看看、你自己想找点话题、或者闲着没事想翻点新东西。',
       parameters: {},
       async execute(args = {}, exec) {
@@ -818,22 +875,45 @@ export default {
         if (!pluginOn()) return { ok: false, reason: '看视频功能没启用' }
         if (!String(cfg().sidecarUrl || '').trim()) return { ok: false, reason: '侧车没配，看不了' }
         if (running) return { ok: false, reason: '正在看别的，等这次看完' }
-        // 这里用**对话专用**的那套配额（chatCooldownMin / chatMaxPerDay），
-        // 与定时器的 everyHours / maxPerDay 互不相干。
-        // 原来共用一个 lastRunAt：定时器刚看完 → 主人叫它看 → 它说「刚看过，N 分钟后再来」，
-        // 用户体感是「根本不是我要它看，是插件硬塞给我的」。
+        // ── 这一轮是谁起的念？（2026-10-30）──────────────────────
+        // 三条通道必须分开算账，否则会出现「自己看了 2 个、主人叫了 1 个，可额度显示 3/7」的矛盾：
+        //   self   = 主动接话那套推出来的念头（pacing 起的轮）→ 占额度、受冷却
+        //   master = 主人在对话里让它看（正常被唤醒的轮）      → 不占额度、不受冷却
+        // 判据来自 TurnContext 的 _wakeKind（内核在 runProactiveTurn 里贴的），
+        // 拿不到就按 master 处理（宁可多让它看，也别把主人叫的挡掉）。
+        const turn = (() => { try { return bot.currentTurn?.() || null } catch { return null } })()
+        const wakeKind = String(turn?._wakeKind || '')
+        const channel = (wakeKind === 'proactive' || wakeKind === 'continuation') ? 'self' : 'master'
+
         const st = state()
-        const chatCap = Math.max(0, num(cfg().chatMaxPerDay, 6))
-        if (chatCap <= 0) return { ok: false, reason: '配置里把「对话里每天最多」设成 0 了，就是不让看' }
-        const chatToday = runsToday(st, 'chat')
-        if (chatToday >= chatCap) return { ok: false, reason: '今天这样看已经 ' + chatToday + ' 次了，明天再说' }
-        const cdMs = Math.max(0, num(cfg().chatCooldownMin, 30)) * 60000
-        const waitMs = Number(st.chatLastAt || 0) + cdMs - now()
-        if (waitMs > 0) return { ok: false, reason: '刚看过一个，' + Math.ceil(waitMs / 60000) + ' 分钟后再来' }
+        if (channel === 'self') {
+          const chatCap = Math.max(0, num(cfg().chatMaxPerDay, 6))
+          if (chatCap <= 0) return { ok: false, reason: '配置里把「对话里每天最多」设成 0 了，就是不让看' }
+          const chatToday = runsToday(st, 'chat')
+          if (chatToday >= chatCap) return { ok: false, reason: '今天这样看已经 ' + chatToday + ' 次了，明天再说' }
+          const cdMs = Math.max(0, num(cfg().chatCooldownMin, 30)) * 60000
+          const waitMs = Number(st.chatLastAt || 0) + cdMs - now()
+          if (waitMs > 0) return { ok: false, reason: '刚看过一个，' + Math.ceil(waitMs / 60000) + ' 分钟后再来' }
+        } else {
+          // 主人叫的：不占额度、不受冷却，只留一个**很宽**的硬上限防手滑（配置 masterMaxPerDay，默认 20）
+          const cap = Math.max(0, num(cfg().masterMaxPerDay, 20))
+          const did = runsToday(st, 'master')
+          if (cap > 0 && did >= cap) {
+            return { ok: false, reason: '今天已经让我看了 ' + did + ' 个了（上限 ' + cap + '），明天再翻' }
+          }
+        }
+
         // 不 await：看一个视频要下载 + 抽帧 + 写感想，几十秒到几分钟，
         // 让工具立刻返回，这一轮先把话说完，看完的感想会另外发过来
-        runOnce('对话里自己想去看看', 'chat').catch((e) => log.error('[看视频的地方] 对话触发失败: ' + (e?.message || e)))
-        return { ok: true, message: '我去翻翻，看完了把看到的东西发给你' }
+        runOnce(channel === 'self' ? '它自己起的念头' : '主人叫它看', channel)
+          .catch((e) => log.error('[看视频的地方] 对话触发失败: ' + (e?.message || e)))
+        return {
+          ok: true,
+          channel,
+          message: channel === 'self'
+            ? '我去翻翻，看完了把看到的东西发给你'
+            : '好，我这就去看，看完跟你说看到了什么',
+        }
       },
     })
 
@@ -881,24 +961,27 @@ export default {
     bot.onDispose?.(() => { try { stop() } catch { /* ignore */ } })
 
     // 控制台 / 其他插件可以手动触发一次，也能查状态
-    bot.shared.videoWanderRunNow = (note) => runOnce(String(note || '手动触发'))
+    bot.shared.videoWanderRunNow = (note) => runOnce(String(note || '手动触发'), 'manual')
     bot.shared.videoWanderStatus = () => {
       const st = state()
+      const selfToday = runsToday(st, 'chat')
+      const selfCap = Math.max(0, num(cfg().chatMaxPerDay, 6))
+      const masterToday = runsToday(st, 'master')
       return {
         ok: true,
         enabled: pluginOn(),
-          autoEnabled: autoOn(),
+        autoEnabled: autoOn(),
+        // 三条通道分开报（2026-10-30）：自己起的占额度，主人叫的不占
+        summary: '今天看了 ' + (selfToday + masterToday + runsToday(st, 'timer')) + ' 个：'
+          + '自己起的 ' + selfToday + ' 个（额度 ' + selfToday + '/' + selfCap + '）'
+          + '，主人叫我 ' + masterToday + ' 个（不占额度）',
+        self: { todayCount: selfToday, maxPerDay: selfCap, cooldownMin: Math.max(0, num(cfg().chatCooldownMin, 30)), lastAt: Number(st.chatLastAt) || null },
+        master: { todayCount: masterToday, maxPerDay: Math.max(0, num(cfg().masterMaxPerDay, 20)) },
         everyHours: num(cfg().everyHours, 4),
         maxPerDay: Math.max(0, num(cfg().maxPerDay, 6)),
         todayCount: runsToday(st, 'timer'),
         lastRunAt: Number(st.lastRunAt) || null,
         nextDueAt: dueAt(st),
-        chat: {
-          cooldownMin: Math.max(0, num(cfg().chatCooldownMin, 30)),
-          maxPerDay: Math.max(0, num(cfg().chatMaxPerDay, 6)),
-          todayCount: runsToday(st, 'chat'),
-          lastAt: Number(st.chatLastAt) || null,
-        },
         running,
         quiet: { enabled: quietOn(), start: num(cfg().quietStart, 1), end: num(cfg().quietEnd, 8), active: inQuiet() },
         recent: (st.runs || []).slice(-8).reverse(),
@@ -909,7 +992,8 @@ export default {
     log.info('[看视频的地方] 已装配：' + (autoOn()
       ? '自动看=开（每 ' + num(cfg().everyHours, 4) + ' 小时最多一次，每天 ≤' + num(cfg().maxPerDay, 6) + ' 次）'
       : '自动看=关')
-      + '｜对话里自己看：冷却 ' + Math.max(0, num(cfg().chatCooldownMin, 30)) + ' 分钟，每天 ≤'
-      + Math.max(0, num(cfg().chatMaxPerDay, 6)) + ' 次（与自动看各算各的）')
+      + '｜它自己起的念头：冷却 ' + Math.max(0, num(cfg().chatCooldownMin, 30)) + ' 分钟，每天 ≤'
+      + Math.max(0, num(cfg().chatMaxPerDay, 6)) + ' 次；主人叫的不占额度（每天上限 '
+      + Math.max(0, num(cfg().masterMaxPerDay, 20)) + ' 防手滑）')
   },
 }
