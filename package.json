@@ -48,9 +48,10 @@
     "check:syntax": "node scripts/check-syntax.mjs",
     "check:secrets": "node scripts/check-no-secrets.mjs",
     "check:pack": "node scripts/check-pack.mjs",
-    "check": "node scripts/check-syntax.mjs && node scripts/check-no-secrets.mjs && node scripts/check-pack.mjs",
-    "verify": "node --test && node scripts/check-syntax.mjs && node scripts/check-no-secrets.mjs && node scripts/check-pack.mjs",
-    "prepack": "node scripts/check-no-secrets.mjs && node scripts/check-pack.mjs"
+    "check": "node scripts/check-syntax.mjs && node scripts/check-no-secrets.mjs && node scripts/check-no-secrets.mjs --with-tests && node scripts/check-pack.mjs",
+    "verify": "node --test && node scripts/check-syntax.mjs && node scripts/check-no-secrets.mjs && node scripts/check-no-secrets.mjs --with-tests && node scripts/check-pack.mjs",
+    "prepack": "node scripts/check-no-secrets.mjs && node scripts/check-pack.mjs",
+    "check:secrets:all": "node scripts/check-no-secrets.mjs --with-tests"
   },
   "dsh": {
     "bundle": {

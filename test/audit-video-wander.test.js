@@ -83,7 +83,7 @@ function setup(over = {}) {
   const bot = {
     cfg,
     log: quiet,
-    core: { dataDir: dir, adminQq: 1274673798, markScope: (sid, label, allowed) => { shared.__scope = { sid, label, allowed } } },
+    core: { dataDir: dir, adminQq: 10001, markScope: (sid, label, allowed) => { shared.__scope = { sid, label, allowed } } },
     shared,
     dsh: {
       async ensureSession(key, title) { shared.__session = { key, title }; return 'sess-wander' },
@@ -147,13 +147,13 @@ test('配置项都是控制台可调：20 项且都有默认值', () => {
 })
 
 test('跑一次：挑视频 → 抽帧 → 交感想 → 发给主人私聊', async () => {
-  const s = setup({ cfg: { autoEnabled: true, masterQq: '1274673798' } })
+  const s = setup({ cfg: { autoEnabled: true, masterQq: '10001' } })
   try {
     const r = await s.shared.videoWanderRunNow('测试')
     assert.equal(r.ok, true)
-    assert.equal(r.to, 'private:1274673798')
+    assert.equal(r.to, 'private:10001')
     assert.equal(s.delivered.length, 1)
-    assert.equal(s.delivered[0].to, 'private:1274673798')
+    assert.equal(s.delivered[0].to, 'private:10001')
     assert.ok(s.delivered[0].text.includes('看了：'), '应带标题行')
     assert.ok(s.delivered[0].text.includes('https://www.bilibili.com/video/'), '应带链接')
     assert.ok(s.delivered[0].text.includes('街道'), '应带感想正文')
@@ -164,7 +164,7 @@ test('masterQq 留空：回落到 adminQq', async () => {
   const s = setup({ cfg: { autoEnabled: true, masterQq: '' } })
   try {
     const r = await s.shared.videoWanderRunNow('测试')
-    assert.equal(r.to, 'private:1274673798')
+    assert.equal(r.to, 'private:10001')
   } finally { s.restore() }
 })
 
@@ -506,7 +506,7 @@ test('超时换算：180/240 秒，以及旧的毫秒值也能认', () => {
 
 // ── 2026-10-30 线上：它点了「去看」，但看完的结果没回到它自己的记录里 ─────
 test('回归：看完的感想必须经插件自己的 deliver 投递（内核才能记进它那一轮）', async () => {
-  const s = setup({ cfg: { autoEnabled: true, masterQq: '1274673798' } })
+  const s = setup({ cfg: { autoEnabled: true, masterQq: '10001' } })
   try {
     await s.shared.videoWanderRunNow('测试')
     assert.equal(s.pluginDelivered.length, 1, '结果要走 bot.deliver，不能走裸 deliver')
@@ -515,7 +515,7 @@ test('回归：看完的感想必须经插件自己的 deliver 投递（内核�
 })
 
 test('回归：看完后流水账里要有「看到了什么」，不能只有标题', async () => {
-  const s = setup({ cfg: { autoEnabled: true, masterQq: '1274673798' } })
+  const s = setup({ cfg: { autoEnabled: true, masterQq: '10001' } })
   try {
     await s.shared.videoWanderRunNow('测试')
     const done = s.selfLogRows.find((r) => r.delivered === true)

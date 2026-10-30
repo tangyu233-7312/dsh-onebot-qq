@@ -2,7 +2,8 @@
 /**
  * scripts/check-no-secrets.mjs — 打包前隐私/凭据守卫。
  *
- * 扫描范围 = `package.json` 的 `files` 白名单展开（运行文件 + docs + README + examples + locale…）。
+ * 扫描范围 = `package.json` 的 `files` 白名单展开（运行文件 + docs + README + examples + locale…）
+ *            + `test/`（不发布但会进 git，同样不能带真实号）。
  * 规则：
  *   1. 私有绝对路径：`/opt/…`、`/root/…`、`/var/log/…`、`C:\Users\<真名>`；
  *   2. QQ 号：QQ 字段上下文里的 5–12 位数字 + 裸 10/11 位号码；占位值放过。
@@ -16,6 +17,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+/** --with-tests：把 test/ 也纳入扫描（测试会进 git，同样不能带真实号）。 */
+const WITH_TESTS = process.argv.includes('--with-tests')
 const TEXT_EXTS = new Set([
   '.js', '.mjs', '.cjs', '.json', '.md', '.yml', '.yaml', '.txt', '.svg',
   '.ps1', '.sh', '.example', '.html', '.css',
@@ -30,6 +33,22 @@ const SAFE_QQ = new Set([
   '10000', '10001', '10002', '20001', '20002', '30001',
   '12345', '123456', '1234567', '12345678', '123456789', '1234567890',
   '99999', '999999', '9999999',
+])
+
+/**
+ * 测试夹具用的**合成**号码/凭据（2026-10-30）。
+ * 给测试目录一个可审计的白名单，而不是在规则里写一堆特例：
+ * 只有这几个值算"明显是假的"，其它一律照常报。
+ */
+const TEST_FIXTURE_LITERALS = new Set([
+  '1122334455', '2233445566', // 群记忆积累测试里的两个群
+  '888888', '555555', '987654321', '5e5' // @ / 群号 用例
+  , '50001', '50002'          // 普通群友
+  , '3505422215'              // bot_offline 用例的 user_id
+  , '1700000000'              // 秒级时间戳（被当成 10 位号码）
+  , '198.51.100.42', '8444'   // RFC 5737 文档专用 IP
+  , 'super-secret-api-key', 'SUPER_SECRET_TOKEN_123'
+  , 'sk-proj-abcdefgh1234', 'sk-abcdefgh12345678'
 ])
 
 /** 明显不是 QQ 的常见文档数字常量。 */
@@ -79,6 +98,13 @@ function collectFiles() {
   }
   // README/LICENSE/CHANGELOG 已在 files 里；这里兜底再扫一次顶层说明文件。
   for (const name of ['README.md', 'CHANGELOG.md', 'LICENSE']) addFile(path.join(ROOT, name))
+  // test/ 不发布，但它会进 git（2026-10-30：测试里写了真实 QQ 号，差点提交）。
+  // 默认走 package.json 白名单（与打包一致）；加 --with-tests 才把测试也算进来。
+  // CI 里建议两个都跑：打包卫生 + 仓库卫生。
+  if (WITH_TESTS) {
+    const testDir = path.join(ROOT, 'test')
+    if (fs.existsSync(testDir)) walk(testDir)
+  }
   return [...out].sort()
 }
 
@@ -172,9 +198,18 @@ for (const abs of files) {
       let m
       while ((m = rule.re.exec(line)) !== null) {
         const captured = m[1] ?? m[0]
+        // 测试夹具里的合成值（只在 --with-tests 时生效之外也放过：
+        // 这些值出现在文档/示例里同样不该报警）
+        if (TEST_FIXTURE_LITERALS.has(String(captured).trim()) || TEST_FIXTURE_LITERALS.has(String(m[0]).trim())) continue
         if (rule.name.startsWith('qq:')) {
           const num = String(captured).replace(/^\D+/, '')
           if (SAFE_QQ.has(num) || SAFE_NUMBERS.has(num)) continue
+          if (TEST_FIXTURE_LITERALS.has(num)) continue
+        }
+        if (rule.name === 'credential:sk-') {
+          // m[0] 可能是 'api_key=sk-xxx' 这种整体，把里面的 sk- 片段抽出来比对白名单
+          const skPart = (String(m[0]).match(/sk-[A-Za-z0-9_-]+/) || [''])[0]
+          if (skPart && TEST_FIXTURE_LITERALS.has(skPart)) continue
         }
         if (rule.name === 'credential:sk-' && /(?:YOUR|EXAMPLE|REPLACE|PLACEHOLDER|xxx|REDACTED)/i.test(m[0])) continue
         if (rule.name === 'credential:assignment' && isPlaceholder(captured)) continue
