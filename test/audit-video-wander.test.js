@@ -46,6 +46,8 @@ function setup(over = {}) {
 
   const tools = {}
   const delivered = []
+  const pluginDelivered = []
+  const selfLogRows = []
   const shared = {}
   const prompts = []
   let turnEndCb = null
@@ -106,18 +108,21 @@ function setup(over = {}) {
         }, 5)
       },
     },
-    async deliver(to, text) { delivered.push({ to, text }) },
+    // 2026-10-30：投递改成走插件自己的 bot.deliver（内核会按 target 找回它那一轮，
+    // 只出站不插话）。这里两个名字都记，测试断言要看全。
+    async deliver(to, text) { delivered.push({ to, text }); pluginDelivered.push({ to, text }) },
     // 2026-10-30：watch_video 现在按 _wakeKind 区分「自己起的念头(self)」和「主人叫的(master)」。
     // 默认给 null = 主人叫的（不占额度）；要测 self 通道就在 over.turnCtx 里传 { _wakeKind: 'proactive' }
     currentTurn() { return over.turnCtx || null },
     registerTool(name, def) { tools[name] = def },
+    selfLog: { append: (e) => selfLogRows.push(e) },
     onDispose(fn) { shared.__dispose = fn },
     on() {},
   }
 
   plugin.setup(bot)
   const restore = () => { globalThis.fetch = realFetch; fs.rmSync(dir, { recursive: true, force: true }) }
-  return { bot, tools, delivered, shared, prompts, cfg, restore, dir, triggerTurnEnd: () => turnEndCb?.() }
+  return { bot, tools, delivered, pluginDelivered, selfLogRows, shared, prompts, cfg, restore, dir, triggerTurnEnd: () => turnEndCb?.() }
 }
 
 test('默认：插件启用但自动看关', () => {
@@ -497,4 +502,25 @@ test('超时换算：180/240 秒，以及旧的毫秒值也能认', () => {
   assert.equal(conv(undefined), 180000, '缺失 → 默认 180 秒')
   assert.equal(conv(0), 180000)
   assert.equal(conv(30), 30000, '30 秒')
+})
+
+// ── 2026-10-30 线上：它点了「去看」，但看完的结果没回到它自己的记录里 ─────
+test('回归：看完的感想必须经插件自己的 deliver 投递（内核才能记进它那一轮）', async () => {
+  const s = setup({ cfg: { autoEnabled: true, masterQq: '1274673798' } })
+  try {
+    await s.shared.videoWanderRunNow('测试')
+    assert.equal(s.pluginDelivered.length, 1, '结果要走 bot.deliver，不能走裸 deliver')
+    assert.match(s.pluginDelivered[0].text, /街道/, '感想正文要在里面')
+  } finally { s.restore() }
+})
+
+test('回归：看完后流水账里要有「看到了什么」，不能只有标题', async () => {
+  const s = setup({ cfg: { autoEnabled: true, masterQq: '1274673798' } })
+  try {
+    await s.shared.videoWanderRunNow('测试')
+    const done = s.selfLogRows.find((r) => r.delivered === true)
+    assert.ok(done, '投递成功后要记一行 delivered')
+    assert.match(done.what, /看完了/, '要说明看完了')
+    assert.match(done.what, /街道/, '要带上它自己的感想，否则下一轮只剩标题')
+  } finally { s.restore() }
 })

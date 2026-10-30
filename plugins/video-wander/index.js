@@ -740,9 +740,28 @@ export default {
           save(st)
           return { ok: false, reason: 'no_master' }
         }
+        // ⚠️ 必须走**插件自己的 deliver**，不是内核的裸 deliver。
+        //
+        // 2026-10-30 线上症状：它在私聊里点了「我去翻翻」→ 卡片发对了 →
+        // 主人再问「你不是已经看了吗」，它答「记录里有标题，但感想和画面没回给本鱼」。
+        // 根因：看完的结果是**旁路推**给主人的一条消息，不属于它正在跑的那一轮，
+        // 所以它自己的对话历史里只有「我去翻翻」，没有「我看到了什么」。
+        // 改成经 bot.deliver：内核会按 target 找到它这一轮的 TurnContext，
+        // 只出站、**不插话**（不会触发新一轮），但这条内容进入该会话的记录，
+        // 再配上出站后写的那行流水账，它就记得「我看了什么、想到了什么」。
         await bot.deliver(to, text)
         st.runs.push({ at: now(), trigger, quota: trigger === 'self' ? 'self' : 'free', bvid: video.bvid, title: video.title.slice(0, 60), ok: true, reason: 'sent' })
         save(st)
+        // 看完的**结果**也要记一笔：只记「看了个视频」而不记「看到了什么」，
+        // 它在下一轮回忆时就只有标题没有内容（线上就是这么答的）。
+        logSelf({
+          what: '看完了「' + String(video.title || video.bvid).slice(0, 30) + '」，感想：' + String(got.thought).replace(/\s+/g, ' ').slice(0, 60),
+          why: '已经发给主人了',
+          where: '私聊',
+          channel: trigger,
+          bvid: video.bvid,
+          delivered: true,
+        })
         log.info('[看视频的地方] 已发给 ' + to + '：' + video.bvid + '（' + got.thought.length + ' 字）')
         return { ok: true, sent: true, to, bvid: video.bvid }
       } catch (e) {
