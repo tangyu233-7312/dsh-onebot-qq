@@ -67,9 +67,12 @@ test('拆条：长回复拆成两条、都走唯一出站口；短回复/带 CQ 
   assert.equal(h.sent.length, 2, '拆条 = 两条出站（后面每条走 bot.deliver）')
   assert.ok(h.sent[0].wire && h.sent[1].wire, '两条都有实际内容')
 
-  // 多句 → 按「最多拆几条」发 3 条（默认 3）
+  // 多句 → 按「最多拆几条」发 3 条。
+  // ⚠️ 这里**显式写死 splitMaxParts: 3**，不依赖默认值：
+  //    2026-10-30 默认值从 3 改成 2（对齐 NAS 上"主动接话一轮最多 2 条"），
+  //    若继续依赖默认值，这条测试会因为"拆不到三条"而假红。
   const h3 = await boot(t, {
-    pacing: { merge: { enabled: false }, reply: { style: { splitEnabled: true, splitProbability: 1, splitMinLen: 6, splitDelayMs: 0 } } },
+    pacing: { merge: { enabled: false }, reply: { style: { splitEnabled: true, splitProbability: 1, splitMinLen: 6, splitDelayMs: 0, splitMaxParts: 3 } } },
   })
   const send3 = h3.ctx._registeredTools.get('mcp__qq__send_message')
   h3.ctx.setPromptHandler(async (req) => {

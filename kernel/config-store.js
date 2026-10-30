@@ -114,7 +114,7 @@ export function defaultConfig() {
           splitProbability: 0.5,
           splitMinLen: 12,
           splitDelayMs: 1000,
-          splitMaxParts: 3,
+          splitMaxParts: 2,
           stickerEnabled: true,
           stickerProbability: 0.8,
         },

@@ -93,7 +93,9 @@ export const REPLY_DEFAULTS = {
     splitProbability: 0.5,   // 拆条概率（0~1）
     splitMinLen: 12,
     splitDelayMs: 1000,
-    splitMaxParts: 3,        // 一段回复最多拆几条（2~4）
+    splitMaxParts: 2,        // 一段回复最多拆几条（2~4）
+                             // 2026-10-30：默认 3 → 2。NAS 上原来是硬编码"主动接话一轮最多 2 条"，
+                             // 这里改成可调（控制台「主动接话 → 高级」），行为等价但不写死。
     stickerEnabled: true,
     stickerProbability: 0.8, // 表情包概率（0~1）
   },

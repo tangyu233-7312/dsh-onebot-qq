@@ -408,7 +408,7 @@ export const CORE_CONTROLS = [
   },
   {
     key: 'pacing.reply.style.splitMaxParts', group: '主动接话', advanced: true, type: 'int', label: '最多拆几条',
-    min: 2, max: 4, step: 1, default: 3,
+    min: 2, max: 4, step: 1, default: 2,
     hint: '一段回复最多拆成几条发（2~4）。只在句末标点/换行处拆，绝不把一句话拦腰砍；\n句数不够就按实际句数发。'
       + '配「拆条概率」用：概率决定拆不拆、这里决定最多拆几条。',
   },
