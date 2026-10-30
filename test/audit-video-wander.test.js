@@ -524,3 +524,53 @@ test('回归：看完后流水账里要有「看到了什么」，不能只有�
     assert.match(done.what, /街道/, '要带上它自己的感想，否则下一轮只剩标题')
   } finally { s.restore() }
 })
+
+// ── 2026-10-30：watch_now（在当前对话里真的看）───────────────────
+test('watch_now：抽到的帧挂到当前这一轮（它自己看得见），不换会话', async () => {
+  const s = setup({ cfg: { autoEnabled: true } })
+  try {
+    const turnCtx = { _wakeKind: 'at', nextImageParts: [] }
+    s.bot.currentTurn = () => turnCtx
+    const r = await s.tools.watch_now.execute({}, { agent: { session: { id: 's1' } } })
+    assert.equal(r.ok, true)
+    assert.equal(r.frames, 1, '示例侧车只回一帧')
+    assert.equal(turnCtx.nextImageParts.length, 1, '帧要进这一轮，下一轮它才看得见')
+    assert.ok(r.frames > 0)
+    assert.ok(r.url.includes('bilibili'))
+    assert.match(r.message, /你现在就把看到的说出来/, '要明确让它自己开口，而不是等转述')
+  } finally { s.restore() }
+})
+
+test('watch_now：主人在对话里叫它看 → 不占它自己的额度', async () => {
+  const s = setup({ cfg: { autoEnabled: true, chatMaxPerDay: 1 } })
+  try {
+    const turnCtx = { _wakeKind: 'at', nextImageParts: [] }
+    s.bot.currentTurn = () => turnCtx
+    const r = await s.tools.watch_now.execute({}, { agent: { session: { id: 's1' } } })
+    assert.equal(r.ok, true)
+    assert.equal(r.channel, 'master')
+    const st = s.shared.videoWanderStatus()
+    assert.equal(st.self.todayCount, 0, '主人叫的不该占自己那份额度')
+    assert.equal(st.master.todayCount, 1)
+  } finally { s.restore() }
+})
+
+test('watch_now：不在任何一轮对话里 → 明确拒绝（它只能聊天里用）', async () => {
+  const s = setup({ cfg: { autoEnabled: true } })
+  try {
+    s.bot.currentTurn = () => null
+    const r = await s.tools.watch_now.execute({}, { agent: { session: { id: 's1' } } })
+    assert.equal(r.ok, false)
+    assert.match(r.reason, /不在任何一轮对话里/)
+  } finally { s.restore() }
+})
+
+test('watch_now：自己起的念头受 chatMaxPerDay 限制', async () => {
+  const s = setup({ cfg: { autoEnabled: true, chatMaxPerDay: 0 } })
+  try {
+    s.bot.currentTurn = () => ({ _wakeKind: 'proactive', nextImageParts: [] })
+    const r = await s.tools.watch_now.execute({}, { agent: { session: { id: 's1' } } })
+    assert.equal(r.ok, false)
+    assert.match(r.reason, /每天最多/)
+  } finally { s.restore() }
+})

@@ -135,14 +135,27 @@ test('skip：工作区里调用才算「今天不写」', async () => {
   }
 })
 
-test('skip：群里调用只影响这段对话，不挡晚上的回顾', async () => {
+test('skip：在任何对话里说的「不写」都算数（2026-10-30 改语义）', async () => {
+  // 以前只有 desk（空间工作区）里说的才真的生效，家里说的不算 —— 正是"割裂"的一种。
+  // 现在它在私聊/群里说「今天不写」，就是真的不写。
   const { tool, dispose } = await boot()
   try {
-    const r = await tool('skip_qzone').execute({ target: GROUP_KEY, reason: '群里这会儿不想写' })
-    assert.equal(r.global, false)
+    const r = await tool('skip_qzone').execute({ target: GROUP_KEY, reason: '这会儿不想写' })
+    assert.equal(r.global, true)
     const s = await tool('qzone_status').execute({ target: GROUP_KEY })
-    assert.equal(s.skippedToday, false, '群里的 skip 不该把整天判死')
-    assert.equal(s.decided, false)
+    assert.equal(s.skippedToday, true, '说的不写要算数')
+    assert.equal(s.decided, true)
+  } finally {
+    dispose()
+  }
+})
+
+test('skip：target 留空 = 当前对话（家里直接说不用带参数）', async () => {
+  const { tool, dispose } = await boot()
+  try {
+    const r = await tool('skip_qzone').execute({ reason: '今天没什么想记的' })
+    assert.equal(r.ok, true)
+    assert.equal(r.global, true)
   } finally {
     dispose()
   }

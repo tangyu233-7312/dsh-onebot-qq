@@ -1224,6 +1224,13 @@ export async function apply(ctx, bundleConfig = {}) {
       const submit = async (sid) => {
         turnCtx.sessionId = sid
         turnCtx.promptText = makePrompt(sid)
+        // 2026-10-30：上一轮工具（watch_now）攒下的画面，这一轮挂上。
+        // 取空即毁 —— 只给一轮，之后不会每轮都重发同一批帧。
+        if (Array.isArray(turnCtx.nextImageParts) && turnCtx.nextImageParts.length) {
+          const pending = turnCtx.nextImageParts.splice(0, turnCtx.nextImageParts.length)
+          ev.imageParts.push(...pending)
+          log.info(`[看视频] 本轮挂上 ${pending.length} 帧（上一轮自己看的）`)
+        }
         bindTurnHooks(sid)
         pushPendingTurn(sid, turnCtx)
         await dsh.prompt(sid, turnCtx.promptText, ev.imageParts)
@@ -1308,6 +1315,10 @@ export async function apply(ctx, bundleConfig = {}) {
     // 不给这个标记，工具只能一律当"对话里自己看"，就会出现
     // 「自己看了 2 个、主人叫了 1 个，可额度显示 3/7」的矛盾。
     ev.turnCtx._wakeKind = ev.wake?.kind || 'proactive'
+    // 2026-10-30：「在当前对话里真的看视频」用。
+    // 工具（watch_now）在调用时把抽好的帧 push 到这里，下一轮 prompt 时由内核取走挂上 ——
+    // 这样它是在**自己的会话**里看到画面，而不是被另一个会话代看、再转述给它。
+    ev.turnCtx.nextImageParts = []
     // 续聊可选「引用最后一条人类消息」：把目标 message_id 带进本轮，出站钩子①会用它（其它轮一律清掉）
     if (isContinuation && quoteTo) ev.turnCtx._forceReplyTo = Number(quoteTo) || null
     holdActiveTurn(chatKey, ev.turnCtx)

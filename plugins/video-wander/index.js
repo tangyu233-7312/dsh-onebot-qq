@@ -877,6 +877,8 @@ export default {
         + '当前这一轮只要回一句「我去翻翻」之类的就行，不用等结果。'
         + '主人叫你看的**不占额度、不受冷却**；只有你自己起的念头才占「每天自己看几次」的额度。'
         + '想知道今天看过几个、还剩多少额度，看上面「我今天的经历」那一行，或者调 watch_status。'
+        + '**在对话里想真的当场看，用 watch_now**（画面会直接给你，你自己说看到什么）；'
+        + 'watch_video 是"点一下，看完另外发给你"，你自己不会亲眼看到画面。'
         + '想用的时候：对方让你随便看看、你自己想找点话题、或者闲着没事想翻点新东西。',
       parameters: {},
       async execute(args = {}, exec) {
@@ -932,6 +934,117 @@ export default {
           message: channel === 'self'
             ? '我去翻翻，看完了把看到的东西发给你'
             : '好，我这就去看，看完跟你说看到了什么',
+        }
+      },
+    })
+
+    // ── 工具：在当前对话里真的看（2026-10-30 重做）──────────────
+    // 为什么不再开「看视频的地方」那个会话：用户的原话是
+    //  「真的它自己干了什么，而不是点了一个按钮，然后就不是在做了，最后只是得到一个消息」。
+    // 现在的做法：工具调用时**当场下载 + 抽帧**，把帧挂进**当前这一轮**的 imageParts，
+    // 它就在同一个会话里看到画面、写出感想、自己说出那句「我刚看了个视频」。
+    const pickAndRead = async (reason) => {
+      const st = state()
+      const tried = new Set()
+      const maxTries = Math.max(1, num(cfg().maxPickTries, 3))
+      for (let i = 0; i < maxTries; i += 1) {
+        const cand = await pickVideo(st, tried)
+        if (!cand) return { ok: false, code: 'no_candidate', error: '没挑到合适的视频' }
+        const url = 'https://www.bilibili.com/video/' + cand.bvid
+        log.info('[看视频的地方] 挑中 ' + cand.bvid + '「' + String(cand.title || '').slice(0, 30) + '」（' + reason + '）')
+        const got = await readViaSidecar(url)
+        if (got.ok) return { ok: true, video: cand, data: got }
+        log.warn('[看视频的地方] 看不成 ' + cand.bvid + ': ' + (got.code || '') + ' ' + (got.error || '') + ' —— 换一个')
+        tried.add(cand.bvid)
+      }
+      return { ok: false, code: 'all_failed', error: '试了几个都没抽到画面' }
+    }
+
+    bot.registerTool('watch_now', {
+      description: '**真的在这个对话里看一个 B 站视频**：工具会当场下载并抽几帧，'
+        + '下一轮你会直接看到那些画面（按时间顺序），然后你自己说看到了什么、想到什么 —— '
+        + '就在这个对话里说，没有人替你转述。'
+        + '主人叫你看的不占额度；只有你自己起的念头才占「每天自己看几次」。',
+      parameters: {},
+      async execute(args, exec) {
+        if (!pluginOn()) return { ok: false, reason: '看视频功能没启用' }
+        if (!String(cfg().sidecarUrl || '').trim()) return { ok: false, reason: '侧车没配，看不了' }
+        if (running) return { ok: false, reason: '正在看别的，等这次看完' }
+        const turn = (() => { try { return bot.currentTurn?.() || null } catch { return null } })()
+        if (!turn) return { ok: false, reason: '不在任何一轮对话里，看不了（这条只能聊天里用）' }
+        const sid = String(exec?.agent?.session?.id || '')
+        if (!sid) return { ok: false, reason: '认不出当前会话' }
+
+        // 通道与配额：和 watch_video 同一套
+        const wakeKind = String(turn._wakeKind || '')
+        const channel = (wakeKind === 'proactive' || wakeKind === 'continuation') ? 'self' : 'master'
+        const st0 = state()
+        if (channel === 'self') {
+          const cap = Math.max(0, num(cfg().chatMaxPerDay, 6))
+          if (cap <= 0) return { ok: false, reason: '配置里把「它自己起的念头每天最多」设成 0 了' }
+          if (runsToday(st0, 'chat') >= cap) return { ok: false, reason: '今天自己看的已经够了，明天再翻' }
+          const cdMs = Math.max(0, num(cfg().chatCooldownMin, 30)) * 60000
+          const wait = Number(st0.chatLastAt || 0) + cdMs - now()
+          if (wait > 0) return { ok: false, reason: '刚看过一个，' + Math.ceil(wait / 60000) + ' 分钟后再来' }
+        } else {
+          const cap = Math.max(0, num(cfg().masterMaxPerDay, 20))
+          if (cap > 0 && runsToday(st0, 'master') >= cap) return { ok: false, reason: '今天已经看了 ' + runsToday(st0, 'master') + ' 个，明天再翻' }
+        }
+
+        running = true
+        try {
+          const got0 = await pickAndRead(channel === 'self' ? '它自己起的念头' : '主人叫它看')
+          if (!got0.ok) {
+            backoff(state())
+            return { ok: false, reason: got0.code === 'no_candidate' ? '这会儿没什么可看的' : '这段视频抽不到画面，换个时间吧' }
+          }
+          const { video, data } = got0
+          const imageParts = []
+          for (const fr of Array.isArray(data.frames) ? data.frames : []) {
+            try {
+              const buf = await fs.promises.readFile(String(fr.path || ''))
+              if (!buf.length) continue
+              imageParts.push({ mediaType: mediaTypeOf(buf), data: buf.toString('base64'), name: 'frame@' + (Number(fr.sec) || 0) + 's' })
+            } catch (e) { log.warn('[看视频的地方] 读帧失败 ' + fr.path + ': ' + e.message) }
+          }
+          if (!imageParts.length) {
+            backoff(state())
+            return { ok: false, reason: '一帧都没读出来，这次不看了' }
+          }
+          // **关键**：帧挂进当前这一轮，下一轮它自己能看见
+          if (Array.isArray(turn.nextImageParts)) turn.nextImageParts.push(...imageParts)
+          // 记账（跨会话台账 + 本插件的 runs）
+          const st = state()
+          st.seen = { ...(st.seen || {}), [video.bvid]: now() }
+          if (channel === 'self') st.chatLastAt = now()
+          st.runs.push({ at: now(), trigger: channel, quota: channel === 'self' ? 'self' : 'free', bvid: video.bvid, title: String(video.title || '').slice(0, 60), ok: true, reason: 'inline' })
+          save(st)
+          logSelf({
+            what: '看了 B 站视频「' + String(video.title || video.bvid).slice(0, 40) + '」',
+            why: channel === 'self' ? '我自己想看的' : '主人让我看的',
+            where: '私聊',
+            channel,
+            bvid: video.bvid,
+          })
+          const durSec = Number(data.durationSec) || Number(video.duration) || 0
+          const meta = []
+          if (video.owner) meta.push('UP ' + video.owner)
+          if (video.tname) meta.push('分区 ' + video.tname)
+          if (durSec) meta.push('时长 ' + mmss(durSec))
+          return {
+            ok: true,
+            channel,
+            bvid: video.bvid,
+            title: video.title,
+            url: 'https://www.bilibili.com/video/' + video.bvid,
+            frames: imageParts.length,
+            info: meta.join(' ｜ '),
+            message: '画面已经给你了（' + imageParts.length + ' 帧，按时间顺序）。'
+              + '你现在就把看到的说出来 —— 像平时那样跟对方说，别写成影评、别说"收到画面"这种话。'
+              + '只说你看得见的；看不清就说看不清。',
+          }
+        } finally {
+          running = false
         }
       },
     })

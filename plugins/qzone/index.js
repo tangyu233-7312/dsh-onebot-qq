@@ -298,12 +298,13 @@ export default {
     // ── 工具 ①：写说说 ──────────────────────────────────────
     bot.registerTool('post_qzone', {
       description: '把一条说说发到自己的 QQ 空间。**全账号每天只有一次机会**（不是每个群一次），发了就用完。'
+        + '在任何对话里都能直接写（包括跟你主人的私聊）—— 写完会有一句回执告诉你「什么时候该说点别的」。'
         + '不想写时千万不要调这个工具，改调 skip_qzone() —— 千万别把「今天不写」当正文发出去，那是公开可见的。'
         + 'images 只能给本地文件绝对路径（表情包、群友发的图、生成图都行），最多 9 张。',
       parameters: {
         target: {
-          type: 'string', required: true,
-          description: '当前上下文：在空间工作区里填 desk；在群里填 group:<群号>；私聊填 private:<QQ号>',
+          type: 'string',
+          description: '留空即可（自动按当前对话）；也接受 desk / group:<群号> / private:<QQ号>',
         },
         content: {
           type: 'string', required: true,
@@ -371,7 +372,14 @@ export default {
             where: '空间工作区',
           })
         } catch { /* 记账失败不影响已经发出去的说说 */ }
-        return { ok: true, posted: true, chars: body.length, images: paths.length }
+        return {
+          ok: true,
+          posted: true,
+          chars: body.length,
+          images: paths.length,
+          next: '发出去了。现在用你自己的话跟对方说一句 —— 你刚才在空间里写了什么、为什么写，'
+            + '像聊天那样说，别复述正文、别说"已发布"。',
+        }
       },
     })
 
@@ -380,18 +388,19 @@ export default {
       description: '今天不写说说。**这个工具不会往空间发任何内容**，只记下「我考虑过了，今天没有想写的」。'
         + '在群/私聊里调用只表示这段对话不用写，不影响晚上的回顾；只有在空间工作区里调才算「今天不写」。',
       parameters: {
-        target: { type: 'string', required: true, description: 'desk（空间工作区）或 group:<群号> / private:<QQ号>' },
+        target: { type: 'string', description: '留空 = 当前对话；desk = 空间工作区；也接受 group:<群号> / private:<QQ号>' },
         reason: { type: 'string', description: '为什么不想写（只记日志，不会发到空间）' },
       },
       async execute(args = {}) {
-        const target = String(args.target || '')
-        if (!target) return { ok: false, reason: '缺 target（desk 或当前会话）' }
-        const why = String(args.reason ?? '').trim() || '(没说原因)'
+        // 2026-10-30：target 可选 —— 它现在可以在私聊里直接说「今天不写」。
+        // 以前必须传 desk 才真的生效，等于「家里说的不算」，正是要解决的割裂。
+        const a = args || {}
+        const target = String(a.target || '').trim() || (() => {
+          const turn = (() => { try { return bot.currentTurn?.() || null } catch { return null } })()
+          return String(turn?.chatKey || '') || DESK_CHAT_KEY
+        })()
+        const why = String(a.reason ?? '').trim() || '(没说原因)'
         const inDesk = target === 'desk' || target === DESK_CHAT_KEY
-        if (!inDesk) {
-          bot.log?.info?.('[空间] ' + target + ' 这次不写：' + why)
-          return { ok: true, skipped: true, global: false, note: '只影响这段对话；晚上的空间工作区照常回顾' }
-        }
         withState((all) => {
           const d = dayOf(all, localDateOf(Date.now()))
           d.skipped = true
