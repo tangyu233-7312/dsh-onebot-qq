@@ -295,6 +295,10 @@ export function createDeliver({ onebot, log = console, adminQq = null, longForwa
       // 命令 / 答应声 / 冷却 / 生图失败提示等出站没有自己的回合上下文，挂引用只会引错人。
       autoQuote: opts.autoQuote === true,
       fromTool: opts.fromTool === true, // 模型经 send_message 发的正文（拆条等"像真人"的加工只对它做）
+      // 不套合并转发卡片。设计时留了这个检查（下面 wantForward 里判 noForward），
+      // 但一直没从 opts 接进来 —— 于是谁也用不了（2026-10-30 发现）。
+      // 典型用途：命令回执（/help 列十几条命令就过 400 字，转卡片后用户还得展开才看得全）。
+      noForward: opts.noForward === true,
     }
     for (const fn of [...hooks]) {
       try { await fn(out) } catch (e) { log.error(`[出站] decorate 钩子异常(忽略): ${e.stack || e.message}`) }

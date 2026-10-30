@@ -19,6 +19,13 @@
  *   实际间隔 = max(minGapMs, 3600s/hourlyMax)，所以"每小时最多 N 次"是**硬上限**。
  */
 
+// ⚠️ 本模块原本是零依赖的（不 import 任何东西）。2026-10-30 破例加了三个：
+//    私聊接话的配额要落盘（重启不丢），必须能读写文件。
+//    除此之外仍然不碰内核其它模块 —— 只借 platform/atomic.js 的原子写。
+import fs from 'node:fs'
+import path from 'node:path'
+import { readJsonFile, writeJsonFileSync } from '../platform/atomic.js'
+
 const HOUR = 3600000
 const clamp01 = (v) => Math.max(0, Math.min(1, Number(v) || 0))
 const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d)
@@ -182,7 +189,7 @@ function normalize(rawPacing) {
  * @param {{log?: object, state: object}} deps
  *   state — ChatState（用它的 map / get()，不新开一套会话状态）
  */
-export function createPacing({ log = console, state, clock = null }) {
+export function createPacing({ log = console, state, clock = null, dataDir = '' }) {
   // clock：自检用（可传函数/对象把"现在"钉住）；运行时一律真实时间
   const nowMs = () => {
     const v = typeof clock === 'function' ? Number(clock()) : (clock && typeof clock.now === 'function' ? Number(clock.now()) : NaN)
@@ -580,26 +587,88 @@ export function createPacing({ log = console, state, clock = null }) {
   // ── 私聊主动接话（2026-10-29）────────────────────────────────
   // 与群聊的区别：私聊没有"上下文在流动"可判断，只剩"对方多久没说话"这一个信号。
   // 所以只看冷场 + 自己的三条闸门（每小时 / 每天 / 最小间隔），不参与话题打分。
-  const privateRings = new Map() // qq → [ts…]（最近几个 tick 的判定记录，只用于控制台/日志）
+  /**
+   * 私聊主动接话的开口记录：qq → [ts…]（滚动保留 24 小时）。
+   *
+   * ⚠️ 这是**配额依据**，不是"只给控制台看的日志"（老注释写错了）。
+   * 2026-10-30 改成落盘：原来是纯内存，DSH 一重启就清零 ——
+   * 「每天最多 14 次」实际变成「每次重启后 14 次」，重启几次就有几个 14 次，
+   * 而且线上排查时前后两套账对不上（"明明设了 30 分钟却等了一个半小时"）。
+   * 落盘位置：<dataDir>/private-pacing-state.json（按 qq → 时间戳数组，原子写）。
+   */
+  const privateRings = new Map()
+  const ringsFile = () => (dataDir ? path.join(String(dataDir), 'private-pacing-state.json') : '')
+
+  /** 启动时把上次的开口记录读回来（只保留 24 小时内的；坏文件当没有，绝不抛）。 */
+  function loadPrivateRings() {
+    const file = ringsFile()
+    if (!file) return
+    try {
+      if (!fs.existsSync(file)) return
+      const raw = readJsonFile(file)
+      const rings = raw && typeof raw === 'object' && raw.rings && typeof raw.rings === 'object' ? raw.rings : raw
+      if (!rings || typeof rings !== 'object') return
+      const now = nowMs()
+      let total = 0
+      for (const [qq, list] of Object.entries(rings)) {
+        if (!Array.isArray(list)) continue
+        const kept = list.map(Number).filter((x) => Number.isFinite(x) && now - x < 24 * HOUR)
+        if (kept.length) { privateRings.set(String(qq), kept); total += kept.length }
+      }
+      if (total) log.info(`[主动接话] 私聊配额已恢复：${total} 条开口记录（重启不丢额度）`)
+    } catch (e) {
+      log.warn(`[主动接话] 私聊配额读回失败（当作空的继续）: ${e.message}`)
+    }
+  }
+
+  /** 写回开口记录（原子写；失败只记 warn —— 记账失败不能影响接话本身）。 */
+  function savePrivateRings() {
+    const file = ringsFile()
+    if (!file) return
+    try {
+      const now = nowMs()
+      const out = {}
+      for (const [qq, list] of privateRings) {
+        const kept = list.filter((x) => now - x < 24 * HOUR)
+        if (kept.length) out[qq] = kept
+      }
+      writeJsonFileSync(file, { version: 1, rings: out }, { mode: 0o600 })
+    } catch (e) {
+      log.warn(`[主动接话] 私聊配额落盘失败: ${e.message}`)
+    }
+  }
 
   /** 私聊主动接话总开关：外层总闸 + 私聊开关 */
   function privateEnabled() {
     return cfg.reply.enabled !== false && cfg.reply.privateEnabled === true
   }
 
-  /** 单个私聊的配额是否还有（每小时 / 每天 / 最小间隔） */
-  function privateQuotaOk(qq, now) {
+  /**
+   * 单个私聊的配额状态。**返回具体哪一道闸挡住**（'' = 没挡）。
+   *
+   * 为什么不再返回 bool（2026-10-30 教训）：
+   *   原来只回 true/false，日志统一写"配额或间隔未到（每小时/每天/最小间隔）"，
+   *   三个原因混成一句 —— 线上出现"设了 30 分钟却等了一个半小时"时，
+   *   根本判断不出是每小时上限、每天上限、还是最小间隔。
+   *   现在直接说「今天 13/14 次」「距上次还差 12 分钟」，一眼定位。
+   */
+  function privateQuotaBlocked(qq, now) {
     const fires = (privateRings.get(qq) || []).filter((t) => now - t < 24 * HOUR)
     privateRings.set(qq, fires)
+    const hourlyMax = Math.max(0, num(cfg.reply.privateHourlyMax, 1))
     const lastHour = fires.filter((t) => now - t < HOUR).length
-    if (lastHour >= Math.max(0, num(cfg.reply.privateHourlyMax, 1))) return false
-    if (fires.length >= Math.max(0, num(cfg.reply.privateMaxPerDay, 3))) return false
+    if (lastHour >= hourlyMax) return `这小时已经开口 ${lastHour}/${hourlyMax} 次（每小时上限）`
+    const dayMax = Math.max(0, num(cfg.reply.privateMaxPerDay, 3))
+    if (fires.length >= dayMax) return `今天已经开口 ${fires.length}/${dayMax} 次（每天上限，明天 0 点重置）`
     const last = fires[fires.length - 1] || 0
     // 两次之间至少隔多久：只认 privateMinGapMs 一项（分钟）。
     // 曾经还有一个 privateMinHourGap（小时）并行、取更严的 —— 用户改一个不生效，已合并。
     const gapMs = Math.max(60000, num(cfg.reply.privateMinGapMs, 60) * 60000)
-    if (last && now - last < gapMs) return false
-    return true
+    if (last && now - last < gapMs) {
+      const rest = Math.ceil((gapMs - (now - last)) / 60000)
+      return `距上次主动开口还差 ${rest} 分钟（间隔 ${Math.round(gapMs / 60000)} 分钟）`
+    }
+    return ''
   }
 
   /** 私聊冷场轮询：对每个"说过话的私聊"看是不是静太久了 */
@@ -642,13 +711,14 @@ export function createPacing({ log = console, state, clock = null }) {
       // 每一步 continue 都记下原因，再也不用猜
       let code = ''
       let why = ''
+      const quotaBlocked = privateQuotaBlocked(qq, now)
       if (!lastTouch) { code = 'no-baseline'; why = '没有对话基线（开机播种没跑到？）' }
       else if (now - lastTouch < coldMs) {
         code = 'warming'
         why = '还没冷场（安静 ' + Math.round((now - lastTouch) / 60000) + ' / ' + Math.round(coldMs / 60000) + ' 分钟）'
       } else if (isBusy(key)) { code = 'busy'; why = '这条线正忙（有回合没结束；若看到「清理超时未开始的 pending 回合」就是它）' }
       else if (contPending(key)) { code = 'continuation'; why = '续聊排队中' }
-      else if (!privateQuotaOk(qq, now)) { code = 'quota'; why = '配额或间隔未到（每小时/每天/最小间隔）' }
+      else if (quotaBlocked) { code = 'quota'; why = quotaBlocked }
       else if (typeof onProactiveTurn !== 'function') { code = 'no-callback'; why = '没有起回合的回调（内核没接上）' }
       if (code) { logPrivateSkip(key, code, why); continue }
       // 当天最晚一条由核心循环统一判（这里只筛选"静太久了"）
@@ -677,6 +747,7 @@ export function createPacing({ log = console, state, clock = null }) {
         const stamps = privateRings.get(qq) || []
         stamps.push(nowMs())
         privateRings.set(qq, stamps)
+        savePrivateRings()   // 落盘：重启后额度不重置
         fire(key, qq, 'private-silence', 1)
       })
       .catch((e) => log.error(`[主动接话] 私聊起念失败 ${key}: ${e.stack || e.message}`))
@@ -787,8 +858,11 @@ export function createPacing({ log = console, state, clock = null }) {
   }
 
   // ── 配置 / 状态 ─────────────────────────────────────────────
+  let ringsLoaded = false
   function apply(pacingCfg) {
     cfg = normalize(pacingCfg)
+    // 第一次装配时把落盘的开口记录读回来（之后只在 fire 时写，不重复读）
+    if (!ringsLoaded) { ringsLoaded = true; loadPrivateRings() }
     // 群集合变了：清掉不再允许的群的调度状态（防止旧群继续按旧间隔起念）
     const allow = allowedGroups()
     // 私聊 key（private:xxx）不归群白名单管，只清 group:*，否则私聊机会每改一次配置就被抹掉
@@ -883,6 +957,32 @@ export function createPacing({ log = console, state, clock = null }) {
         recent: fired.filter((e) => e.kind === 'private').slice(-6).reverse().map((e) => ({
           at: e.at, qq: e.gid, reason: e.reason, sent: !!e.sent,
         })),
+        /**
+         * 每个私聊「现在为什么不能开口」的实时状态（2026-10-30 加）。
+         *
+         * 为什么加：这块连着查了三次线上问题（不播种 / pendingTurn 卡死 / 配额用完），
+         * 每次都只能翻日志猜。现在把配额直接摆出来 —— 控制台或 curl 一眼看到
+         * 「今天 13/14 次」「距上次还差 12 分钟」，不用再查第 4 次。
+         */
+        usage: [...allowedPrivate()].map((qq) => {
+          const now = nowMs()
+          const fires = (privateRings.get(qq) || []).filter((x) => now - x < 24 * HOUR)
+          const hourUsed = fires.filter((x) => now - x < HOUR).length
+          const last = fires[fires.length - 1] || 0
+          const gapMs = Math.max(60000, num(cfg.reply.privateMinGapMs, 60) * 60000)
+          return {
+            qq,
+            todayUsed: fires.length,
+            todayMax: Math.max(0, num(cfg.reply.privateMaxPerDay, 3)),
+            hourUsed,
+            hourMax: Math.max(0, num(cfg.reply.privateHourlyMax, 1)),
+            lastFireAt: last || null,
+            lastFireMinutesAgo: last ? Math.round((now - last) / 60000) : null,
+            nextAllowedAt: last ? last + gapMs : null,
+            nextAllowedMinutes: last && now < last + gapMs ? Math.ceil((last + gapMs - now) / 60000) : 0,
+            blockedBy: privateQuotaBlocked(qq, now),
+          }
+        }),
       },
       groups,
       recent: fired.slice(-8).reverse().map((e) => ({

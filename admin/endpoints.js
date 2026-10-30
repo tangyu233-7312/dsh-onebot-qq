@@ -1187,6 +1187,44 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
     if (!id) throw new Error('action 需要 id')
     if (!ACTIONS.some((a) => a.id === id)) throw new Error(`未知动作：${id}`)
 
+    // ── 侧车运维（按钮在「运维」页）──────────────────────────
+    // 控制器由 plugins/sidecar-control 在 setup 里挂到 bot.state（=== kernel.state）。
+    // 插件没启用时 state.sidecar 是 undefined —— 明确告诉用户，别只说"失败"。
+    if (id.startsWith('sidecar-')) {
+      const sc = kernel?.state?.sidecar
+      if (!sc) {
+        return { ok: false, error: '「侧车运维」插件没启用（设置 → 插件 → 侧车运维），或还没装配完' }
+      }
+      if (id === 'sidecar-status') {
+        const s = await sc.status()
+        const parts = [
+          s.online ? '🟢 侧车在线' : '🔴 侧车离线',
+          s.online ? (s.version ? 'v' + s.version : '') : (s.why || ''),
+          s.online ? `ffmpeg=${s.ffmpeg} ytdlp=${s.ytdlp}` : '',
+          s.dir ? `目录=${s.dir}` : '',
+        ].filter(Boolean)
+        return { ok: true, message: parts.join('\n'), detail: s }
+      }
+      if (id === 'sidecar-start') {
+        const r = await sc.start()
+        return r.ok
+          ? { ok: true, message: `✅ 已启动（pid ${r.pid || '?'}）` + (r.already ? '（本来就在跑）' : '') }
+          : { ok: false, error: '启动失败：' + (r.why || '未知原因') }
+      }
+      if (id === 'sidecar-stop') {
+        const r = await sc.stop()
+        return r.ok
+          ? { ok: true, message: `⏹ 已停止（pid ${r.pid || '?'}）` }
+          : { ok: false, error: '没停：' + (r.why || '未知原因') }
+      }
+      if (id === 'sidecar-restart') {
+        const r = await sc.restart()
+        return r.ok
+          ? { ok: true, message: `↻ 已重启（pid ${r.pid || '?'}）` }
+          : { ok: false, error: '重启失败：' + (r.why || '未知原因') }
+      }
+    }
+
     // ── 自己找视频看（按钮长在它自己的配置页）──────────────────
     if (id === 'wander-run-now') {
       const fn = kernel?.shared?.videoWanderRunNow

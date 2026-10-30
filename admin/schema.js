@@ -271,11 +271,45 @@ export const CORE_CONTROLS = [
     hint: '群号列表（空 = 没有群允许主动接话）。推荐在「群聊」页每张群卡片勾「允许主动接话」；这里和群卡片改的是同一份配置。',
   },
   // ── 私聊主动接话：与群聊分开开关，默认关 ────────────────────────
+  // 实时额度（只读）：配置项只能写"设定多少"，写不了"已经用了多少"，
+  // 而这块连着查了三次线上问题，必须能一眼看到。
+  {
+    key: 'info.privateUsage', group: '主动接话', section: '私聊主动接话', type: 'info',
+    label: '当前额度',
+    text: (kernel) => {
+      const p = safePacing(kernel)?.private
+      if (!p) return '（插件还没装配好，稍后再看）'
+      if (p.enabled !== true) return '⏸ 私聊主动接话现在是关的（勾上「私聊也能主动接话」才会自己开口）'
+      const list = p.usage || []
+      if (!list.length) return '⚠️ 还没配「只对这些人主动」，也没配主人 QQ —— 没有可主动开口的对象'
+      return list.map((u) => {
+        const day = `今天 ${u.todayUsed}/${u.todayMax} 次`
+        const hour = `这小时 ${u.hourUsed}/${u.hourMax} 次`
+        const gap = u.nextAllowedMinutes > 0
+          ? `距上次 ${u.lastFireMinutesAgo ?? 0} 分钟，还要再等 ${u.nextAllowedMinutes} 分钟`
+          : (u.lastFireAt ? `距上次 ${u.lastFireMinutesAgo} 分钟（间隔够）` : '还没主动开口过')
+        const blocked = u.blockedBy ? `\n   ⛔ 现在卡在：${u.blockedBy}` : ''
+        return `📮 ${u.qq}：${day}　${hour}　${gap}${blocked}`
+      }).join('\n')
+    },
+    hint: '这里是**实时状态**，不是配置。数字含义：今天已开口 / 每天上限、这小时已开口 / 每小时上限、距上次多久 / 还要等多久。\n'
+      + '三个闸门任一没过都不会开口；下面「⛔ 现在卡在」会直接说清是哪一道。',
+  },
+  // ── 私聊主动接话：与群聊分开开关，默认关 ────────────────────────
   {
     key: 'pacing.reply.privateEnabled', group: '主动接话', section: '私聊主动接话', type: 'bool', label: '私聊也能主动接话', default: false,
-    hint: '开 = 一对一私聊里，对方有一阵没说话时可以自己起个话头（不必等你先开口）。\n'
-      + '私聊里「没人叫却开口」更容易显得打扰，所以默认间隔比群聊保守：2 小时没说话才考虑、每小时最多 1 次、每天最多 3 次；'
-      + '数值都在下面几项里改。总开关（允许主动接话）关掉时它也不工作；静默时段内同样不开口。',
+    // hint 写成函数：这里的数字必须跟着配置走（用户改了参数，这段文字得过期）
+    hint: (kernel) => {
+      const p = safePacing(kernel)?.private || {}
+      const cold = Math.round((Number(p.coldSilenceMs) || 7200000) / 60000)
+      const hourly = p.hourlyMax ?? 1
+      const daily = p.maxPerDay ?? 3
+      const gap = Math.round((Number(p.minGapMs) || 3600000) / 60000)
+      return '开 = 一对一私聊里，对方有一阵没说话时可以自己起个话头（不必等你先开口）。\n'
+        + `当前设置：安静 ${cold} 分钟才考虑、每小时最多 ${hourly} 次、每天最多 ${daily} 次、两次至少隔 ${gap} 分钟`
+        + '（都在下面几项里改，改完这里会跟着变）。\n'
+        + '总开关（允许主动接话）关掉时它也不工作；静默时段内同样不开口。'
+    },
   },
   {
     key: 'pacing.reply.privateFriendsOnly', group: '主动接话', section: '私聊主动接话', type: 'bool', label: '私聊只对好友开口', default: true,
@@ -285,7 +319,10 @@ export const CORE_CONTROLS = [
   {
     key: 'pacing.reply.privateColdSilenceMs', group: '主动接话', section: '私聊主动接话', type: 'int', label: '私聊安静多久才考虑开口', unit: '分钟',
     scale: 60000, min: 10, max: 1440, step: 10, default: 7200000,
-    hint: '上一次说话（含它自己的回复）之后，超过这么久没动静才会考虑主动发一条。默认 120 分钟。',
+    hint: (kernel) => {
+      const cur = Math.round((Number(safePacing(kernel)?.private?.coldSilenceMs) || 7200000) / 60000)
+      return `上一次说话（含它自己的回复）之后，超过这么久没动静才会考虑主动发一条。当前 ${cur} 分钟。`
+    },
   },
   {
     key: 'pacing.reply.privateHourlyMax', group: '主动接话', section: '私聊主动接话', type: 'int', label: '每个私聊每小时最多', unit: '次',
@@ -300,8 +337,11 @@ export const CORE_CONTROLS = [
   {
     key: 'pacing.reply.privateMinGapMs', group: '主动接话', section: '私聊主动接话', type: 'int', label: '两次主动至少间隔', unit: '分钟',
     scale: 60000, min: 5, max: 1440, step: 5, default: 3600000,
-    hint: '同一个私聊两次主动开口之间至少隔多久。默认 60 分钟。\n'
-      + '**这是唯一的一项**（以前还有个「至少隔几小时」重复项，已合并到这里）。',
+    hint: (kernel) => {
+      const cur = Math.round((Number(safePacing(kernel)?.private?.minGapMs) || 3600000) / 60000)
+      return `同一个私聊两次主动开口之间至少隔多久。当前 ${cur} 分钟。\n`
+        + '**这是唯一的一项**（以前还有个「至少隔几小时」重复项，已合并到这里）。'
+    },
   },
   {
     key: 'pacing.reply.privateQqs', group: '主动接话', section: '私聊主动接话', advanced: true, type: 'group', label: '只对这些人主动（QQ 号，留空 = 全部好友）',
@@ -440,6 +480,30 @@ export const CORE_CONTROLS = [
 
 /** @typedef {{id:string,group:string,label:string,hint?:string,confirm?:{title?:string,okLabel?:string},hidden?:boolean}} ActionDef */
 export const ACTIONS = [
+  // ── 侧车（解析 / 看视频的外部服务，需要 sidecar-control 插件）──────
+  // 2026-10-30：放「链接解析」页底部，不放「运维」页 —— 用户找侧车就是在那一页找的，
+  // 放运维页会以为"按钮没了"（实测问了两遍）。onGroup:true = 长在配置页底部。
+  // 按钮的实现在 admin/endpoints.js 的 action()，那边调 kernel.state.sidecar
+  // （插件在 setup 里把自己的控制器挂上去）。插件没启用时点了会明确说"未安装"。
+  {
+    id: 'sidecar-status', group: '链接解析', onGroup: true, label: '🩺 侧车状态',
+    hint: '解析侧车（默认 127.0.0.1:3972）在不在、ffmpeg / yt-dlp 能不能用。'
+      + '「链接解析」和「看视频」都靠它，侧车不在时这两个功能会降级但聊天不受影响。',
+  },
+  {
+    id: 'sidecar-start', group: '链接解析', onGroup: true, label: '▶️ 启动侧车',
+    hint: '把侧车拉起来（独立进程，关掉 DSH 不会带走它）。启动要 2-3 秒，之后点「侧车状态」确认。',
+  },
+  {
+    id: 'sidecar-stop', group: '链接解析', onGroup: true, label: '⏹ 停止侧车',
+    hint: '只停「由插件拉起来」的那个侧车。手动启动的（start.bat / 双击窗口）请自己关掉那个窗口。',
+    confirm: { title: '⚠️ 确认停止侧车？', okLabel: '确认停止' },
+  },
+  {
+    id: 'sidecar-restart', group: '链接解析', onGroup: true, label: '↻ 重启侧车',
+    hint: '停掉再拉起来。改过 sidecar.config.json（端口 / 上限 / 代理）之后用它生效。',
+  },
+
   {
     id: 'selfcheck', group: '运维', label: '跑离线自检',
     hint: '调用本机 ops 提供的离线自检（不碰 QQ）；未配置运维能力时点了会提示“本机未配置”。',
@@ -517,6 +581,15 @@ export const ACTIONS = [
     confirm: { title: '⚠️ 确认重置视频额度与冷却？', okLabel: '确认重置' },
   },
 ]
+
+
+/** 安全取 pacing.stats()：内核没装配好时返回 null，别让控制台整页挂掉。 */
+function safePacing(kernel) {
+  try {
+    const s = kernel?.pacing?.stats?.()
+    return s && typeof s === 'object' ? s : null
+  } catch { return null }
+}
 
 /** 控制台「运维」页要渲染的动作按钮（过滤隐藏项；confirm 透传给前端二次确认）。 */
 export function visibleActions() {
@@ -797,17 +870,41 @@ const OTHER_LABEL = '其他'
 /** 跟随「人设」显示在同一页（「总览」的人设区块下方）的分组。当前为空：句池 / 唤醒 已各自成页（子插件 1:1）。 */
 const PERSONA_GROUPS = []
 
+/**
+ * 解析 hint：可以是字符串，也可以是 (kernel, rawConfig) => string 的函数。
+ *
+ * 为什么要有函数形式（2026-10-30）：hint 里写"默认 2 小时、每小时 1 次、每天 3 次"
+ * 这类具体数字，用户改了参数之后这段话就成了**假信息**——
+ * 实测有人把冷场改成 45 分钟、每小时 3 次、每天 14 次，hint 还在说 2 小时/1 次/3 次。
+ * 所以凡是要提到"当前值"的 hint，一律写成函数现算。
+ */
+function resolveHint(entry, kernel, rawConfig) {
+  try {
+    if (typeof entry.hint === 'function') return String(entry.hint(kernel, rawConfig) || '')
+    return String(entry.hint || '')
+  } catch { return '' }
+}
+
 /** 控制面板值（含默认值回填；schema 端点直接返回它）。 */
 function controlView(entry, rawConfig, kernel) {
   if (entry.type === 'info') {
-    // 说明块：只带 text（前端渲染整行说明），没有 value/min/max/options
+    // 说明块：只带 text（前端渲染整行说明），没有 value/min/max/options。
+    // text 可以是函数 (kernel) => string —— 用来显示**实时状态**（如"今天已开口 3/14 次"）。
+    // 2026-10-30 加：配置项只能表达"设定值"，表达不了"现在用了多少"，
+    // 而私聊接话的配额连着查了三次，用户需要一眼看到剩余额度。
+    const text = typeof entry.text === 'function'
+      ? entry.text(kernel, rawConfig)
+      : String(entry.text || '')
     return {
       key: entry.key,
       group: entry.group,
+      // section 也要带出去 —— 前端按 section 把控件折叠成小节，
+      // 漏了它这个说明块会跑到页面最上面，离它相关的配置很远。
+      section: entry.section || '',
       type: 'info',
       label: entry.label || '',
-      text: String(entry.text || ''),
-      hint: entry.hint || '',
+      text: String(text || ''),
+      hint: resolveHint(entry, kernel, rawConfig),
     }
   }
   const view = {
@@ -822,7 +919,7 @@ function controlView(entry, rawConfig, kernel) {
     step: entry.step,
     options: entry.options,
     value: panelValue(entry, rawConfig, kernel),
-    hint: entry.hint,
+    hint: resolveHint(entry, kernel, rawConfig),
     default: entry.default,
   }
   if (entry.kind === 'plugin') {

@@ -71,7 +71,9 @@ export default {
 
     /** 命令回执统一出口：deliver 之后这条消息到此为止（除 /history 外都不进模型） */
     async function reply(ev, text, name) {
-      await bot.deliver(ev.chatKey, text) // ⚠️ 唯一出站口；引用/拆条/脱敏由内核出站链路定夺
+      // noForward：命令回执不套合并转发卡片 —— /help 列出十几条命令轻松过 400 字，
+      // 一转卡片用户还得点开才看得全（2026-10-30）。
+      await bot.deliver(ev.chatKey, text, { noForward: true }) // ⚠️ 唯一出站口；引用/拆条/脱敏由内核出站链路定夺
       ev.stopped = true
       ev.stopReason = `commands:${name}`
     }

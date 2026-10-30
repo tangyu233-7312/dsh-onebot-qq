@@ -29,8 +29,15 @@ test('私聊每一步 continue 都要能说出原因', () => {
   const src = read('kernel/pacing.js')
   const i = src.indexOf('function tickPrivateSilence')
   const body = src.slice(i, i + 1800)
-  for (const reason of ['还没冷场', '这条线正忙', '配额或间隔未到', '没有对话基线']) {
+  for (const reason of ['还没冷场', '这条线正忙', '没有对话基线']) {
     assert.ok(body.includes(reason), '缺诊断原因：' + reason)
+  }
+  // 配额那道闸要**说出是哪一种**（2026-10-30：三个原因混成一句「配额或间隔未到」，
+  // 线上分不清是每小时上限、每天上限还是最小间隔）
+  assert.match(body, /quotaBlocked/, '配额要单独算出具体原因')
+  const quota = src.slice(src.indexOf('function privateQuotaBlocked'), src.indexOf('function privateQuotaBlocked') + 1800)
+  for (const why of ['每小时上限', '每天上限', '距上次主动开口还差']) {
+    assert.ok(quota.includes(why), '配额原因要具体：' + why)
   }
   assert.match(body, /logPrivateSkip/, '要走节流日志')
   assert.match(body, /code = 'warming'|code = 'busy'/, '要有原因代码（节流按代码）')

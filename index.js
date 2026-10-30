@@ -385,7 +385,9 @@ export async function apply(ctx, bundleConfig = {}) {
   })
   const state = new ChatState({ log })
   const pipeline = new Pipeline({ log })
-  const pacing = createPacing({ log: logFor('pacing'), state })
+  // dataDir 传给 pacing 是为了把私聊接话的配额（privateRings）落盘 ——
+  // 内存态时 DSH 一重启「每天最多 N 次」就清零，等于每天额度乘以重启次数（2026-10-30 修）。
+  const pacing = createPacing({ log: logFor('pacing'), state, dataDir })
   pacing.apply(runtime.pacing)
   const archiveCfg = { ...runtime.archive }
   const archive = makeArchiver(archiveCfg, log)

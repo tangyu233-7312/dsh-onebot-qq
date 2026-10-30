@@ -8,7 +8,7 @@
  * 为什么说话也要过 RVC：
  *   MiMo 的 voicedesign 每次调用都重新生成音色（实测同一描述三次不是同一个人，
  *   f0 差 8.8%）。而 RVC 是**给定样本固定复刻**，所以最终音色必须落在 RVC 上。
- *   TTS 只负责「说什么、怎么说」，音色身份由 Dv5.pth 决定。
+ *   TTS 只负责「说什么、怎么说」，音色身份由 RVC 模型（`.pth`）决定。
  *
  * 三条从实测换来的纪律（改之前先读）：
  *   ① **instruct 里别写「稚嫩 / 奶气 / 软」** —— 实测这类词会让语速掉 36%、音高降 40Hz，
@@ -61,7 +61,7 @@ function scratchOf(bot, chatKey) {
 
 /** 跑一个 Python 脚本，返回它最后一行 JSON。永不抛。
  *
- *  cwd 很关键：rvc-infer.py 用的是**相对路径**（`voice-models/Dv5.pth`、`python/rvc-infer.py`），
+ *  cwd 很关键：rvc-infer.py 用的是**相对路径**（`voice-models/<你的音色>.pth`、`python/rvc-infer.py`），
  *  必须在能力包目录里执行；不传 cwd 会报 Command failed，而 stderr 里只有一堆 fairseq 日志，
  *  看不出是路径问题。
  */
@@ -372,6 +372,13 @@ export default {
         + '· voice-models/<名字>.pth 与 .index（**你自己训练的，仓库不含**）\n'
         + '· songs/（分离人声时的临时工作目录，会自动建）',
     },
+    singModel: {
+      type: 'str', default: '', group: '运维',
+      label: '音色模型文件名',
+      hint: '留空 = 自动用 <侧车目录>/voice-models 下找到的第一个 .pth（同名的 .index 会一起带上）。\n'
+        + '填了就用它（可以不带 .pth 后缀）。换音色不用改代码，改这里就行。\n'
+        + '⚠️ 模型要自己训练或自己准备 —— 本包不附带任何人的音色模型。',
+    },
     apiKey: {
       type: 'str', default: '', group: '运维',
       label: 'MiMo API Key',
@@ -432,6 +439,31 @@ export default {
     }
     const tmp = () => path.join(os.tmpdir(), 'dsh-qq-voice')
 
+    /**
+     * 音色模型文件名。**不要写死具体名字**（2026-10-30 改）：
+     *   · 功能上：写死意味着换一个音色就得改代码；
+     *   · 隐私上：把某人训练的具体模型名放进公开仓库不合适。
+     * 解析顺序：配置 singModel → 扫描 <rvcDir>/voice-models/*.pth 取第一个 → 空。
+     * 同名的 .index 存在就一起带上（提升相似度），没有也不影响。
+     */
+    function modelOf() {
+      const explicit = String(cfg().singModel || '').trim()
+      if (explicit) {
+        const base = explicit.replace(/\.pth$/i, '')
+        return { model: `voice-models/${base}.pth`, index: `voice-models/${base}.index` }
+      }
+      try {
+        const dir = path.join(rvcDir(), 'voice-models')
+        const pth = fs.readdirSync(dir).find((f) => /\.pth$/i.test(f))
+        if (pth) {
+          const base = pth.replace(/\.pth$/i, '')
+          const hasIndex = fs.readdirSync(dir).some((f) => f === base + '.index')
+          return { model: `voice-models/${pth}`, index: hasIndex ? `voice-models/${base}.index` : '' }
+        }
+      } catch { /* 目录不存在 → 没模型 */ }
+      return { model: '', index: '' }
+    }
+
     const keyOf = () => String(cfg().apiKey || '').trim()
       || String(bot.credentials?.mimoTts || bot.core?.credentials?.mimoTts || '').trim()
 
@@ -476,9 +508,11 @@ export default {
       // tts_say.py 同时会给一份 silk（我们用不上，只要 wav），也删掉
       if (t.silk) fsp.unlink(t.silk).catch(() => {})
       const mp3Out = path.join(dir, `${tag}_rvc.mp3`)
+      const mdl = modelOf()
+      if (!mdl.model) return { ok: false, reason: '没配音色模型：把 <你的音色>.pth（同名 .index 可选）放进 ' + path.join(rvcDir(), 'voice-models') + '，或在控制台「语音与唱歌 → 运维」填「音色模型文件名」' }
       const r = await runPy(pyRvc(), [
         'python/rvc-infer.py', 'infer',
-        '-m', 'voice-models/Dv5.pth', '--index', 'voice-models/Dv5.index',
+        ...(mdl.model ? ['-m', mdl.model, ...(mdl.index ? ['--index', mdl.index] : [])] : []),
         '-i', wavIn, '-o', mp3Out,
         '--pitch', String(cfg().ttsPitch || '2'), '--device', 'cuda:0',
       ], { timeoutMs: 300_000 , cwd: rvcDir() })
@@ -573,9 +607,11 @@ export default {
       const dir = tmp()
       await fsp.mkdir(dir, { recursive: true })
       const out = path.join(dir, `sing-${Date.now()}.mp3`)
+      const mdl = modelOf()
+      if (!mdl.model) return { ok: false, reason: '没配音色模型：把 <你的音色>.pth（同名 .index 可选）放进 ' + path.join(rvcDir(), 'voice-models') + '，或在控制台「语音与唱歌 → 运维」填「音色模型文件名」' }
       const r = await runPy(pyRvc(), [
         'python/rvc-infer.py', 'infer',
-        '-m', 'voice-models/Dv5.pth', '--index', 'voice-models/Dv5.index',
+        ...(mdl.model ? ['-m', mdl.model, ...(mdl.index ? ['--index', mdl.index] : [])] : []),
         '-i', hit.file, '-o', out,
         '--keep-bgm', '--pitch', String(cfg().singPitch || '4'), '--device', 'cuda:0',
       ], { timeoutMs: 600_000 , cwd: rvcDir() })
@@ -759,7 +795,7 @@ export default {
           `tts python：${pyTts()}`,
           `rvc python：${pyRvc()}`,
           `MiMo Key：${keyOf() ? '有' : '没有'}`,
-          `音色模型：${fs.existsSync(path.join(rvcDir(), 'voice-models', 'Dv5.pth')) ? '在' : '缺失'}`,
+          `音色模型：${modelOf().model || '（没找到 .pth）'}`,
         ].join('\n')
       },
     })
