@@ -24,6 +24,10 @@ function setup(opts = {}) {
   const personas = path.join(dir, 'personas')
   fs.mkdirSync(personas, { recursive: true })
   fs.writeFileSync(path.join(personas, '蓝色大肥鱼20261030.md'), '# 人设\n\n自称本鱼。\n', 'utf8')
+  // 老人设（没日期）：label 传了非版本名时也要有那个文件，才能测「自动升级」
+  if (opts.label && !/\d{8}/.test(opts.label)) {
+    fs.writeFileSync(path.join(personas, opts.label + '.md'), '# 老人设\n\n也没有日期。\n', 'utf8')
+  }
   if (opts.twoVersions) fs.writeFileSync(path.join(personas, '蓝色大肥鱼20261030-2.md'), '# 人设 v2\n', 'utf8')
   const tools = {}
   const shared = {}
@@ -90,12 +94,18 @@ test('revise：群里默认不许改（必须私聊）', async () => {
   } finally { s.restore() }
 })
 
-test('revise：人设名不是版本化格式时给明确提示', async () => {
+test('revise：老人设（没日期）会自动升级成版本化，老文件不动', async () => {
   const s = setup({ label: '蓝色大肥鱼' })
   try {
-    const r = await s.tools.persona_revise.execute({ change: 'x' })
-    assert.equal(r.ok, false)
-    assert.match(r.reason, /版本化格式/)
+    const before = fs.readFileSync(path.join(s.personas, '蓝色大肥鱼.md'), 'utf8')
+    const r = await s.tools.persona_revise.execute({ change: '加点幽默' })
+    assert.equal(r.ok, true)
+    assert.equal(r.upgraded, true, '要告诉调用方这是升级出来的第一版')
+    assert.match(r.newVersion, /^蓝色大肥鱼\d{8}(-\d+)?$/, '角色名沿用，日期取今天（今天已有版本就 -2）')
+    assert.match(r.note, /升级/)
+    const after = fs.readFileSync(path.join(s.personas, '蓝色大肥鱼.md'), 'utf8')
+    assert.equal(after, before, '老人设文件一个字都不能动')
+    assert.ok(fs.existsSync(path.join(s.personas, r.newVersion + '.md')), '新版要真的建出来')
   } finally { s.restore() }
 })
 

@@ -131,8 +131,10 @@ export default {
         }
         const cur = currentName()
         if (!cur) return { ok: false, reason: '读不到当前人设版本（.persona.json / activePersona 都为空）' }
-        const parsed = parseVersionName(cur)
-        if (!parsed) return { ok: false, reason: '当前人设名不是版本化格式（' + cur + '）：让主人先把文件改成 <角色><YYYYMMDD>.md' }
+        // 老人设（没有日期的名字，例如「蓝色大肥鱼」）：先把它**升级成版本化**再改。
+        // 不这么做的话，第一次想改自己就卡在"名字不合规"上，体验很差；
+        // 升级动作本身也是"另存一份"，老文件原样留着不动。
+        const parsed = parseVersionName(cur) || { role: cur, date: '', seq: 1 }
         const text0 = readVersion(cur)
         const max = Math.max(1000, Number(cfg().maxChars) || 20000)
         if (text0.length > max) return { ok: false, reason: '当前人设太长（' + text0.length + ' 字 > ' + max + '），先精简再改' }
@@ -145,11 +147,14 @@ export default {
           bot.selfLog.append({ kind: 'persona', what: '给自己开了一版新人设 ' + name, why: change.slice(0, 100), where: turn && turn.isGroup ? '群' : '私聊' })
         }
         bot.log.info('[人设版本] 新版本 ' + name + '（基于 ' + cur + '）：' + change.slice(0, 60))
+        const upgraded = parseVersionName(cur) == null
         return {
           ok: true,
           from: cur,
           newVersion: name,
           nowActive: cur,
+          upgraded,
+          note: upgraded ? '原来的人设没有日期版本号，已按规则把它升级成「' + name + '」（老文件没动）。' : '',
           next: '新版本文件已建好（当前版 + 顶部一条改动说明）。下一步 persona_write 写完整正文，再 persona_switch 生效。',
         }
       },
