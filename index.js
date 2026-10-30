@@ -1147,11 +1147,35 @@ export async function apply(ctx, bundleConfig = {}) {
     if (i >= 0) q.splice(i, 1)
     if (!q.length) kernel.pendingTurns.delete(key)
   }
+  /**
+   * 这条线上有没有"已提交、还没开始"的回合。
+   *
+   * ⚠️ 必须带超时（2026-10-30 线上教训）：
+   *   prompt 提交成功 ≠ turn/start 会来。模型那轮要是被取消/超时，turn/start 永远不到，
+   *   这个 turnCtx 就**永久**留在 pendingTurns 里 —— 而 hasPendingTurn 是「主动接话」的
+   *   busy 判据，一旦卡住，那条线**再也不会主动开口**（线上表现：私聊 15:17 说过一次，
+   *   之后三个多小时一声不响，群里照常接话）。
+   *   activeTurns 早就有 5 分钟 TTL，pendingTurns 之前没有，这是漏的一边。
+   */
   const hasPendingTurn = (chatKey) => {
-    for (const q of kernel.pendingTurns.values()) {
-      for (const t of q) if (String(t.chatKey) === String(chatKey)) return true
+    const now = Date.now()
+    let found = false
+    for (const [sid, q] of kernel.pendingTurns) {
+      const alive = []
+      for (const t of q) {
+        const born = Number(t?.startedAt || 0)
+        if (born && now - born > ACTIVE_TURN_TTL_MS) continue
+        alive.push(t)
+      }
+      if (alive.length !== q.length) {
+        if (alive.length) kernel.pendingTurns.set(sid, alive)
+        else kernel.pendingTurns.delete(sid)
+        log.warn(`[回合] 清理 ${q.length - alive.length} 个超时未开始的 pending 回合（${sid}）`
+          + '—— 不清理的话这条线会永远被判 busy，主动接话再也不触发')
+      }
+      for (const t of alive) if (String(t.chatKey) === String(chatKey)) found = true
     }
-    return false
+    return found
   }
   function bindTurnHooks(sessionId) {
     const key = String(sessionId || '')
@@ -1388,8 +1412,18 @@ export async function apply(ctx, bundleConfig = {}) {
           if (ts) from = '留档'
           if (!ts) { ts = Date.now(); from = '无历史，按开机起算' }
           const st = state.get('private:' + qq)
-          if (!Number(st.lastInboundAt)) st.lastInboundAt = ts
-          log.info('[主动接话] 播种 private:' + qq + '：' + from + '，' + Math.round((Date.now() - ts) / 60000) + ' 分钟前')
+          // 诊断：把「打算种的值」和「实际生效的值」都打出来 ——
+          // 线上出现过「日志说 106 分钟前，紧接着 tick 却说安静 0 分钟」，
+          // 因为旧日志打的是局部变量 ts，不是 st 里真正生效的值。
+          const hadInbound = Number(st.lastInboundAt) || 0
+          const hadSend = Number(st.lastSendAt) || 0
+          if (!hadInbound) st.lastInboundAt = ts
+          const nowInbound = Number(st.lastInboundAt) || 0
+          log.info('[主动接话] 播种 private:' + qq + '：' + from
+            + '｜计划 ' + Math.round((Date.now() - ts) / 60000) + ' 分钟前'
+            + '｜旧 inbound ' + (hadInbound ? Math.round((Date.now() - hadInbound) / 60000) + ' 分钟前' : '空')
+            + '｜生效 inbound ' + (nowInbound ? Math.round((Date.now() - nowInbound) / 60000) + ' 分钟前' : '空')
+            + '｜lastSendAt ' + (hadSend ? Math.round((Date.now() - hadSend) / 60000) + ' 分钟前' : '空'))
         } catch (e) {
           log.debug('[主动接话] 播种私聊失败 ' + qq + ': ' + e.message)
         }

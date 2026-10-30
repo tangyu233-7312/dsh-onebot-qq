@@ -603,6 +603,31 @@ export function createPacing({ log = console, state, clock = null }) {
   }
 
   /** 私聊冷场轮询：对每个"说过话的私聊"看是不是静太久了 */
+  /**
+   * 私聊「这次为什么没开口」的诊断日志（节流）。
+   * 同一会话同一原因 10 分钟内只打一次，且**原因变化时立刻打** ——
+   * 既不会每 30 秒刷屏，又能在状态切换的第一时间看到。
+   * 加它的原因：线上排查「它一整天不主动说话」时，所有闸门都是静默 continue，
+   * 只能靠翻 stats、猜 pendingTurns、手工调 NapCat 接口，花了大半天。
+   */
+  const privateSkipLog = new Map()
+  /**
+   * @param {string} key   private:<QQ>
+   * @param {string} code  原因**代码**（节流按它判，不能带动态数字）
+   * @param {string} text  给人看的说明（可以带"安静 12/45 分钟"这种）
+   *
+   * ⚠️ 节流必须按 code：一开始拿 text 当键，结果「安静 0/45」→「安静 1/45」文案一直在变，
+   *    每 30 秒打一条，把日志刷爆了（自己引入的）。现在同一原因 10 分钟只说一次，
+   *    但**原因一变立刻说**（比如从"还没冷场"变成"这条线正忙"，那是最关键的转折）。
+   */
+  function logPrivateSkip(key, code, text) {
+    const prev = privateSkipLog.get(key)
+    const at = nowMs()
+    if (prev && prev.code === code && at - prev.at < 10 * 60000) return
+    privateSkipLog.set(key, { code, at })
+    log.info('[主动接话] ' + key + ' 暂不开口：' + text)
+  }
+
   function tickPrivateSilence(now) {
     const coldMs = Math.max(60000, num(cfg.reply.privateColdSilenceMs, 2 * HOUR))
     // state.keys() 是 ChatState 的 map 键（group:xxx / private:xxx）；没有 keys() 的桩一律不扫
@@ -614,10 +639,18 @@ export function createPacing({ log = console, state, clock = null }) {
       const lastAt = Number(st.lastInboundAt || 0)
       // 从没说过话 / 刚被回复过 都从"它时间线"算：取最近一次入站与出站里较晚的那个
       const lastTouch = Math.max(lastAt, Number(st.lastSendAt || 0))
-      if (!lastTouch || now - lastTouch < coldMs) continue
-      if (isBusy(key) || contPending(key)) continue
-      if (!privateQuotaOk(qq, now)) continue // 配额便宜的检查放前面，好友名单要联网所以放后面
-      if (typeof onProactiveTurn !== 'function') continue
+      // 每一步 continue 都记下原因，再也不用猜
+      let code = ''
+      let why = ''
+      if (!lastTouch) { code = 'no-baseline'; why = '没有对话基线（开机播种没跑到？）' }
+      else if (now - lastTouch < coldMs) {
+        code = 'warming'
+        why = '还没冷场（安静 ' + Math.round((now - lastTouch) / 60000) + ' / ' + Math.round(coldMs / 60000) + ' 分钟）'
+      } else if (isBusy(key)) { code = 'busy'; why = '这条线正忙（有回合没结束；若看到「清理超时未开始的 pending 回合」就是它）' }
+      else if (contPending(key)) { code = 'continuation'; why = '续聊排队中' }
+      else if (!privateQuotaOk(qq, now)) { code = 'quota'; why = '配额或间隔未到（每小时/每天/最小间隔）' }
+      else if (typeof onProactiveTurn !== 'function') { code = 'no-callback'; why = '没有起回合的回调（内核没接上）' }
+      if (code) { logPrivateSkip(key, code, why); continue }
       // 当天最晚一条由核心循环统一判（这里只筛选"静太久了"）
       privateBeforeFire(qq, key, now)
     }
@@ -635,7 +668,9 @@ export function createPacing({ log = console, state, clock = null }) {
       .then(() => privateAllowed(qq))
       .then((ok) => {
         if (!ok) {
-          log.debug(`[主动接话] 私聊 ${key} 不在白名单/已不是好友 → 不开口`)
+          // 这是最后一道闸：白名单 / 好友名单（要联网，会失败）。
+          // 以前打 debug 等于看不到 —— 线上就是这样"什么都正常但就是不说话"。
+          logPrivateSkip(key, 'not-allowed', '不在白名单 或 好友名单取不到（协议端 get_friend_list 失败？）')
           return
         }
         // 先记一条"已开口"的时间戳（配额就是靠它算的），再起回合
