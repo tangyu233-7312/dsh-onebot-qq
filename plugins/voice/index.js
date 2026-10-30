@@ -256,86 +256,96 @@ export default {
   order: 50,
 
   configSchema: {
-    // ── 总开关（本仓库定制：默认关）────────────────────────────
-    // 装进来默认**不加载**：它要 Python + ffmpeg + 可选的 RVC/CUDA，
-    // 不配好就开着一堆工具报错，比没有更烦。要在控制台「子插件」页手动启用。
-    enabled: {
-      type: 'bool', default: false, group: '语音与唱歌',
-      label: '启用这个子插件',
-      hint: '关（默认）：整个插件不加载，speak / sing 两个工具都不会注册。\n'
-        + '开之前先确认下面「运维」里的 Python 路径能跑，否则每次调用都会失败。\n'
-        + '语音输出和唱歌是两个独立开关（下面各自一项），这个只管插件本身装不装。',
-    },
+    // ── 总开关已移除（2026-10-30）───────────────────────────
+    // 原来这里有个「启用这个子插件」，用户反馈是多余的：
+    //   · 「语音输出」有 ttsEnabled、「唱歌」有 singEnabled，「曲库」有 autoLibrary，
+    //     三个分区各自有独立开关，再套一层总开关只会"开了总开关却什么都没开"；
+    //   · 而且它一关，整页只剩这一个开关，看着像坏了。
+    // 现在插件加载与否走「子插件」页的停用（config.json 的 plugins.voice=false），
+    // 三个分区各自有开关 —— 少一层、不重复。
     // ── 语音输出 ────────────────────────────────────────────
     ttsEnabled: {
-      type: 'bool', default: false, group: '语音输出',
+      type: 'bool', default: false, group: '语音与唱歌',
+      section: '语音输出',
       label: '启用语音输出',
       hint: '开：模型可以调 speak 工具把话念成语音。关：说话只能用文字。'
         + '和「唱歌」是两个独立开关，互不影响。',
     },
     ttsInstruct: {
-      type: 'text', default: DEFAULT_INSTRUCT, group: '语音输出',
+      type: 'text', default: DEFAULT_INSTRUCT, group: '语音与唱歌',
+      section: '语音输出',
       label: '语气指令',
       hint: '写给 TTS 的「怎么说」。实测教训：别写「稚嫩/奶气/软」，会让语速掉 36%、音高降 40Hz，'
         + '是反效果。要幼就调下面的 pitch，要快就用 atempo。',
     },
     ttsVoice: {
-      type: 'str', default: '冰糖', group: '语音输出',
+      type: 'str', default: '冰糖', group: '语音与唱歌',
+      section: '语音输出',
       label: 'TTS 底音色',
       hint: 'MiMo 内置音色：冰糖 / 茉莉（女）、苏打 / 白桦（男）。'
         + '它只是「原料」，最终音色由 RVC 模型决定。',
     },
     ttsPitch: {
-      type: 'str', default: '2', group: '语音输出',
+      type: 'str', default: '2', group: '语音与唱歌',
+      section: '语音输出',
       label: '说话变调（半音）',
       hint: 'RVC 的 pitch。实测 +2 时 f0≈280Hz；每 +1 约 +6%。别超过 +4，会开始失真。',
     },
     ttsAtempo: {
-      type: 'str', default: '1.1', group: '语音输出',
+      type: 'str', default: '1.1', group: '语音与唱歌',
+      section: '语音输出',
       label: '说话语速倍率',
       hint: 'ffmpeg atempo，**变速不变调**。1.1 = 快 10%。这是唯一能精确控语速的地方，'
         + 'instruct 里写「快」不准。',
     },
     ttsMaxChars: {
-      type: 'int', default: 60, min: 2, max: 300, step: 1, group: '语音输出',
+      type: 'int', default: 60, min: 2, max: 300, step: 1, group: '语音与唱歌',
+      section: '语音输出',
       label: '单条最多念几个字',
       hint: '超过就不念（返回 ok:false）。人设是短句，60 够用。',
     },
     ttsPerTurn: {
-      type: 'int', default: 1, min: 0, max: 5, step: 1, group: '语音输出',
+      type: 'int', default: 1, min: 0, max: 5, step: 1, group: '语音与唱歌',
+      section: '语音输出',
       label: '每轮最多几条',
       hint: '语音比文字占耳朵，一轮一条就够。0 = 不允许主动发。',
     },
 
     // ── 唱歌 ───────────────────────────────────────────────
     singEnabled: {
-      type: 'bool', default: false, group: '唱歌',
+      type: 'bool', default: false, group: '语音与唱歌',
+      section: '唱歌',
       label: '启用唱歌',
       hint: '开：模型可以调 sing 工具点歌。独立开关，关掉不影响语音输出。',
     },
     singPitch: {
-      type: 'str', default: '4', group: '唱歌',
+      type: 'str', default: '4', group: '语音与唱歌',
+      section: '唱歌',
       label: '唱歌变调（半音）',
       hint: '实测：女声歌 +4 到顶（+6 的 f0 反而更低，说明超出模型能力）；'
         + '男声歌 +8 到顶（+12 同样失效）。唱出来偏低就往上涨，但别超这两个数。',
     },
     singMaxSeconds: {
-      type: 'int', default: 300, min: 30, max: 600, step: 10, group: '唱歌',
+      type: 'int', default: 300, min: 30, max: 600, step: 10, group: '语音与唱歌',
+      section: '唱歌',
       label: '单首时长上限（秒）',
       hint: '超过这个长度的歌不唱。实测 260 秒的歌能作为单条语音发出（770KB silk）。',
     },
     singCooldownMin: {
-      type: 'int', default: 10, min: 0, max: 1440, step: 1, group: '唱歌',
+      type: 'int', default: 10, min: 0, max: 1440, step: 1, group: '语音与唱歌',
+      section: '唱歌',
       label: '别人的点歌冷却（分钟）',
       hint: '除主人外，同一个人在同一个会话里点过一首后，要等这么久才能再点。0 = 不冷却。设这个是因为一首歌要跑 40~90 秒，不限的话很容易被连着点爆。',
     },
     singMasterFree: {
-      type: 'bool', default: true, group: '唱歌',
+      type: 'bool', default: true, group: '语音与唱歌',
+      section: '唱歌',
       label: '主人不受冷却和轮次限制',
       hint: '开：主人点歌想唱几首唱几首、不用等冷却。关：主人也按上面的规则来。',
     },
     singPerTurn: {
-      type: 'int', default: 1, min: 0, max: 2, step: 1, group: '唱歌',
+      type: 'int', default: 1, min: 0, max: 2, step: 1, group: '语音与唱歌',
+      section: '唱歌',
       label: '每轮最多几首',
       hint: '唱歌一次要 40~90 秒，一轮一首就够。0 = 不允许主动唱。',
     },
@@ -373,27 +383,32 @@ export default {
       hint: '开：每条回复都念一遍（另发一条语音）。关：只靠模型主动调 speak。',
     },
     autoLibrary: {
-      type: 'bool', default: true, group: '曲库',
+      type: 'bool', default: true, group: '语音与唱歌',
+      section: '曲库',
       label: '自动收群里的音频',
       hint: '开：群友/私聊直接发 mp3、wav、flac、m4a、ogg 时，自动下载进曲库（songs/），之后点歌就能唱。关：只用手动放进 songs/ 的歌。文件很大时会跳过（见下面的上限）。'
     },
     musicDir: {
-      type: 'str', default: '', group: '曲库',
+      type: 'str', default: '', group: '语音与唱歌',
+      section: '曲库',
       label: '曲库目录',
       hint: '留空 = <数据目录>/music_mp3（即 dsh-onebot-qq/music_mp3）。群友发的音频、B 站下载的歌都放这里。',
     },
     biliProxy: {
-      type: 'str', default: '', group: '曲库',
+      type: 'str', default: '', group: '语音与唱歌',
+      section: '曲库',
       label: 'B站代理地址',
       hint: '留空 = 自动读 Windows 系统代理（Clash 开「系统代理」时通常是 127.0.0.1:7897）。B 站搜索不走代理会报 412；BV 号下载则不需要代理。',
     },
     biliSearch: {
-      type: 'bool', default: true, group: '曲库',
+      type: 'bool', default: true, group: '语音与唱歌',
+      section: '曲库',
       label: '本地没有就去 B 站找',
       hint: '开：点歌时曲库里没有，自动去 B 站搜索并下载音频（用 yt-dlp）。关：只在本地曲库找，找不到就如实说没有。',
     },
     libraryMaxMB: {
-      type: 'int', default: 50, min: 1, max: 500, step: 1, group: '曲库',
+      type: 'int', default: 50, min: 1, max: 500, step: 1, group: '语音与唱歌',
+      section: '曲库',
       label: '单个音频大小上限（MB）',
       hint: '超过这个大小的入站音频不入库，避免一条大文件把磁盘吃满。',
     },

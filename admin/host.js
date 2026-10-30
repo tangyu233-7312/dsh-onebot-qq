@@ -13,6 +13,7 @@
  *
  * 另导出 `handleAdminRpc(endpoint,payload)` 供内核/compat-server 直调（无需浏览器）。
  */
+import os from 'node:os'
 import { createAdminEndpoints, ENDPOINTS } from './endpoints.js'
 import { loadOpsProvider } from '../ops/provider.js'
 
@@ -63,11 +64,51 @@ async function rpcEnvelope(api, endpoint, payload) {
  * webServer 直挂兜底（原生 RPC 不可用时）：自己拼 `{type:'server-response', rpcId, result}`。
  * 只接受回环 Host（与现网 console host 一致；正常部署走原生 RPC，不会走到这里）。
  */
+/**
+ * 允许访问控制台的 Host 名单。
+ *
+ * 为什么不能只写回环（2026-10-30 线上踩了两次）：
+ *   部署在 NAS 上时，浏览器是拿 `http://<NAS 的局域网 IP>:3080` 打开的，
+ *   `Host` 头就是 `<NAS_IP>`，不在回环名单里 → 整个 QQ 控制台 403，
+ *   表现是「设置里点 QQ 控制台，读取失败 transport failure / HTTP 403」。
+ *   历史上有两次是在 NAS 上**手工把 IP 加进白名单**，一重装就被覆盖回去了。
+ *
+ * 现在的做法（不再靠手改）：
+ *   ① 回环永远放行；
+ *   ② **本机所有网卡地址自动放行**（`os.networkInterfaces()`）—— 换 IP / 换网络都不用改代码；
+ *   ③ 额外允许 `QQ_CONSOLE_ALLOWED_HOSTS` 环境变量（逗号分隔，给反代 / 蒲公英跨网段留口子）。
+ *
+ * 注意这条只作用于 **webServer 直挂兜底**（原生 RPC 不可用时才会走到）。
+ */
+function allowedConsoleHosts() {
+  const set = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0'])
+  // ② 本机网卡地址：v4 + v6 都收
+  try {
+    for (const list of Object.values(os.networkInterfaces())) {
+      for (const it of list || []) {
+        if (!it || !it.address) continue
+        set.add(it.address)
+        if (it.address.includes(':')) set.add('[' + it.address + ']')
+      }
+    }
+  } catch { /* 拿不到网卡就用回环，不至于把控制台搞死 */ }
+  // ③ 额外名单（可选）
+  for (const h of String(process.env.QQ_CONSOLE_ALLOWED_HOSTS || '').split(',')) {
+    const v = h.trim()
+    if (v) set.add(v)
+  }
+  return set
+}
+
 function webServerHandler(api) {
   const prefix = `${CHANNEL}/`
+  const allowed = allowedConsoleHosts()
   return async (req, res) => {
-    const host = String(req.headers?.host || '').split(':')[0]
-    if (!['localhost', '127.0.0.1', '::1', '[::1]'].includes(host)) {
+    const raw = String(req.headers?.host || '')
+    const host = raw.split(':')[0]
+    if (!allowed.has(host)) {
+      // 打一行日志：不然"为什么 403"只能靠猜（这行以前没有，排错花了很久）
+      info(api.log, `拒绝 Host=${raw}：不在允许名单（回环 / 本机网卡 / QQ_CONSOLE_ALLOWED_HOSTS）`)
       res.writeHead(403)
       res.end('forbidden')
       return
