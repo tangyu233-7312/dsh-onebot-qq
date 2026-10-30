@@ -2,7 +2,7 @@
  * voice — 语音子插件（id: 'voice', order: 50）
  *
  * 两条路，**各自独立开关**：
- *   · 语音输出（speak）—— TTS 生成人声 → RVC 换成 DV5 音色 → QQ 语音
+ *   · 语音输出（speak）—— TTS 生成人声 → RVC 换成音色模型 → QQ 语音
  *   · 唱歌（sing）    —— 曲库找歌 → ft 分离人声/伴奏 → RVC 换音色 → 混回伴奏 → QQ 语音
  *
  * 为什么说话也要过 RVC：
@@ -36,8 +36,7 @@ const pexec = promisify(execFile)
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SCRIPT_TTS = path.join(HERE, 'scripts', 'tts_say.py')
 const SCRIPT_SILK = path.join(HERE, 'scripts', 'audio2silk.py')
-
-/** A2 的声音定义（2026-10 实测选定）：冰糖 → DV5，pitch+2 → f0≈280Hz。 */
+  /** A2 的声音定义（2026-10 实测选定）：TTS 底音色 冰糖 + pitch+2 → f0≈280Hz，再交给 RVC 换成音色模型。 */
 export const DEFAULT_INSTRUCT =
   '语速轻快，比平时快一点，语调活泼上扬，句尾习惯上翘，透着股机灵和小得意，'
   + '像机灵的小女孩一口气说完一件让她骄傲的事。不要平稳播报的腔调。'
@@ -352,20 +351,20 @@ export default {
 
     // ── 运维 ───────────────────────────────────────────────
     ttsPython: {
-      type: 'str', default: '', group: '运维',
+      type: 'str', default: '', group: '语音与唱歌', section: '运维',
       label: 'TTS 用的 python',
       hint: '留空 = 用 PATH 里的 python。需要装 edge-tts、pysilk。用来跑 tts_say.py 和 audio2silk.py。\n'
         + 'Windows 示例：C:/Python310/python.exe（正斜杠，别用反斜杠）。',
     },
     rvcPython: {
-      type: 'str', default: '', group: '运维',
+      type: 'str', default: '', group: '语音与唱歌', section: '运维',
       label: 'RVC 用的 python',
       hint: '留空 = 用 PATH 里的 python。需要装 rvc-python + torch。**必须是 Python 3.10** —— '
         + '3.11 起 fairseq/hydra 的可变 dataclass 默认值会直接报错。\n'
         + '想用 GPU：先装 CUDA 版 torch，再用 python rvc-infer.py info 确认 cudaAvailable=true。',
     },
     rvcDir: {
-      type: 'str', default: '', group: '运维',
+      type: 'str', default: '', group: '语音与唱歌', section: '运维',
       label: 'RVC 能力包目录',
       hint: '留空 = <数据目录>/singing-pack。里面要有：\n'
         + '· python/rvc-infer.py（仓库 tools/singing-pack/ 里有）\n'
@@ -373,19 +372,19 @@ export default {
         + '· songs/（分离人声时的临时工作目录，会自动建）',
     },
     singModel: {
-      type: 'str', default: '', group: '运维',
+      type: 'str', default: '', group: '语音与唱歌', section: '运维',
       label: '音色模型文件名',
       hint: '留空 = 自动用 <侧车目录>/voice-models 下找到的第一个 .pth（同名的 .index 会一起带上）。\n'
         + '填了就用它（可以不带 .pth 后缀）。换音色不用改代码，改这里就行。\n'
         + '⚠️ 模型要自己训练或自己准备 —— 本包不附带任何人的音色模型。',
     },
     apiKey: {
-      type: 'str', default: '', group: '运维',
+      type: 'str', default: '', group: '语音与唱歌', section: '运维',
       label: 'MiMo API Key',
       hint: '只在语音输出时需要。也可写在实例 config 的 credentials.mimoTts。',
     },
     autoSpeak: {
-      type: 'bool', default: false, group: '运维',
+      type: 'bool', default: false, group: '语音与唱歌', section: '运维',
       label: '自动朗读每条回复',
       hint: '开：每条回复都念一遍（另发一条语音）。关：只靠模型主动调 speak。',
     },
@@ -789,7 +788,7 @@ export default {
         try { songs = fs.readdirSync(songsDir).filter(f => /\.(mp3|wav|flac|m4a|ogg|aac)$/i.test(f)).length } catch { /* */ }
         return [
           `语音输出：${ttsOn() ? '开' : '关'}｜唱歌：${singOn() ? '开' : '关'}`,
-          `说话：${c.ttsVoice || '冰糖'} → DV5，pitch +${c.ttsPitch || 2}，语速 ×${c.ttsAtempo || 1}`,
+          `说话：${c.ttsVoice || '冰糖'} + RVC(${modelOf().model || '未配模型'})，pitch +${c.ttsPitch || 2}，语速 ×${c.ttsAtempo || 1}`,
           `唱歌：pitch +${c.singPitch || 4}，单首上限 ${c.singMaxSeconds || 300}s，曲库 ${songs} 首`,
           `自动朗读：${c.autoSpeak ? '开' : '关'}`,
           `tts python：${pyTts()}`,

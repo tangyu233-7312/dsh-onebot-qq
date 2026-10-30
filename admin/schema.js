@@ -709,6 +709,10 @@ function pluginEntries(kernel) {
         title,
         cfg,
         group: fdef.group || title, // 不写 group 的字段按插件标题归组
+        // section：同一个 group 里再分小节（前端折叠）。2026-10-30 合并语音页签时
+        // 只接了 group、漏了它 —— 结果"语音输出/唱歌/曲库/运维"四个 section 全丢，
+        // 24 个配置项平铺在一页，用户根本找不到「音色模型文件名」。
+        section: fdef.section || '',
         type: String(fdef.type || 'str'),
         label: fdef.label || field,
         unit: fdef.unit || '',
@@ -932,7 +936,7 @@ function controlView(entry, rawConfig, kernel) {
   // 进阶项：控制台默认折叠在「高级」按钮里（比如主动接话的语境权重）
   if (entry.advanced) view.advanced = true
   // 具名折叠块：前端据此在同一个标签页里额外渲染一个独立折叠区（如「连续对话」）
-  if (entry.section) view.section = entry.section
+  if (entry.section) view.section = String(entry.section)
   // str 控件的输入建议（前端渲染 <datalist>）
   if (Array.isArray(entry.suggestions) && entry.suggestions.length) view.suggestions = entry.suggestions
   return view

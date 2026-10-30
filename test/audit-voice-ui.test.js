@@ -7,8 +7,12 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
 
 import plugin from '../plugins/voice/index.js'
+
+const root = path.join(import.meta.dirname, '..')
 
 const schema = plugin.configSchema
 
@@ -32,7 +36,24 @@ test('多余的「启用这个子插件」总开关已删（分区各自有开�
   assert.ok(schema.autoLibrary, '曲库有自己的开关')
 })
 
-test('运维分区仍是独立 group（它不是功能，是依赖配置）', () => {
-  const ops = Object.values(schema).filter((v) => v.group === '运维')
-  assert.ok(ops.length >= 3, 'Python 路径 / RVC 目录 / Key 这些还在运维页')
+test('运维项也在这个页里（2026-10-30 从独立页签改成 section）', () => {
+  // 原来 voice 的运维项（Python 路径 / RVC 目录 / Key / 音色模型）单独占「运维」页，
+  // 用户要在两个页签之间来回找 —— 实测「音色模型文件名」根本找不到。
+  // 现在它们和功能项同页，靠 section: '运维' 分成小块。
+  const ops = Object.values(schema).filter((v) => v.section === '运维')
+  assert.ok(ops.length >= 4, 'Python 路径 / RVC 目录 / Key / 音色模型 都在「运维」小节里')
+  for (const k of ['ttsPython', 'rvcPython', 'rvcDir', 'singModel', 'apiKey']) {
+    assert.ok(schema[k], '缺配置项：' + k)
+    assert.equal(schema[k].section, '运维', k + ' 应归「运维」小节')
+    assert.equal(schema[k].group, '语音与唱歌', k + ' 应在本页（不要另开页签）')
+  }
+})
+
+test('音色模型名可配（不写死具体模型）', () => {
+  const m = schema.singModel
+  assert.ok(m, '要有 singModel 配置项')
+  assert.equal(m.default, '', '默认留空 = 自动扫 voice-models/*.pth')
+  // 源码里不许出现具体模型名（那是用户自己训练的，进公开仓库不合适）
+  const src = fs.readFileSync(path.join(root, 'plugins', 'voice', 'index.js'), 'utf8')
+  assert.equal(/Dv5/i.test(src), false, '源码里不该出现具体音色模型名')
 })
