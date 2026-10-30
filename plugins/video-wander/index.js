@@ -423,6 +423,31 @@ export default {
     const logSelf = (entry) => {
       try { bot.selfLog?.append?.({ kind: 'watch', ...entry }) } catch { /* 记账失败不许影响看视频 */ }
     }
+    /**
+     * 这一轮是谁起的？（2026-10-30 修）
+     * 判据优先级：
+     *   1. 合成轮（pacing 起的）→ self
+     *   2. **这一轮是主人发的话触发的** → master（不受冷却、不占额度）
+     *   3. 群友发的 → master（别人让看也是"被叫的"，不该占它自己的额度）
+     * 只有 pacing 自己起念那一类才算 self。
+     *
+     * ⚠️ 踩过的坑：只认 _wakeKind 会漏 —— 那是合成轮专用标记，主人正常说话触发的轮
+     * 它是空的，于是主人叫它看也被当成"它自己想看"，吃了自己的冷却：
+     * 「本鱼刚点过了，系统说刚看过一个、要等 15 分钟…看来冷却也管着本鱼自己点的」。
+     */
+    const turnChannelOf = () => {
+      const turn = (() => { try { return bot.currentTurn?.() || null } catch { return null } })()
+      if (!turn) return { channel: 'master', turn: null }
+      const kind = String(turn._wakeKind || '')
+      // ① 合成轮（pacing 自己起念）→ self
+      if (kind === 'proactive' || kind === 'continuation') return { channel: 'self', turn }
+      // ② 内核贴的 _triggeredBy：主人发的话触发的轮 → master（不受冷却、不占额度）
+      const by = String(turn._triggeredBy || '')
+      if (by === 'master' || by === 'other') return { channel: 'master', turn }
+      // ③ 老内核没有这个标记：默认当 master（宁可多让它看，也别把主人叫的挡掉）
+      return { channel: 'master', turn }
+    }
+
 
     /** 正常节奏下的下次到点时间 */
     const dueAt = (st) => Number(st.lastRunAt || 0) + Math.max(1, num(cfg().everyHours, 4)) * 3600 * 1000
@@ -902,9 +927,7 @@ export default {
         //   master = 主人在对话里让它看（正常被唤醒的轮）      → 不占额度、不受冷却
         // 判据来自 TurnContext 的 _wakeKind（内核在 runProactiveTurn 里贴的），
         // 拿不到就按 master 处理（宁可多让它看，也别把主人叫的挡掉）。
-        const turn = (() => { try { return bot.currentTurn?.() || null } catch { return null } })()
-        const wakeKind = String(turn?._wakeKind || '')
-        const channel = (wakeKind === 'proactive' || wakeKind === 'continuation') ? 'self' : 'master'
+        const { channel } = turnChannelOf()
 
         const st = state()
         if (channel === 'self') {
@@ -976,8 +999,7 @@ export default {
         if (!sid) return { ok: false, reason: '认不出当前会话' }
 
         // 通道与配额：和 watch_video 同一套
-        const wakeKind = String(turn._wakeKind || '')
-        const channel = (wakeKind === 'proactive' || wakeKind === 'continuation') ? 'self' : 'master'
+        const channel = turnChannelOf().channel
         const st0 = state()
         if (channel === 'self') {
           const cap = Math.max(0, num(cfg().chatMaxPerDay, 6))

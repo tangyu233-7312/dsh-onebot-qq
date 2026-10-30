@@ -1210,6 +1210,12 @@ export async function apply(ctx, bundleConfig = {}) {
     turnCtx.quoteAfterMsgs = Number(runtime.outbound?.quoteAfterMsgs ?? 3)
     // 引用锚：入站事件自带 message_id，记下来；活到这一轮的 DSH turn/end
     turnCtx._hasAnchor = ev.wake.kind !== 'proactive' && ev.wake.kind !== 'continuation'
+    // 2026-10-30：给"这一轮是谁起的"一个**机器可读**的标记，别让工具去猜。
+    //   _wakeKind：合成轮（主动接话/续聊）才有的旧标记；
+    //   _triggeredBy：'master' = 主人发的消息触发的；'other' = 群友/系统触发的。
+    // 踩过的坑：只认 _wakeKind 时，主人正常说话触发的轮它是空的，
+    // 工具就把"主人叫它看"当成"它自己起念"，吃了自己的冷却。
+    turnCtx._triggeredBy = ev.sender?.isMaster === true ? 'master' : 'other'
     turnCtx._turnStarted = false
     if (turnCtx._hasAnchor) state.markTurnAnchor(ev.chatKey, ev.messageId)
 

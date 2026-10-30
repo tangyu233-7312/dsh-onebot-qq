@@ -574,3 +574,36 @@ test('watch_now：自己起的念头受 chatMaxPerDay 限制', async () => {
     assert.match(r.reason, /每天最多/)
   } finally { s.restore() }
 })
+
+// ── 2026-10-30 线上：「看来冷却也管着本鱼自己点的」─────────────────
+test('回归：主人说话触发的普通轮 → master 通道，不吃自己的冷却/额度', async () => {
+  const s = setup({ cfg: { autoEnabled: true, chatCooldownMin: 30, chatMaxPerDay: 1 } })
+  try {
+    // 普通轮：_wakeKind 为空（只有合成轮才有），_triggeredBy = master
+    const turnCtx = { _triggeredBy: 'master', nextImageParts: [] }
+    s.bot.currentTurn = () => turnCtx
+    const r1 = await s.tools.watch_now.execute({}, { agent: { session: { id: 's1' } } })
+    assert.equal(r1.ok, true)
+    assert.equal(r1.channel, 'master')
+    // 立刻再叫它看一次：同类上限 20 很宽，冷却不该拦
+    const turnCtx2 = { _triggeredBy: 'master', nextImageParts: [] }
+    s.bot.currentTurn = () => turnCtx2
+    const r2 = await s.tools.watch_now.execute({}, { agent: { session: { id: 's1' } } })
+    assert.equal(r2.ok, true, '主人叫的第二次不该被"刚看过一个"挡住')
+    const st = s.shared.videoWanderStatus()
+    assert.equal(st.self.todayCount, 0, '一次都不该记进它自己的额度')
+    assert.equal(st.master.todayCount, 2)
+  } finally { s.restore() }
+})
+
+test('回归：主动接话起的轮才是 self（这条才占额度）', async () => {
+  const s = setup({ cfg: { autoEnabled: true, chatMaxPerDay: 1 } })
+  try {
+    s.bot.currentTurn = () => ({ _wakeKind: 'proactive', nextImageParts: [] })
+    const r = await s.tools.watch_now.execute({}, { agent: { session: { id: 's1' } } })
+    assert.equal(r.ok, true)
+    assert.equal(r.channel, 'self')
+    const st = s.shared.videoWanderStatus()
+    assert.equal(st.self.todayCount, 1)
+  } finally { s.restore() }
+})
