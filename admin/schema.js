@@ -526,7 +526,15 @@ export const ACTIONS = [
 /** 控制台「运维」页要渲染的动作按钮（过滤隐藏项；confirm 透传给前端二次确认）。 */
 export function visibleActions() {
   return ACTIONS.filter((a) => !a.hidden).map((a) => ({
-    id: a.id, group: a.group, label: a.label, hint: a.hint || '', confirm: a.confirm || null,
+    id: a.id,
+    group: a.group,
+    // ⚠️ onGroup 必须带出去：前端 client.js 用 `a.onGroup && a.group === group`
+    // 决定"这个按钮长在配置页底部还是运维页"。漏了这个字段，所有 onGroup 的按钮
+    // 都会在配置页底部**看不见**（2026-10-30 实测：加了「重置视频额度与冷却」却找不到）。
+    onGroup: a.onGroup === true,
+    label: a.label,
+    hint: a.hint || '',
+    confirm: a.confirm || null,
   }))
 }
 
