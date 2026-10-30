@@ -49,8 +49,9 @@ export const REPLY_DEFAULTS = {
   privateColdSilenceMs: 7200000, // 私聊冷场阈值：对方多久没说话才算"该主动找一句"（2 小时）
   privateHourlyMax: 1,       // 每个私聊每小时最多几次（内部闸门，比群聊更严）
   privateMaxPerDay: 3,       // 每个私聊每天最多几次（内部闸门）
-  privateMinGapMs: 10800000, // 两次之间至少隔多久（3 小时）
-  privateMinHourGap: 1,      // 两次私聊主动开口至少隔几小时（用户 2026-10-30 定：1 小时）
+  privateMinGapMs: 3600000,  // 两次主动开口之间至少隔多久（默认 1 小时，2026-10-30 定的）
+                             // ⚠️ 曾经同时存在过一个 privateMinHourGap（小时），两处重复且取更严的，
+                             //    用户改了其中一个却没生效 —— 已合并成这一项（分钟），别再拆开。
   // 主动开口 / 续聊时给模型的提示词（2026-10-29 从代码里搬出来，控制台可改）。
   // 为什么不写死在代码里：这类话术是「口味」问题，不是逻辑问题 ——
   // 改一句语气不该动代码、不该发版。默认值就是原来写死的那几句。
@@ -594,9 +595,9 @@ export function createPacing({ log = console, state, clock = null }) {
     if (lastHour >= Math.max(0, num(cfg.reply.privateHourlyMax, 1))) return false
     if (fires.length >= Math.max(0, num(cfg.reply.privateMaxPerDay, 3))) return false
     const last = fires[fires.length - 1] || 0
-    // 两次之间至少隔多久：取「privateMinGapMs」和「privateMinHourGap 小时」里**更严**的那个。
-    // 2026-10-30 用户把间隔定成 1 小时（原来内部闸门是 3 小时，比群里还严格）。
-    const gapMs = Math.max(60000, num(cfg.reply.privateMinGapMs, 3 * HOUR), Math.max(0, num(cfg.reply.privateMinHourGap, 1)) * HOUR)
+    // 两次之间至少隔多久：只认 privateMinGapMs 一项（分钟）。
+    // 曾经还有一个 privateMinHourGap（小时）并行、取更严的 —— 用户改一个不生效，已合并。
+    const gapMs = Math.max(60000, num(cfg.reply.privateMinGapMs, 60) * 60000)
     if (last && now - last < gapMs) return false
     return true
   }

@@ -299,14 +299,9 @@ export const CORE_CONTROLS = [
   },
   {
     key: 'pacing.reply.privateMinGapMs', group: '主动接话', section: '私聊主动接话', type: 'int', label: '两次主动至少间隔', unit: '分钟',
-    scale: 60000, min: 30, max: 1440, step: 30, default: 10800000,
-    hint: '同一个私聊两次主动消息之间至少隔这么久（默认 180 分钟）。',
-  },
-  {
-    key: 'pacing.reply.privateMinHourGap', group: '主动接话', section: '私聊主动接话', type: 'int', label: '两次之间至少隔（小时）', unit: '小时',
-    min: 0, max: 24, step: 1, default: 1,
-    hint: '同一个私聊两次主动开口至少隔几小时（默认 1 小时，2026-10-30 定的）。\n'
-      + '和上面「两次主动至少间隔（分钟）」取更严的那个 —— 想整体放宽就两个一起调。',
+    scale: 60000, min: 5, max: 1440, step: 5, default: 3600000,
+    hint: '同一个私聊两次主动开口之间至少隔多久。默认 60 分钟。\n'
+      + '**这是唯一的一项**（以前还有个「至少隔几小时」重复项，已合并到这里）。',
   },
   {
     key: 'pacing.reply.privateQqs', group: '主动接话', section: '私聊主动接话', advanced: true, type: 'group', label: '只对这些人主动（QQ 号，留空 = 全部好友）',

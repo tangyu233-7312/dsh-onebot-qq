@@ -1354,6 +1354,47 @@ export async function apply(ctx, bundleConfig = {}) {
         log.debug(`[主动接话] 播种失败 ${gid}: ${e.message}`)
       }
     }
+
+    // ── 私聊播种（2026-10-30）──────────────────────────────
+    // 之前只播种了群：重启后 private 会话的 ChatState 是空的（lastInboundAt=0），
+    // tickPrivateSilence 的判据 `now - lastTouch >= coldMs` 直接 continue ——
+    // 表现就是「重启后它永远不主动私聊我，直到我先发一条消息」。
+    // 私聊没有历史接口，基线从留档推；连留档都没有就按开机时间起算（别一开机就冒出来）。
+    const privateQqs = pacing.allowedPrivateQqs?.() ?? []
+    if (privateQqs.length) {
+      const archRaw = String(runtime.archive?.dir || 'logs/qq_chat')
+      const archDir = path.isAbsolute(archRaw) ? archRaw : path.join(dataDir, archRaw)
+      // 匹配 private_<QQ>.jsonl 或 private_<QQ>.jsonl.<分片号>
+      const fileRe = (qq) => new RegExp('^private_' + qq + '[.]jsonl([.]\\d+)?$')
+      for (const qq of privateQqs) {
+        try {
+          let ts = 0
+          let from = ''
+          let names = []
+          try { names = fs.readdirSync(archDir).filter((n) => fileRe(qq).test(n)) } catch { /* 没有留档目录 */ }
+          for (const n of names) {
+            const rows = fs.readFileSync(path.join(archDir, n), 'utf8').split('\n')
+            for (let i = rows.length - 1; i >= 0; i -= 1) {
+              const s = rows[i].trim()
+              if (!s) continue
+              try {
+                const r = JSON.parse(s)
+                const t0 = Number(r && r.ts) || 0
+                if (t0 > ts) ts = t0
+              } catch { /* 坏行跳过 */ }
+              break
+            }
+          }
+          if (ts) from = '留档'
+          if (!ts) { ts = Date.now(); from = '无历史，按开机起算' }
+          const st = state.get('private:' + qq)
+          if (!Number(st.lastInboundAt)) st.lastInboundAt = ts
+          log.info('[主动接话] 播种 private:' + qq + '：' + from + '，' + Math.round((Date.now() - ts) / 60000) + ' 分钟前')
+        } catch (e) {
+          log.debug('[主动接话] 播种私聊失败 ' + qq + ': ' + e.message)
+        }
+      }
+    }
   }
   seedProactiveBaseline().catch(() => {})
   kernel.seedProactiveBaseline = seedProactiveBaseline

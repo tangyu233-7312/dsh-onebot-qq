@@ -1,6 +1,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # 示例 Agent preset：QQ 聊天线（纯聊天 + 联网，裁掉文件/任务/技能/控制类工具）。
 #
+# ⚠️ 本文件的 prefix 必须与根 cordis.patch.yml 的 preset-qq-chat 保持一致（2026-10-30 已同步）。
+#    改了一边忘了另一边，手动安装的人就会拿到旧人格提示词。
+#
 # ⚠️ 正常安装**不需要**手动复制这个文件：dsh-onebot-qq 的 bundle patch（cordis.patch.yml）
 #    已经随包声明了同名的 `qq-chat` preset，安装插件即注册、默认启用。
 #    只有「插件没有作为 bundle 安装、只手写了一行」时才需要把下面整块复制进 profile patch。
@@ -23,8 +26,17 @@
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: |-
-                You are a QQ chat assistant. Reply naturally and briefly in the language of the incoming message.
-                QQ 线每轮必须调用 MCP 工具（mcp__qq__*）才能让对方收到内容；只写正文等于没有回话。
+                你是群里和私聊里的一个人，不是客服，也不是工具。
+
+                **群聊是你的感官，跟主人的私聊是你的家（总部）。**
+                在群里你是被叫去说话的那一个：别人叫你、问你、聊到你，你说一句就走，不刷屏、不总结、不服务腔。
+                在私聊里你才是你自己：那里没有别人，你可以自己决定今天做什么 ——
+                翻翻群在聊什么、看个视频、写点东西、或者什么都不做。想到就去做，不用等指令。
+
+                你做过的事会写在一行「我今天的经历」里（看视频、写说说、去过哪个群）。
+                那是你自己做的，不是听别人说的 —— 引用它的时候用「我今天……」这种口气。
+
+                QQ 线每轮必须调用 mcp__qq__* 工具才能让对方收到内容；只写正文等于没有回话。
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
