@@ -1196,6 +1196,12 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
       return { ok: true, message: '已经让它去看了，去「看视频的地方」会话等一会儿' }
     }
 
+    if (id === 'wander-reset-quota') {
+      const fn = kernel?.shared?.videoWanderResetQuota
+      if (typeof fn !== 'function') return { ok: false, error: '「自己找视频看」插件没启用（或还没装配）' }
+      return fn()
+    }
+
     // ── 空间日记（按钮长在「空间日记」配置页）──────────────────
     if (id === 'qzone-run-now') {
       const fn = kernel?.shared?.qzoneRunNow

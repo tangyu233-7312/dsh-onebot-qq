@@ -607,3 +607,41 @@ test('回归：主动接话起的轮才是 self（这条才占额度）', async 
     assert.equal(st.self.todayCount, 1)
   } finally { s.restore() }
 })
+
+test('重置额度：只清「自己起的念头」的次数与冷却，不动主人叫的', async () => {
+  const s = setup({ cfg: { autoEnabled: true, chatCooldownMin: 30, chatMaxPerDay: 1 } })
+  try {
+    // 自己看一次（占额度）
+    s.bot.currentTurn = () => ({ _wakeKind: 'proactive', nextImageParts: [] })
+    await s.tools.watch_now.execute({}, { agent: { session: { id: 's1' } } })
+    // 主人叫看一次（不占额度）
+    s.bot.currentTurn = () => ({ _triggeredBy: 'master', nextImageParts: [] })
+    await s.tools.watch_now.execute({}, { agent: { session: { id: 's1' } } })
+    let st = s.shared.videoWanderStatus()
+    assert.equal(st.self.todayCount, 1)
+    assert.equal(st.master.todayCount, 1)
+
+    const r = s.shared.videoWanderResetQuota()
+    assert.equal(r.ok, true)
+    st = s.shared.videoWanderStatus()
+    assert.equal(st.self.todayCount, 0, '自己那份要清空')
+    assert.equal(st.master.todayCount, 1, '主人叫的不能跟着被清掉')
+    assert.equal(st.self.lastAt, null, '冷却时间戳要清（0 会被 stats 渲染成 null）')
+  } finally { s.restore() }
+})
+
+test('重置后：本来被冷却挡住的自看又能看了', async () => {
+  const s = setup({ cfg: { autoEnabled: true, chatCooldownMin: 30 } })
+  try {
+    s.bot.currentTurn = () => ({ _wakeKind: 'proactive', nextImageParts: [] })
+    await s.tools.watch_now.execute({}, { agent: { session: { id: 's1' } } })
+    // 冷却中：再自看会被挡
+    const blocked = await s.tools.watch_now.execute({}, { agent: { session: { id: 's1' } } })
+    assert.equal(blocked.ok, false)
+    assert.match(blocked.reason, /刚看过一个/)
+    // 重置后放行
+    s.shared.videoWanderResetQuota()
+    const ok = await s.tools.watch_now.execute({}, { agent: { session: { id: 's1' } } })
+    assert.equal(ok.ok, true)
+  } finally { s.restore() }
+})

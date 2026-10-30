@@ -1141,6 +1141,34 @@ export default {
         recent: (st.runs || []).slice(-8).reverse(),
       }
     }
+    /**
+     * 重置视频额度与冷却（2026-10-30，测试用）。
+     *
+     * 只清两样：**今天「它自己起的念头」的次数** + **上次自己看的冷却时间戳**。
+     * 不清 seen（否则会重复看同一条）、不清 runs 的历史（那是流水账）。
+     * 主人叫它看的那条路本来就不占额度、不受冷却，所以这里不用管它。
+     */
+    bot.shared.videoWanderResetQuota = () => {
+      const st = state()
+      const before = { selfToday: runsToday(st, 'chat'), lastSelfAt: Number(st.chatLastAt) || 0, masterToday: runsToday(st, 'master') }
+      const today0 = localDate()
+      // 把今天 self 通道的 run 行抹掉（只抹今天；历史留着）
+      st.runs = (st.runs || []).filter((r) => {
+        const isToday = localDate(Number(r.at) || 0) === today0
+        const isSelf = String(r.trigger || '') === 'chat' || String(r.trigger || '') === 'self'
+        return !(isToday && isSelf)
+      })
+      st.chatLastAt = 0
+      save(st)
+      log.info('[看视频的地方] 额度与冷却已重置：self ' + before.selfToday + ' → 0')
+      return {
+        ok: true,
+        before,
+        after: { selfToday: runsToday(state(), 'chat'), lastSelfAt: 0 },
+        message: '已重置：自己看的今天 ' + before.selfToday + ' 次 → 0 次，冷却清空。'
+          + '（主人叫它看的那 ' + before.masterToday + ' 次本来就不占额度，没动）',
+      }
+    }
     bot.shared.videoWanderReload = () => { stop(); start() }
 
     log.info('[看视频的地方] 已装配：' + (autoOn()
