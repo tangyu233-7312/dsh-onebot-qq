@@ -35,6 +35,19 @@
 - **说说绕过了六项脱敏**：`sendQzoneMsg` 原来声明「不脱敏」，而 qzone 直接调它 —— 红线「文本只走 deliver()」被绕开。群里发错还能撤回，空间发出去是公开的、收不回来。现在适配器内部过同一份 `sanitizeSensitive`。
 - **后台任务吞异常**：qzone 开机那次 `tick().catch(() => {})` 把失败整个吃掉（主循环本来就有 catch，这里再吞一次 = 开机失败永远查不到原因）。
 
+### 部署记录（2026-10-30，NAS 实机）
+
+已同步到 NAS 生产（`profiles/web/node_modules` 与 `node_modules` 两个副本），重启后：
+**插件 19/19、工具 26、版本 0.1.1、OneBot WS 已连接、无 ReferenceError**。
+NAS 上新加的 33 条测试全过。
+
+部署时踩到并修掉的两处：
+
+- **改名只改了一边**：`index.js` 的 import 改成了 `NapCatAdapter`，但适配器里的
+  `export class OneBotAdapter` 没改 → `does not provide an export named`。**两边都要改。**
+- **NAS 独有的老机制**：`deskSessionIds`（已合并成 `markScope`）、`proactiveMessages`（已改成
+  `splitMaxParts` 可配）确认是死代码/等价实现后清掉；`sidecar-control` 与 `vendor/` 保留未动。
+
 ## 未发布 — 2026-10-28
 
 新增 QQ 空间日记子插件（`qzone`，order 62）：
