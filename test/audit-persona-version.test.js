@@ -74,7 +74,12 @@ test('revise：另存一个新版本文件，不碰旧版', async () => {
     const r = await s.tools.persona_revise.execute({ change: '把自嘲改成偶尔' })
     assert.equal(r.ok, true)
     assert.equal(r.from, '蓝色大肥鱼20261030')
-    assert.match(r.newVersion, /-2$/)
+    // ⚠️ 新版本按**当天日期**命名（不是简单 +1）。所以断言不能写死 "-2"：
+    //    夹具里是 20261030，如果测试跑在 10-31 之后，新名字是 蓝色大肥鱼2026xxxx，
+    //    不带 -2 后缀 —— 2026-10-31 零点一过这条就假红了。
+    //    要守的不变量是：① 新名字带一个日期后缀 ② 跟旧版不同 ③ 旧文件没被动过。
+    assert.notEqual(r.newVersion, r.from, '新版本必须换个名字，不能覆盖旧版')
+    assert.match(r.newVersion, /^蓝色大肥鱼\d{8}(-\d+)?$/, '新版本名 = 人设名 + 日期(+序号)：' + r.newVersion)
     const after = fs.readFileSync(path.join(s.personas, '蓝色大肥鱼20261030.md'), 'utf8')
     assert.equal(after, before, '旧版必须一个字都没变')
     const newFile = fs.readFileSync(path.join(s.personas, r.newVersion + '.md'), 'utf8')

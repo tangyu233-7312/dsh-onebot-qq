@@ -55,5 +55,6 @@ test('音色模型名可配（不写死具体模型）', () => {
   assert.equal(m.default, '', '默认留空 = 自动扫 voice-models/*.pth')
   // 源码里不许出现具体模型名（那是用户自己训练的，进公开仓库不合适）
   const src = fs.readFileSync(path.join(root, 'plugins', 'voice', 'index.js'), 'utf8')
-  assert.equal(/Dv5/i.test(src), false, '源码里不该出现具体音色模型名')
+  // 断言里也不写具体名字（否则等于自己泄露）。要守的是：源码不许把某个 .pth 写死。
+  assert.equal(/\.pth['"]/.test(src), false, '源码里不该出现字面 .pth 文件名（应走 singModel / 自动扫目录）')
 })

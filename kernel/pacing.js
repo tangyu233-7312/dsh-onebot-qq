@@ -661,9 +661,11 @@ export function createPacing({ log = console, state, clock = null, dataDir = '' 
     const dayMax = Math.max(0, num(cfg.reply.privateMaxPerDay, 3))
     if (fires.length >= dayMax) return `今天已经开口 ${fires.length}/${dayMax} 次（每天上限，明天 0 点重置）`
     const last = fires[fires.length - 1] || 0
-    // 两次之间至少隔多久：只认 privateMinGapMs 一项（分钟）。
-    // 曾经还有一个 privateMinHourGap（小时）并行、取更严的 —— 用户改一个不生效，已合并。
-    const gapMs = Math.max(60000, num(cfg.reply.privateMinGapMs, 60) * 60000)
+    // ⚠️ 配置里 privateMinGapMs **存的是毫秒**（schema 用 scale:60000 转成分钟给人填）。
+    //    2026-10-31 修：这里原来写 `num(...) * 60000`，把毫秒又乘了一次 →
+    //    30 分钟变成 1800000 分钟，日志打出「还差 1799698 分钟」，私聊永远不开口。
+    //    群里不受影响，因为群那条路径用的是 pacing.minGapMs，不经过这段。
+    const gapMs = Math.max(60000, num(cfg.reply.privateMinGapMs, 3 * HOUR))
     if (last && now - last < gapMs) {
       const rest = Math.ceil((gapMs - (now - last)) / 60000)
       return `距上次主动开口还差 ${rest} 分钟（间隔 ${Math.round(gapMs / 60000)} 分钟）`
@@ -969,7 +971,7 @@ export function createPacing({ log = console, state, clock = null, dataDir = '' 
           const fires = (privateRings.get(qq) || []).filter((x) => now - x < 24 * HOUR)
           const hourUsed = fires.filter((x) => now - x < HOUR).length
           const last = fires[fires.length - 1] || 0
-          const gapMs = Math.max(60000, num(cfg.reply.privateMinGapMs, 60) * 60000)
+          const gapMs = Math.max(60000, num(cfg.reply.privateMinGapMs, 3 * HOUR)) // 配置存毫秒，别再乘
           return {
             qq,
             todayUsed: fires.length,
