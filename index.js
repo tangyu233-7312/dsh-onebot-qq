@@ -463,7 +463,8 @@ export async function apply(ctx, bundleConfig = {}) {
   kernel.selfLog = createSelfLog({
     dataDir,
     log: logFor('self-log'),
-    keepDays: Number(runtime.selfLog?.keepDays) || 14,
+    // 默认 7 天：看视频的感想原文也存在这里，留久了既占上下文又过时（2026-10-31）
+    keepDays: Number(runtime.selfLog?.keepDays) || 7,
   });
 
   // ── QQ 工作区自举：安装/启动时自动在 DSH 侧栏建一个「QQ 聊天」工作区 ──

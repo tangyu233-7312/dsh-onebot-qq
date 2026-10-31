@@ -111,9 +111,11 @@ function readState(dataDir) {
       chatLastAt: Number(raw.chatLastAt) || 0,
       runs: Array.isArray(raw.runs) ? raw.runs.slice(-100) : [],
       seen: raw.seen && typeof raw.seen === 'object' ? raw.seen : {},
+      // 上次清理过期帧的时间（每天最多扫一次；重启不该立刻又扫）
+      framesPrunedAt: Number(raw.framesPrunedAt) || 0,
     }
   } catch {
-    return { lastRunAt: 0, chatLastAt: 0, runs: [], seen: {} }
+    return { lastRunAt: 0, chatLastAt: 0, runs: [], seen: {}, framesPrunedAt: 0 }
   }
 }
 
@@ -127,6 +129,7 @@ function writeState(dataDir, st) {
     chatLastAt: Number(st.chatLastAt) || 0,
     runs: (st.runs || []).slice(-100),
     seen,
+    framesPrunedAt: Number(st.framesPrunedAt) || 0,
   }
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true })
@@ -370,7 +373,6 @@ export default {
     const SESSION_KEY = 'desk:video-wander'
     const SESSION_TITLE = '看视频的地方'
     const ALLOWED_TOOLS = ['report_watched', 'skip_watching', 'watch_status']
-
     let running = false
     let timer = null
     /** 本轮它交上来的东西（report_watched / skip_watching 写这里，轮次结束后统一发） */
@@ -665,6 +667,7 @@ export default {
       lines.push('')
       lines.push('⚠️ 这个会话里 **send_message 是不可用的**（你不在任何聊天里）。')
       lines.push('   写了正文而不调上面两个工具 = 这段白看了，谁也不会收到。交上去我负责发给主人。')
+      lines.push('   （感想原文会被记下来，主人过几天在私聊里追问时，你查得到自己当时说了什么、画面是什么。）')
       return lines.join('\n')
     }
 
@@ -715,6 +718,10 @@ export default {
         }
 
         const durSec = Number(data.durationSec) || video.duration
+        // 把抽到的帧**留一份自己的**（2026-10-31）：侧车的 frames/ 只留 10 分钟（frameTtlMs），
+        // 主人隔几小时在私聊追问「那天那个视频画面是什么」时早就被清掉了。
+        // 留一份到 <dataDir>/state/video-wander/frames/<日期>/<bvid>/，跟感想一起留 7 天。
+        const kept = keepFrames(video.bvid, data.frames, st)
         const sessionId = await ensureSession()
         const turn = await promptAndWait(
           sessionId,
@@ -728,7 +735,7 @@ export default {
         // 跨会话台账：不管它写没写感想，视频是真的看了（写成一行，私聊里的它也能知道）
         logSelf({
           what: '看了 B 站视频「' + String(video.title || video.bvid).slice(0, 40) + '」',
-          why: trigger === 'self' ? '我自己想看的' : (trigger === 'master' ? '主人让我看的' : trigger === 'timer' ? '到点自己看的' : '手动触发'),
+          why: trigger === 'self' ? '我自己想看的' : (trigger === 'master' ? '主人让我看的' : (trigger === 'timer' ? '到点自己看的' : '手动触发')),
           where: '私聊',
           channel: trigger,
           bvid: video.bvid,
@@ -758,6 +765,18 @@ export default {
         }
 
         const text = composeMessage(video, got.thought)
+        // 先把**完整感想**记进流水账（不是只记一条「看了个视频」，也不是截到 60 字）：
+        // 私聊里的它靠这一行才知道自己当时到底想说了什么。没发出去也要记（标 sent=false）。
+        const durText2 = durSec ? mmss(durSec) : ''
+        logSelf({
+          what: '看完了' + (durText2 ? '（' + durText2 + '）' : '') + '「' + String(video.title || video.bvid).slice(0, 40) + '」',
+          why: trigger === 'self' ? '我自己想看的' : (trigger === 'master' ? '主人让我看的' : (trigger === 'timer' ? '到点自己看的' : '手动触发')),
+          where: '私聊',
+          channel: trigger,
+          bvid: video.bvid,
+          thought: String(got.thought || ''),
+          frames: kept ? kept.count : 0,
+        })
         const to = masterTarget()
         if (!to) {
           log.warn('[看视频的地方] 没有可用的主人 QQ（masterQq 与 adminQq 都为空），本次不发')
@@ -777,16 +796,6 @@ export default {
         await bot.deliver(to, text)
         st.runs.push({ at: now(), trigger, quota: trigger === 'self' ? 'self' : 'free', bvid: video.bvid, title: video.title.slice(0, 60), ok: true, reason: 'sent' })
         save(st)
-        // 看完的**结果**也要记一笔：只记「看了个视频」而不记「看到了什么」，
-        // 它在下一轮回忆时就只有标题没有内容（线上就是这么答的）。
-        logSelf({
-          what: '看完了「' + String(video.title || video.bvid).slice(0, 30) + '」，感想：' + String(got.thought).replace(/\s+/g, ' ').slice(0, 60),
-          why: '已经发给主人了',
-          where: '私聊',
-          channel: trigger,
-          bvid: video.bvid,
-          delivered: true,
-        })
         log.info('[看视频的地方] 已发给 ' + to + '：' + video.bvid + '（' + got.thought.length + ' 字）')
         return { ok: true, sent: true, to, bvid: video.bvid }
       } catch (e) {
@@ -800,6 +809,77 @@ export default {
         running = false
         pending = null
       }
+    }
+
+    // ── 帧留存（2026-10-31）────────────────────────────────
+    // 侧车 frames/ 的 TTL 只有 10 分钟（sidecar.config.json 的 frameTtlMs），主人几小时后追问
+    // 「那天那个视频画面是什么」时早就没了。所以看完顺手把抽到的帧**复制一份**到
+    //   <dataDir>/state/video-wander/frames/<YYYY-MM-DD>/<bvid>/00.jpg、01.jpg…
+    // 按天分目录，超过 KEEP_FRAME_DAYS 天整目录删掉 —— 跟感想原文同一个保留期。
+    const KEEP_FRAME_DAYS = 7
+    function framesRoot() {
+      return path.join(dataDir, 'state', 'video-wander', 'frames')
+    }
+    function frameDirOf(bvid, day = localDate()) {
+      return path.join(framesRoot(), day, String(bvid || '').replace(/[^\w.-]/g, ''))
+    }
+    /** 把侧车抽的帧复制一份留着；失败只 warn（不影响这一轮） */
+    function keepFrames(bvid, frames, st) {
+      try {
+        const dir = frameDirOf(bvid)
+        fs.mkdirSync(dir, { recursive: true })
+        const kept = []
+        const list = Array.isArray(frames) ? frames : []
+        list.forEach((f, i) => {
+          const src = String(f?.path || '')
+          if (!src) return
+          const ext = path.extname(src) || '.jpg'
+          const dst = path.join(dir, String(i).padStart(2, '0') + ext)
+          try { fs.copyFileSync(src, dst); kept.push({ sec: Number(f?.sec) || 0, file: dst }) } catch { /* 单张失败就少一张 */ }
+        })
+        pruneFrames(st)
+        return kept.length ? { dir, count: kept.length, frames: kept } : null
+      } catch (e) {
+        log.warn('[看视频的地方] 留帧失败（不影响这次）：' + e.message)
+        return null
+      }
+    }
+    /**
+     * 删掉过期天的帧目录。
+     * **每天最多扫一次**（2026-10-31 用户要求）：宁可多占几天盘，也别为清一个目录反复
+     * readdir + stat 耗 CPU。时间戳存进状态文件（framesPrunedAt），重启不会立刻又扫一遍。
+     */
+    const FRAME_PRUNE_EVERY_MS = 24 * 3600 * 1000
+    function pruneFrames(st) {
+      const t = now()
+      const last = Number(st?.framesPrunedAt) || 0
+      if (last && t - last < FRAME_PRUNE_EVERY_MS) return
+      if (st) st.framesPrunedAt = t // 跟着本轮 runOnce 的 save(st) 一起落盘
+      try {
+        const root = framesRoot()
+        for (const n of fs.readdirSync(root)) {
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(n)) continue
+          const day = new Date(n + 'T00:00:00').getTime()
+          if (Number.isFinite(day) && t - day > KEEP_FRAME_DAYS * 86400 * 1000) {
+            try { fs.rmSync(path.join(root, n), { recursive: true, force: true }) } catch { /* 下次再删 */ }
+          }
+        }
+      } catch { /* 目录不存在 */ }
+    }
+    /** 找某条视频留下的帧目录（先找看着那天的，再往前翻 KEEP_FRAME_DAYS 天） */
+    function findFrameDir(bvid) {
+      const root = framesRoot()
+      for (let i = 0; i < KEEP_FRAME_DAYS; i += 1) {
+        const day = localDate(now() - i * 86400 * 1000)
+        const d = frameDirOf(bvid, day)
+        try {
+          if (fs.statSync(d).isDirectory()) {
+            const files = fs.readdirSync(d).filter((f) => /\.(jpe?g|png|webp)$/i.test(f)).sort()
+            if (files.length) return { day, dir: d, files: files.map((f) => path.join(d, f)) }
+          }
+        } catch { /* 那一天没有 */ }
+      }
+      return null
     }
 
     // ── 消息组装 ────────────────────────────────────────────
@@ -889,6 +969,72 @@ export default {
           },
           lastWatched: last ? { at: last.at, bvid: last.bvid, title: last.title } : null,
           quiet: { enabled: quietOn(), start: num(cfg().quietStart, 1), end: num(cfg().quietEnd, 8), active: inQuiet() },
+        }
+      },
+    })
+
+    // ── 工具：翻自己看过的视频（任何会话都能调，只读）──────────
+    // 2026-10-31 线上：主人隔几小时在私聊问「那个《此弟不宜久留》你看了啥」，
+    // 它只剩标题、说"画面没送过来，只能照标题瞎猜" —— 因为看视频那一轮在别的会话里。
+    // 现在：感想原文进流水账（每轮能看到），这份工具有需要时再翻完整记录 + 当时抽的帧。
+    bot.registerTool('watch_read', {
+      description: '翻你自己最近看过哪些 B 站视频：完整感想原文、什么时候看的、链接，以及当时抽的画面帧（返回可直接看图）。'
+        + '想回答「我前几天看的那个视频说了什么」「那天画面是什么样的」就调它；'
+        + '流水账里标了「看·无感想」的那次是真的没交感想，别拿它编内容。',
+      parameters: {
+        bvid: { type: 'string', description: '想查某一条就填 BV 号；留空 = 看最近的几条' },
+        days: { type: 'string', description: '往前翻几天，默认 7（跟保留期一致），最多 30' },
+        frames: { type: 'string', description: '要不要连画面一起看：1/true = 带上帧（默认带），0/false = 只看文字' },
+      },
+      async execute(args = {}) {
+        const wantBvid = String(args.bvid || '').trim()
+        const days = Math.max(1, Math.min(30, Math.round(Number(args.days) || 7)))
+        const withFrames = !/^(0|false|no|否)$/i.test(String(args.frames ?? '1').trim())
+        const since = now() - days * 86400 * 1000
+        const rows = (bot.selfLog?.readSinceDays?.(days) || [])
+          .filter((r) => String(r.kind) === 'watch' && Number(r.ts) >= since)
+          .filter((r) => (wantBvid ? String(r.bvid || '').toLowerCase() === wantBvid.toLowerCase() : true))
+          .reverse() // 新的在前
+        if (!rows.length) {
+          return {
+            ok: true,
+            items: [],
+            note: (wantBvid ? '没找到 ' + wantBvid : '最近 ' + days + ' 天没有看过视频的记录')
+              + '（记录只留 ' + KEEP_FRAME_DAYS + ' 天）',
+          }
+        }
+        const picked = rows.slice(0, wantBvid ? 1 : 5)
+        const items = []
+        const images = []
+        for (const r of picked) {
+          const item = {
+            when: localDate(Number(r.ts)) + ' ' + String(r.at || ''),
+            title: String(r.what || '').replace(/^看完了(（[^）]*）)?/, '').trim(),
+            bvid: String(r.bvid || ''),
+            url: r.bvid ? 'https://www.bilibili.com/video/' + r.bvid : '',
+            thought: String(r.thought || '') || '（这次没交感想，只记了标题）',
+            channel: String(r.channel || ''),
+          }
+          if (withFrames && r.bvid) {
+            const fd = findFrameDir(r.bvid)
+            if (fd) {
+              item.framesDir = fd.dir
+              item.frames = fd.files.map((f, i) => ({ n: i + 1, path: f }))
+              images.push(...fd.files.slice(0, 6).map((f, i) => ({ path: f, name: String(r.bvid) + '#' + (i + 1) })))
+            } else {
+              item.frames = []
+              item.framesGone = '帧已过期（只留 ' + KEEP_FRAME_DAYS + ' 天）或当时没留'
+            }
+          }
+          items.push(item)
+        }
+        return {
+          ok: true,
+          count: rows.length,
+          items,
+          // 帧文件路径也给出来：想看画面就直接读这些图（模型侧按路径看图）
+          images: images.slice(0, 6),
+          note: withFrames ? '' : '按你的要求没带画面',
         }
       },
     })
@@ -1138,6 +1284,13 @@ export default {
         nextDueAt: dueAt(st),
         running,
         quiet: { enabled: quietOn(), start: num(cfg().quietStart, 1), end: num(cfg().quietEnd, 8), active: inQuiet() },
+        // 帧留存：留几天、多久扫一次（宁多占盘也别频繁扫 CPU，2026-10-31）
+        frames: {
+          dir: framesRoot(),
+          keepDays: KEEP_FRAME_DAYS,
+          pruneEveryHours: FRAME_PRUNE_EVERY_MS / 3600000,
+          lastPrunedAt: Number(st.framesPrunedAt) || 0,
+        },
         recent: (st.runs || []).slice(-8).reverse(),
       }
     }

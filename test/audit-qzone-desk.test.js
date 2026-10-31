@@ -245,6 +245,52 @@ test('命令：私聊里发 /空间 群聊 会被挡下', async () => {
   }
 })
 
+test('QZ-READ 读自己空间的说说：私聊里也能调（只读，不发东西）', async () => {
+  const dataDir = tmpDir('qzone-read')
+  const env = await bootKernel({ dataDir, config: qzoneCfg({ feedDays: 30 }) })
+  const tool = (n) => env.ctx._registeredTools.get(`mcp__qq__${n}`)
+  assert.ok(tool('qzone_read'), '应注册 qzone_read')
+
+  // 协议端：给 cookie，说说接口回两条（一条 2 天前、一条 40 天前）
+  const feishu = { code: 0, msglist: [
+    { created_time: Math.floor(Date.now() / 1000) - 2 * 86400, content: '今天龙放出来了<br>大家都挺高兴', pic: [1, 2], tid: 'a1' },
+    { created_time: Math.floor(Date.now() / 1000) - 40 * 86400, content: '很早以前的一条', tid: 'a0' },
+  ] }
+  env.kernel.onebot.callApi = async (act) => {
+    if (act === 'get_cookies') return { data: { cookies: 'uin=o123456789; p_skey=abc; skey=x' } }
+    return { data: {} }
+  }
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => ({ ok: true, text: async () => '_Callback(' + JSON.stringify(feishu) + ');' })
+  const sentBefore = env.sent.length
+  try {
+    const r = await tool('qzone_read').execute({})
+    assert.equal(r.ok, true)
+    assert.equal(r.count, 1, '30 天内只留一条')
+    assert.match(r.items[0].text, /今天龙放出来了/)
+    assert.equal(r.items[0].pics, 2, '图片张数要带上')
+    assert.equal(env.sent.length, sentBefore, '只读工具不许往任何地方发东西')
+  } finally {
+    globalThis.fetch = realFetch
+    env.dispose()
+  }
+})
+
+test('QZ-READ 读不到时如实报原因，不假装读过', async () => {
+  const dataDir = tmpDir('qzone-read-fail')
+  const env = await bootKernel({ dataDir, config: qzoneCfg({ feedDays: 30 }) })
+  const tool = (n) => env.ctx._registeredTools.get(`mcp__qq__${n}`)
+  env.kernel.onebot.callApi = async () => ({ data: { cookies: '' } })
+  try {
+    const r = await tool('qzone_read').execute({})
+    assert.equal(r.ok, false)
+    assert.match(String(r.reason), /cookie/, '原因要说清（协议端未登录 / 没拿到 cookie）')
+    assert.deepEqual(r.items, [])
+  } finally {
+    env.dispose()
+  }
+})
+
 test('控制台重置：清掉今天的已发/已跳过，额度回到 0', async () => {
   const dataDir = tmpDir('qzone-reset')
   const env = await bootKernel({ dataDir, config: qzoneCfg() })

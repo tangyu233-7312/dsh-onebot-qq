@@ -21,7 +21,7 @@
  *   · 引用反查拿不到发送者 → 当**没叫本机**（宁可漏唤醒，也不越界插话）。
  *
  * 免模型拦截（intercept）：
- *   · 被戳 → 回戳；适配器不支持 poke（或本机 QQ 版本不支持 send_poke）时退化成回一句话。
+ *   · 被戳 → 回戳 **+** 回一句话（句池 poke 节；适配器不支持 poke 时只剩回话，不影响回话）。
  *   · 引用一条 + 说"撤回" → 撤那一条，**同一条只试一次**（批量重试会把群刷爆）。
  *   · 审批等待期的「允许/拒绝」→ 交给内核挂的回调（本插件不持有审批状态）。
  */
@@ -81,7 +81,7 @@ const configSchema = {
   callAck: { type: 'bool', default: true, group: '唤醒', label: '被叫但没正文时先答应一声', hint: '开：有人只叫了它名字却没接着说事，先回一声「在」再等下文；关：安静等对方把话说完。' },
   pokeBack: {
     type: 'bool', default: true, group: '唤醒', label: '被戳回一句',
-    hint: '有人戳一戳（双击头像）它时：开 = 回一句（从人设句池里挑）；关 = 完全不理。戳一戳不算唤醒，不会进模型、不花 token。',
+    hint: '有人戳一戳（双击头像）它时：开 = 回戳时再加一句（句子从人设 `.lines.txt` 的 `## poke` 节里挑，回戳失败也照常回话）；关 = 完全不理。戳一戳不算唤醒，不会进模型、不花 token。',
   },
 }
 
@@ -308,10 +308,13 @@ async function ackAndWait(bot, ev, why) {
 }
 
 /**
- * 被戳（OneBot notice：notice_type=notify / sub_type=poke）→ 回戳；适配器没有 poke
- * （或本机 QQ 版本不支持 send_poke）→ 退化成回一句话，别像没反应。
+ * 被戳（OneBot notice：notice_type=notify / sub_type=poke）→ 回戳 **+** 回一句句池话。
  * 事件形态由 format.normalizeEvent 塞进 `ev._scratch.notice`；
  * `ev.mentionedSelf` 已在那边按 target_id === selfId 算好 —— 戳别人的不理。
+ *
+ * ⚠️ 回戳和回话**不是二选一**（2026-10-31 修）：原来「poke 成功就 return」，
+ *    而 NAS 上的 NapCat 支持 send_poke 且一直成功 → 人设 `## poke` 句池**永远发不出去**，
+ *    只看到一个回戳、群里一句话没有。戳一戳本来就是轻交互，两样都做才像被戳了有反应。
  */
 async function handlePoke(bot, ev, notice) {
   // notice 永远不是聊天消息：这条到此为止，哪怕不回（否则宽松模式下空正文会进模型）
@@ -324,15 +327,15 @@ async function handlePoke(bot, ev, notice) {
     bot.log.debug(`[戳一戳] ${POKE_COOLDOWN_MS}ms 内已回过, 跳过 user=${poker}`)
     return
   }
+  // 回戳是锦上添花：适配器没有 poke / 本机 QQ 不支持 send_poke / 接口抽风，都不该连带着把话也吞了
+  let poked = false
   try {
-    if (typeof bot.onebot?.poke === 'function' && await bot.onebot.poke(ev.chatKey, poker)) {
-      bot.log.info(`[戳一戳] ${ev.chatKey} user=${poker} 戳了本机 → 回戳`)
-      return
-    }
+    if (typeof bot.onebot?.poke === 'function') poked = await bot.onebot.poke(ev.chatKey, poker)
+    else bot.log.debug(`[戳一戳] 适配器没有 poke，只回一句`)
   } catch (e) {
-    bot.log.warn(`回戳失败 (${ev.chatKey}): ${e.message} → 改用一句话回应`)
+    bot.log.warn(`回戳失败 (${ev.chatKey}): ${e.message}（照常回一句）`)
   }
-  bot.log.info(`[戳一戳] ${ev.chatKey} user=${poker} 戳了本机 → 回一句`)
+  bot.log.info(`[戳一戳] ${ev.chatKey} user=${poker} 戳了本机 → ${poked ? '回戳 + 回一句' : '回一句'}`)
   await bot.deliver(ev.chatKey, pickLine(bot, 'poke', DEFAULT_POKE))
 }
 

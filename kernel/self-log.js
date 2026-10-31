@@ -12,6 +12,8 @@
  *
  * 三条纪律：
  *  ① **只记事实，不记正文**：记 title/字数/原因，绝不记聊天原文（日志变垃圾场还会泄密）。
+ *     例外（2026-10-31）：**看视频的感想**要留原文 —— 那是它自己产出的话，不是别人的聊天内容；
+ *     不留原文就会出现「私聊里追问感想，它只剩标题、只能说没看画面」。
  *  ② **写失败不许影响干活**：任何一次 append 失败只 warn 一行，功能照常。
  *  ③ **按天分文件 + 只留 N 天**：`state/self-log/YYYY-MM-DD.jsonl`，读的时候只读今天，
  *     清理在 append 时顺手做（不需要额外定时器）。
@@ -41,14 +43,18 @@ const oneLine = (s, max = 120) => {
   return t.length > max ? t.slice(0, max) + '…' : t
 }
 
+/** 感想原文的字段名（要放长的那一个）；其余附加字段一律压到 120 字 */
+export const LONG_TEXT_FIELD = 'thought'
+export const THOUGHT_MAX = 600
+
 /**
  * @param {object} opts
  * @param {string} opts.dataDir  数据目录（`<dataDir>/state/self-log/<日期>.jsonl`）
  * @param {object} [opts.log]
- * @param {number} [opts.keepDays] 保留多少天（默认 14）
+ * @param {number} [opts.keepDays] 保留多少天（默认 7）
  * @param {() => number} [opts.now] 自检可钉住时间
  */
-export function createSelfLog({ dataDir, log = console, keepDays = 14, now = () => Date.now() } = {}) {
+export function createSelfLog({ dataDir, log = console, keepDays = 7, now = () => Date.now() } = {}) {
   const rootOf = () => path.join(String(dataDir || '.'), 'state', 'self-log')
   const fileOf = (ms) => path.join(rootOf(), localDateOf(ms) + '.jsonl')
 
@@ -60,7 +66,7 @@ export function createSelfLog({ dataDir, log = console, keepDays = 14, now = () 
     lastPrune = t
     try {
       const dir = rootOf()
-      const cutoff = t - Math.max(1, Number(keepDays) || 14) * 24 * 3600 * 1000
+      const cutoff = t - Math.max(1, Number(keepDays) || 7) * 24 * 3600 * 1000
       for (const n of fs.readdirSync(dir)) {
         const m = /^(\d{4})-(\d{2})-(\d{2})\.jsonl$/.exec(n)
         if (!m) continue
@@ -79,6 +85,7 @@ export function createSelfLog({ dataDir, log = console, keepDays = 14, now = () 
    *   what   人话：干了什么（会原样出现在提示词里，别写太长）
    *   why    人话：为什么（可选）
    *   where  在哪（群号 / 私聊 / desk:xxx）
+   *   thought 看视频的感想原文（500~600 字，**不截成一行**，见文件头纪律①的例外）
    */
   function append(entry = {}) {
     try {
@@ -97,7 +104,10 @@ export function createSelfLog({ dataDir, log = console, keepDays = 14, now = () 
         if (k in row) continue
         if (v == null) continue
         if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-          row[k] = typeof v === 'string' ? oneLine(v, 120) : v
+          // 感想原文要完整保留（换行也留着，jsonl 由 JSON.stringify 转义，不会撑坏文件）
+          row[k] = typeof v !== 'string'
+            ? v
+            : (k === LONG_TEXT_FIELD ? String(v).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').slice(0, THOUGHT_MAX) : oneLine(v, 120))
         }
       }
       fs.mkdirSync(rootOf(), { recursive: true })
@@ -141,20 +151,37 @@ export function createSelfLog({ dataDir, log = console, keepDays = 14, now = () 
     return [...y, ...today].slice(-lim)
   }
 
+  /** 最近 n 天（含今天）的所有行，按时间升序。看视频这类要"翻几天"的用它 */
+  function readSinceDays(days = 7) {
+    const d = Math.max(1, Math.min(90, Number(days) || 7))
+    const out = []
+    for (let i = d - 1; i >= 0; i -= 1) {
+      out.push(...readDay(now() - i * 24 * 3600 * 1000))
+    }
+    return out
+  }
+
   /**
    * 「我今天的经历」一行（给每轮提示词用）。
    * 只挑**有信息量**的几种，避免把主会话自己的一问一答也塞进去。
+   *
+   * 打戳：`看` = 有感想原文（私聊里可以说出具体内容）；
+   *       `看·无感想` = 当次没交感想，**只记了标题** —— 别拿它当真看过。
    */
   const INTERESTING = new Set(['watch', 'qzone', 'browse', 'persona'])
-  function todayLine() {
+  function todayLine({ max = 6 } = {}) {
     const rows = readDay().filter((r) => INTERESTING.has(String(r.kind)))
     if (!rows.length) return ''
-    const parts = rows.slice(-6).map((r) => {
+    const parts = rows.slice(-Math.max(1, Number(max) || 6)).map((r) => {
       const w = String(r.where || '')
-      return r.at + (w && w !== '私聊' && w !== '家' ? ' ' + w : '') + ' ' + String(r.what || '')
+      const at = r.at + (w && w !== '私聊' && w !== '家' ? ' ' + w : '')
+      if (String(r.kind) === 'watch' && !String(r.thought || '').trim()) {
+        return at + ' 看·无感想（只记了标题）' + String(r.what || '')
+      }
+      return at + ' ' + String(r.what || '')
     })
     return parts.join('；')
   }
 
-  return { append, readDay, countToday, recent, todayLine, fileOf, rootOf }
+  return { append, readDay, countToday, recent, readSinceDays, todayLine, fileOf, rootOf }
 }

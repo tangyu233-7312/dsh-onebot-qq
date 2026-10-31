@@ -115,7 +115,11 @@ function setup(over = {}) {
     // 默认给 null = 主人叫的（不占额度）；要测 self 通道就在 over.turnCtx 里传 { _wakeKind: 'proactive' }
     currentTurn() { return over.turnCtx || null },
     registerTool(name, def) { tools[name] = def },
-    selfLog: { append: (e) => selfLogRows.push(e) },
+    selfLog: {
+      append: (e) => selfLogRows.push({ ...e, ts: e.ts || Date.now(), at: e.at || '12:00' }),
+      // 假的流水账：watch_read 用它按天读（真实现按天分文件，测试只关心过滤逻辑）
+      readSinceDays: () => selfLogRows,
+    },
     onDispose(fn) { shared.__dispose = fn },
     on() {},
   }
@@ -518,10 +522,97 @@ test('回归：看完后流水账里要有「看到了什么」，不能只有�
   const s = setup({ cfg: { autoEnabled: true, masterQq: '10001' } })
   try {
     await s.shared.videoWanderRunNow('测试')
-    const done = s.selfLogRows.find((r) => r.delivered === true)
-    assert.ok(done, '投递成功后要记一行 delivered')
-    assert.match(done.what, /看完了/, '要说明看完了')
-    assert.match(done.what, /街道/, '要带上它自己的感想，否则下一轮只剩标题')
+    // 2026-10-31 改：投递前先把**完整感想**记进流水账（thought 字段）。
+    // 原来只写一条「看了个视频」+ 60 字摘要，私聊里追问时它只剩标题可说。
+    const done = s.selfLogRows.find((r) => String(r.thought || '').trim())
+    assert.ok(done, '看完要把感想原文记下来，否则下一轮只剩标题')
+    assert.match(done.what, /看完了/, '要说明看完了哪个')
+    assert.match(done.thought, /街道/, '感想原文要完整进流水账')
+  } finally { s.restore() }
+})
+
+test('WATCH-READ 翻自己看过的视频：给完整感想，并能带出当时抽的帧', async () => {
+  const s = setup({ cfg: { autoEnabled: true, masterQq: '10001' } })
+  try {
+    await s.shared.videoWanderRunNow('测试')
+    // ① 帧要留一份自己的（侧车 10 分钟就删）
+    const framesRoot = path.join(s.dir, 'state', 'video-wander', 'frames')
+    assert.ok(fs.existsSync(framesRoot), '要把帧留在自己这儿，不能只靠侧车的临时目录')
+    const days = fs.readdirSync(framesRoot)
+    assert.ok(days.length >= 1, '按天分目录')
+    // 挑中的是哪条视频不固定（随机），别钉死 bvid
+    const watched = s.selfLogRows.find((r) => String(r.thought || '').trim())
+    assert.ok(watched?.bvid, '流水账里要记下这次看的是哪条')
+    const bvidDir = path.join(framesRoot, days[0], watched.bvid)
+    assert.ok(fs.existsSync(bvidDir), '按 bvid 分目录')
+    assert.ok(fs.readdirSync(bvidDir).some((f) => /\.jpg$/i.test(f)), '帧文件要真的在')
+
+    // ② watch_read 要把感想原文带出来 + 帧路径
+    const r = await s.tools.watch_read.execute({})
+    assert.equal(r.ok, true)
+    // 跑一次会记两条 watch（「看了」+「看完了」），只有后者带感想；
+    // 工具按「有没有感想」把没写的那条也算一次看过，所以按 bvid 找带感想的就行。
+    const mine = r.items.filter((it) => it.bvid === watched.bvid && /街道/.test(it.thought))
+    assert.equal(mine.length, 1, '刚看的那一条要能查到，且带完整感想原文')
+    assert.ok(r.items[0].frames.length >= 1, '带上当时抽的帧')
+    assert.ok(r.images.length >= 1, 'images 里给可读的图片路径')
+  } finally { s.restore() }
+})
+
+test('WATCH-READ 只看到保留期内；按 bvid 查单条；没交感想要如实说', async () => {
+  const s = setup({ cfg: { autoEnabled: true, masterQq: '10001' } })
+  try {
+    const old = Date.now() - 20 * 86400 * 1000
+    s.selfLogRows.push({ kind: 'watch', ts: old, at: '09:00', bvid: 'BVold', what: '看完了「很久以前」', thought: '早忘光了' })
+    s.selfLogRows.push({ kind: 'watch', ts: Date.now(), at: '10:00', bvid: 'BVempty', what: '看完了「没交感想的那条」', thought: '' })
+
+    const r = await s.tools.watch_read.execute({})
+    assert.equal(r.count, 1, '20 天前那条超出 7 天保留期，不该出现')
+    assert.match(r.items[0].thought, /没交感想，只记了标题/, '没感想要说没有，别让它编')
+
+    const one = await s.tools.watch_read.execute({ bvid: 'BVold', days: '30' })
+    assert.equal(one.items.length, 1, '按 bvid + 放宽天数能查到')
+    assert.equal(one.items[0].bvid, 'BVold')
+
+    const none = await s.tools.watch_read.execute({ bvid: 'BVnotexist' })
+    assert.equal(none.items.length, 0)
+    assert.match(String(none.note), /没找到/)
+  } finally { s.restore() }
+})
+
+test('帧清理每天最多一次：第一次扫掉过期的，24 小时内不再扫（2026-10-31 用户要求）', async () => {
+  const s = setup({ cfg: { autoEnabled: true, masterQq: '10001' } })
+  const localDate = (ms) => {
+    const d = new Date(ms)
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')
+  }
+  const framesRoot = path.join(s.dir, 'state', 'video-wander', 'frames')
+  const oldDay = localDate(Date.now() - 10 * 86400 * 1000)
+  const stale = (day) => {
+    const d = path.join(framesRoot, day, 'BVstale')
+    fs.mkdirSync(d, { recursive: true })
+    fs.writeFileSync(path.join(d, '00.jpg'), 'x')
+    return d
+  }
+  try {
+    // ① 第一次跑：超过 7 天的目录被扫掉
+    const first = stale(oldDay)
+    await s.shared.videoWanderRunNow('测试')
+    assert.equal(fs.existsSync(first), false, '超过保留期的帧目录该删')
+
+    // ② 同一天再跑一次：新造一个过期目录，**不该**被扫（省 CPU）
+    const second = stale(oldDay)
+    await s.shared.videoWanderRunNow('测试')
+    assert.equal(fs.existsSync(second), true, '24 小时内不再扫第二次')
+
+    // ③ 时间戳要落盘（重启后不该立刻又扫）
+    const st = JSON.parse(fs.readFileSync(path.join(s.dir, 'video-wander-state.json'), 'utf8'))
+    assert.ok(Number(st.framesPrunedAt) > 0, '清理时间要存进状态文件')
+
+    // ④ 间隔必须是「每天一次」——有人把它改回按小时，这条会红
+    const status = s.shared.videoWanderStatus()
+    assert.equal(status.frames.pruneEveryHours, 24, '帧清理间隔应为 24 小时（宁可多占盘，也别频繁扫）')
+    assert.equal(status.frames.keepDays, 7, '帧保留期跟感想一致，7 天')
   } finally { s.restore() }
 })
 

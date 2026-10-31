@@ -415,6 +415,49 @@ export default {
       },
     })
 
+    // ── 工具 ④：读自己空间最近写了什么（只读，任何会话都能调）──────
+    // 2026-10-31：主人私聊里问「你昨天写了什么」时，原先没有任何工具能答 ——
+    // 读说说只发生在空间工作区的装配提示里，工具面只有写/跳过/查状态。
+    bot.registerTool('qzone_read', {
+      description: '读**自己 QQ 空间**最近发过的说说（只读，不会发任何东西）。'
+        + '想回答「我前几天写了什么」「空间里最近有什么」就调它；也能用来避开老调子再决定写什么。'
+        + '返回每条的时间、正文（截断）、图片张数；读不到会告诉你原因（未登录 / cookie 失效 / 配置关了）。',
+      parameters: {
+        days: {
+          type: 'string',
+          description: '往前看几天，默认按配置「读自己空间最近多少天」（默认 30），最多 180。传 0 表示不限天数，只取最近 40 条。',
+        },
+      },
+      async execute(args = {}) {
+        const all = readState(dataDir)
+        const def = Math.max(0, Number(cfg().feedDays) || 0)
+        const want = args?.days === undefined || args?.days === null || args?.days === ''
+          ? def
+          : Number(args.days)
+        const days = Number.isFinite(want) && want >= 0 ? Math.min(180, Math.floor(want)) : def
+        if (cfg().enabled === false) return { ok: false, reason: '空间日记未启用（控制台「空间日记」里打开）' }
+        const res = days <= 0
+          ? await readOwnFeed({ onebot: nb(), days: 180, log: bot.log })
+          : await feedItems(all, { days })
+        if (!res.ok) {
+          // 读不到时不假装读过：把原因原样给它，让它如实跟主人说
+          return { ok: false, reason: res.reason || '读不到自己的说说', items: [] }
+        }
+        return {
+          ok: true,
+          days: days > 0 ? days : '不限',
+          count: res.items.length,
+          items: res.items.slice(0, 40).map((it) => ({
+            date: localDateOf(it.ts) + ' ' + String(new Date(it.ts).getHours()).padStart(2, '0') + ':'
+              + String(new Date(it.ts).getMinutes()).padStart(2, '0'),
+            text: it.text || '(无正文)',
+            pics: it.pics || 0,
+          })),
+          note: res.items.length ? '' : '这段时间里没写过东西',
+        }
+      },
+    })
+
     // ── 工具 ③：查状态 ────────────────────────────────────────
     bot.registerTool('qzone_status', {
       description: '查今天这块空间的状况（写过没有、还剩几次机会、素材覆盖了多少会话）。'
@@ -501,9 +544,9 @@ export default {
       return out.length ? out.join('\n') : '（最近几天都没写过）'
     }
 
-    /** 读自己空间的说说（6 小时缓存；失败就当没有） */
-    async function feedItems(all) {
-      const days = Math.max(0, Number(cfg().feedDays) || 0)
+    /** 读自己空间的说说（6 小时缓存；失败就当没有）。`days` 不传则按配置。 */
+    async function feedItems(all, { days: want } = {}) {
+      const days = Number.isFinite(want) ? Math.max(0, Number(want)) : Math.max(0, Number(cfg().feedDays) || 0)
       if (!days) return { ok: false, items: [], reason: '配置里关掉了读取' }
       const cached = all.feed
       if (cached && Array.isArray(cached.items) && Date.now() - Number(cached.at || 0) < FEED_TTL_MS) {

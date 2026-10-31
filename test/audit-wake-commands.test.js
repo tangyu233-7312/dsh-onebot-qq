@@ -241,7 +241,7 @@ test('WAKE-D/E 引用本机消息 → quote 唤醒；引用别人 → 不越界'
   assert.equal(h2.ctx._prompts.length, 0, '引用别人不唤醒')
 })
 
-test('WAKE-POKE 被戳：回戳；戳别人不理会', async (t) => {
+test('WAKE-POKE 被戳：回戳 + 回一句话；戳别人不理会', async (t) => {
   const h = await boot(t)
   const pokes = []
   h.kernel.onebot.poke = async (chatKey, qq) => {
@@ -257,7 +257,12 @@ test('WAKE-POKE 被戳：回戳；戳别人不理会', async (t) => {
     target_id: 999999,
   })
   await waitFor(() => pokes.length === 1, { label: '回戳' })
+  // 回戳成功**也不能**吞掉那句话：原先 `poke() 成功 → return`，NAS 上回戳一直成功，
+  // 人设 `## poke` 句池就永远发不出去（只剩一个看不出内容的小戳）。
+  await waitFor(() => h.sent.length === 1, { label: '回戳之外还要回一句' })
+  assert.ok(String(h.sent[0].wire).trim().length > 0, '被戳要真的说一句话')
   assert.equal(h.tap.last().stopReason, 'gate-wake:poke')
+  const sentBefore = h.sent.length
 
   await emitRaw(h.kernel, {
     post_type: 'notice',
@@ -269,6 +274,7 @@ test('WAKE-POKE 被戳：回戳；戳别人不理会', async (t) => {
   })
   await sleep(30)
   assert.equal(pokes.length, 1, '戳别人不回戳')
+  assert.equal(h.sent.length, sentBefore, '戳别人也不回话')
 })
 
 test('WAKE-RECALL 引用 + 「撤回」：单条撤回成功即回执，且同一条只试一次', async (t) => {
