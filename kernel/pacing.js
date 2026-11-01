@@ -31,6 +31,20 @@ const clamp01 = (v) => Math.max(0, Math.min(1, Number(v) || 0))
 const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d)
 const log1p = (v) => Math.log1p(Math.max(0, Number(v) || 0))
 
+/**
+ * 本地日零点（「每天上限」按自然日算，次日 0 点重置）。
+ *
+ * 2026-11-01 修：私聊的每日额度原来用**滚动 24 小时**窗口计数，
+ * 但提示文案写的是「明天 0 点重置」—— 于是过了零点它还是 16/16，
+ * 要等到昨晚第一条记录满 24 小时才松口（可能拖到第二天半夜）。
+ * 群里那条路径本来就没这个问题。
+ */
+function startOfLocalDay(ms) {
+  const d = new Date(Number(ms) || Date.now())
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
 /** 主动接话默认参数：配置缺键时用它（与 config-store v2 的默认配置对齐，改默认值只改这里） */
 export const REPLY_DEFAULTS = {
   enabled: false,            // 默认关：不装调度、不起念
@@ -659,7 +673,10 @@ export function createPacing({ log = console, state, clock = null, dataDir = '' 
     const lastHour = fires.filter((t) => now - t < HOUR).length
     if (lastHour >= hourlyMax) return `这小时已经开口 ${lastHour}/${hourlyMax} 次（每小时上限）`
     const dayMax = Math.max(0, num(cfg.reply.privateMaxPerDay, 3))
-    if (fires.length >= dayMax) return `今天已经开口 ${fires.length}/${dayMax} 次（每天上限，明天 0 点重置）`
+    // 「每天」= 本地自然日（0 点归零），不是滚动 24 小时；两者在文案上差一整夜
+    const dayStart = startOfLocalDay(now)
+    const todayFires = fires.filter((t) => t >= dayStart)
+    if (todayFires.length >= dayMax) return `今天已经开口 ${todayFires.length}/${dayMax} 次（每天上限，次日 0 点重置）`
     const last = fires[fires.length - 1] || 0
     // ⚠️ 配置里 privateMinGapMs **存的是毫秒**（schema 用 scale:60000 转成分钟给人填）。
     //    2026-10-31 修：这里原来写 `num(...) * 60000`，把毫秒又乘了一次 →
@@ -969,12 +986,15 @@ export function createPacing({ log = console, state, clock = null, dataDir = '' 
         usage: [...allowedPrivate()].map((qq) => {
           const now = nowMs()
           const fires = (privateRings.get(qq) || []).filter((x) => now - x < 24 * HOUR)
+          const dayStart = startOfLocalDay(now)
           const hourUsed = fires.filter((x) => now - x < HOUR).length
           const last = fires[fires.length - 1] || 0
           const gapMs = Math.max(60000, num(cfg.reply.privateMinGapMs, 3 * HOUR)) // 配置存毫秒，别再乘
           return {
             qq,
-            todayUsed: fires.length,
+            // 口上的「今天」必须跟闸门同一个口径（自然日），否则会出现
+            // 面板 16/16 卡着、里面却已经放行（或反过来）的鬼故事
+            todayUsed: fires.filter((x) => x >= dayStart).length,
             todayMax: Math.max(0, num(cfg.reply.privateMaxPerDay, 3)),
             hourUsed,
             hourMax: Math.max(0, num(cfg.reply.privateHourlyMax, 1)),

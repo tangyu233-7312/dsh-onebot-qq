@@ -80,3 +80,61 @@ test('冷场阈值按毫秒读，晚于阈值就放行', async (t) => {
   const u = p.usage[0]
   assert.ok(u.nextAllowedMinutes < 60, '剩余等待要正常：' + u.nextAllowedMinutes)
 })
+
+// ── 2026-11-01：每日额度按自然日重置（原来是滚动 24 小时，文案却写"0 点重置"）──
+async function bootWithFires(fires, extra = {}) {
+  const dataDir = tmpDir('daily')
+  const config = {
+    archive: { enabled: false },
+    pacing: {
+      reply: {
+        enabled: true,
+        privateEnabled: true,
+        privateQqs: [10001],
+        privateFriendsOnly: false,
+        privateColdSilenceMs: 45 * MIN,
+        privateMinGapMs: MIN,
+        privateHourlyMax: 10,
+        privateMaxPerDay: 1,
+        ...extra,
+      },
+    },
+  }
+  const fs = await import('node:fs')
+  const path = await import('node:path')
+  const e0 = await bootKernel({ dataDir, config })
+  e0.dispose()
+  fs.writeFileSync(
+    path.join(dataDir, 'private-pacing-state.json'),
+    JSON.stringify({ version: 1, rings: { 10001: fires } }),
+    'utf8',
+  )
+  return bootKernel({ dataDir, config })
+}
+
+test('每日上限按自然日：昨天 23:55 开过口，今天 0 点后应当归零', async (t) => {
+  const midnight = new Date()
+  midnight.setHours(0, 0, 0, 0)
+  // 昨晚 23:55（跨零点前 5 分钟）。仍在 24 小时窗口内，但属于「昨天」。
+  const lastNight = midnight.getTime() - 5 * MIN
+  const env = await bootWithFires([lastNight])
+  t.after(() => env.dispose())
+  const u = env.kernel.pacing.stats().private.usage[0]
+
+  assert.equal(u.todayUsed, 0, '跨过零点就该算 0 次，实际=' + u.todayUsed)
+  assert.ok(!String(u.blockedBy || '').includes('每天上限'),
+    '不该再卡在每天上限：' + u.blockedBy)
+})
+
+test('每日上限按自然日：今天开过口就照常算满', async (t) => {
+  const midnight = new Date()
+  midnight.setHours(0, 0, 0, 0)
+  const today = Math.max(midnight.getTime() + MIN, Date.now() - MIN)
+  const env = await bootWithFires([today])
+  t.after(() => env.dispose())
+  const u = env.kernel.pacing.stats().private.usage[0]
+
+  assert.equal(u.todayUsed, 1, '今天那条要算进来')
+  assert.ok(String(u.blockedBy || '').includes('每天上限'), '额度用满应如实说：' + u.blockedBy)
+  assert.ok(String(u.blockedBy || '').includes('次日 0 点重置'), '文案要说清什么时候重置：' + u.blockedBy)
+})

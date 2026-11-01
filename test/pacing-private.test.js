@@ -160,16 +160,31 @@ test('私聊主动接话：每小时最多 1 次（同一小时内第二次 tick
   assert.equal(fired.length, 1)
 })
 
-test('私聊主动接话：每天最多 3 次（滚动 24 小时）', async () => {
+test('私聊主动接话：每天最多 3 次（按自然日，0 点重置）', async () => {
+  // 2026-11-01 改：每日额度从「滚动 24 小时」改成「本地自然日」——
+  // 文案一直写「明天 0 点重置」，但原来的实现是等昨晚第一条满 24 小时才松口。
+  const T0 = Date.parse('2026-10-29T12:00:00+08:00')
   const { p, fired, advance, state } = setup({ seed: { 'private:10001': { lastInboundAt: T0900 } } })
-  for (let i = 0; i < 5; i += 1) {
+  const perDay = new Map()
+  const dayOf = (ms) => {
+    const d = new Date(ms)
+    return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate()
+  }
+  for (let i = 0; i < 8; i += 1) {
     advance(4 * 3600000)
     state.get('private:10001').lastSendAt = T0900 + (i + 1) * 4 * 3600000
+    const before = fired.length
     p.tickNow()
     await flush()
+    if (fired.length > before) {
+      const day = dayOf(T0 + (i + 1) * 4 * 3600000)
+      perDay.set(day, (perDay.get(day) || 0) + 1)
+    }
   }
-  assert.ok(fired.length <= 3, '一天之内不该超过 3 次，实际 ' + fired.length)
-  assert.ok(fired.length >= 1)
+  for (const [day, n] of perDay) {
+    assert.ok(n <= 3, day + ' 开了 ' + n + ' 次，一天不该超过 3 次')
+  }
+  assert.ok(fired.length > 3, '跨过 0 点应该重新有额度（实际总共 ' + fired.length + ' 次）')
 })
 
 test('stats().private 暴露开关与最近记录', async () => {
