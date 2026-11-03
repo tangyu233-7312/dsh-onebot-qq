@@ -551,6 +551,13 @@ export const ACTIONS = [
     hint: '检查配置、DSH preset、工具注册、OneBot 连接、人设、目录可写、生图配置，生成脱敏报告并告诉你保存位置；可直接交给 DSH 本体修复。',
   },
 
+  // 主动接话：按钮长在「主动接话」配置页底部（onGroup = 不在「运维」页重复出现）
+  {
+    id: 'pacing-reset-private', group: '主动接话', onGroup: true, label: '♻️ 重置私聊接话额度',
+    hint: '清空所有私聊的「已开口」记录，三个闸门（每小时/每天/间隔）立刻回到满血。只动本地配额文件，聊天记录不受影响。',
+    confirm: { title: '⚠️ 确认重置私聊主动接话额度？', okLabel: '确认重置' },
+  },
+
   // 空间日记：按钮长在「空间日记」配置页底部（onGroup = 不在「运维」页重复出现）
   {
     id: 'qzone-run-now', group: '空间日记', onGroup: true, label: '📔 立刻让它回顾一次',

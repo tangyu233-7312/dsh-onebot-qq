@@ -1252,6 +1252,20 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
       return fn({ preview: !payload.confirm })
     }
 
+    // ── 主动接话：重置私聊额度（按钮长在「主动接话」配置页）──────
+    if (id === 'pacing-reset-private') {
+      const fn = kernel?.pacing?.resetPrivateQuota
+      if (typeof fn !== 'function') return { ok: false, error: '内核没装配 pacing.resetPrivateQuota（版本太旧？）' }
+      const cleared = fn()
+      const st = safe(() => kernel?.pacing?.stats?.(), null)
+      const usage = st?.private?.usage?.[0]
+      return {
+        ok: true, id, cleared,
+        message: `✅ 已重置私聊主动接话额度（清掉 ${cleared} 条开口记录）`
+          + (usage ? `，现在 ${usage.qq}：今天 ${usage.todayUsed}/${usage.todayMax} 次` : ''),
+      }
+    }
+
     if (id === 'reply-preset') {
       const preset = toStr(payload.preset)
       const p = REPLY_PRESETS[preset]

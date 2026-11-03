@@ -217,6 +217,75 @@ test('静默时段：到点也不主动开口（回流自 NAS）', async () => {
   assert.equal(fired.length, 0, '静默时段内不该开口')
 })
 
+test('回归 2026-11-03：静默时段反复 tick，配额一笔都不扣（原来先记账再 fire，一晚白扣 14 次）', async () => {
+  const { p, fired, setNow, now } = setup({
+    reply: {
+      quietEnabled: true, quietStart: 0, quietEnd: 7,
+      privateMaxPerDay: 3, privateMinGapMs: 30 * 60000, privateHourlyMax: 5,
+      privateColdSilenceMs: 30 * 60000,
+    },
+    seed: { 'private:10001': { lastInboundAt: localAt(0, 30) } },
+  })
+  // 从 0:40 到 6:50，每 30 分钟 tick 一次（复刻线上静默期的节拍；额度若被扣早就爆 3 了）
+  setNow(localAt(0, 40))
+  for (let i = 0; i < 13; i += 1) {
+    p.tickNow()
+    await flush()
+    setNow(now() + 30 * 60000)
+  }
+  assert.equal(fired.length, 0, '静默期不该起念，更不该扣额度')
+  // 7 点静默一结束：额度仍是满的，按 30 分钟节拍能连开 3 次（每天上限）
+  setNow(localAt(7, 5))
+  for (let i = 0; i < 4; i += 1) {
+    p.tickNow()
+    await flush()
+    setNow(now() + 31 * 60000)
+  }
+  assert.equal(fired.length, 3, `静默没扣额度：醒后应能开满 3 次（实际 ${fired.length}）`)
+})
+
+test('回归 2026-11-03：起念后模型没发消息，冷场锚点也推进（节拍不再塌缩成 minGap）', async () => {
+  const { p, fired, setNow, now, state } = setup({
+    reply: { privateColdSilenceMs: 50 * 60000, privateMinGapMs: 30 * 60000, privateMaxPerDay: 20, privateHourlyMax: 5 },
+    seed: { 'private:10001': { lastInboundAt: T0900 } },
+  })
+  setNow(T0900 + 60 * 60000)   // 冷场已满足
+  p.tickNow()
+  await flush()
+  assert.equal(fired.length, 1, '先起一念')
+  // 模型没接（lastSendAt 不动）。30 分钟后（minGap 已过、冷场 50 分钟未到）不该再起
+  setNow(now() + 30 * 60000)
+  p.tickNow()
+  await flush()
+  assert.equal(fired.length, 1, `起念但没发 → 冷场锚点要包含起念时间，30 分钟不该再开口（实际 ${fired.length}）`)
+  // 50 分钟后冷场重新满足 → 可以再起
+  setNow(now() + 21 * 60000)
+  state.get('private:10001').lastSendAt = 0  // 保险：不靠出站时间
+  p.tickNow()
+  await flush()
+  assert.equal(fired.length, 2, '冷场 50 分钟到点后恢复起念')
+})
+
+test('回归 2026-11-03：resetPrivateQuota 清空配额并立刻恢复可用', async () => {
+  const { p, fired, setNow, now } = setup({
+    reply: { privateMaxPerDay: 2, privateMinGapMs: 30 * 60000, privateHourlyMax: 5, privateColdSilenceMs: 30 * 60000 },
+    seed: { 'private:10001': { lastInboundAt: T0900 } },
+  })
+  setNow(T0900 + 60 * 60000)
+  p.tickNow(); await flush()
+  setNow(now() + 60 * 60000)
+  p.tickNow(); await flush()
+  assert.equal(fired.length, 2, '每天 2 次用满')
+  setNow(now() + 60 * 60000)
+  p.tickNow(); await flush()
+  assert.equal(fired.length, 2, '第 3 次被每天上限挡住')
+  const cleared = p.resetPrivateQuota()
+  assert.equal(cleared, 2)
+  setNow(now() + 60 * 60000)
+  p.tickNow(); await flush()
+  assert.equal(fired.length, 3, '重置后立刻能再开口')
+})
+
 test('静默时段：跨零点区间（23 → 7）也算静默', async () => {
   const { p, fired, setNow } = setup({
     reply: { quietEnabled: true, quietStart: 23, quietEnd: 7 },

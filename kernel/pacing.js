@@ -406,12 +406,18 @@ export function createPacing({ log = console, state, clock = null, dataDir = '' 
     return s < e ? (h >= s && h < e) : (h >= s || h < e)
   }
 
-  /** 真正起一轮主动接话：先记账（防止模型/失败反复触发），再交给内核起回合 */
+  /**
+   * 真正起一轮主动接话：**先记内存账，再交给内核起回合**。
+   * 返回 true = 这一轮真的起了（调用方凭它决定要不要写配额）；
+   * 返回 false = 被静默时段挡下（一笔都没记 —— 2026-11-03 修：原来调用方先落了配额
+   * 再调这里，静默 return 后配额照扣，一晚白扣 14 次，20 次/天中午就「用光」）。
+   * 模型接不接不影响这笔账（口径就是「起念一次算一次」，用户已确认）。
+   */
   function fire(chatKey, gid, reason, score) {
-    // 静默时段：不主动开口（被叫时的回话不走这里，不受影响）
+    // 静默时段：不主动开口（被叫时的回话不走这里，不受影响），也不许记账
     if (inQuietHours()) {
       log.debug(`[主动接话] ${chatKey} 处于静默时段，跳过（${reason}）`)
-      return
+      return false
     }
     const o = oppOf(chatKey)
     const now = nowMs()
@@ -423,10 +429,11 @@ export function createPacing({ log = console, state, clock = null, dataDir = '' 
     fired.push({ at: now, chatKey, gid, kind: isPrivate ? 'private' : 'group', reason, score: Number(score) || 0, sent: false })
     while (fired.length > 30) fired.shift()
     log.info(`[主动接话] ${chatKey} 起念（${isPrivate ? '私聊·' : ''}${reason === 'silence' ? '冷场找话' : '话题合适'}，兴趣分 ${(Number(score) * 100).toFixed(0)}%）`)
-    if (typeof onProactiveTurn !== 'function') return
+    if (typeof onProactiveTurn !== 'function') return true
     Promise.resolve()
       .then(() => onProactiveTurn({ chatKey, groupId: gid, isGroup: !isPrivate, reason, score }))
       .catch((e) => log.error(`[主动接话] 起回合失败 ${chatKey}: ${e.stack || e.message}`))
+    return true
   }
 
   /**
@@ -718,6 +725,10 @@ export function createPacing({ log = console, state, clock = null, dataDir = '' 
 
   function tickPrivateSilence(now) {
     const coldMs = Math.max(60000, num(cfg.reply.privateColdSilenceMs, 2 * HOUR))
+    // 静默时段：整个私聊冷场扫描直接停（2026-11-03 定案）。
+    // 原来这里不判静默，闸门放行后 privateBeforeFire 先落配额、fire() 再被静默挡掉 ——
+    // 空转一次扣一笔，一晚白扣 14 次。现在轮询层就停，被 @ / 关键词叫醒照常回话（不走这条线）。
+    if (inQuietHours(now)) return
     // state.keys() 是 ChatState 的 map 键（group:xxx / private:xxx）；没有 keys() 的桩一律不扫
     const allKeys = typeof state.keys === 'function' ? [...state.keys()] : []
     for (const key of allKeys) {
@@ -725,8 +736,12 @@ export function createPacing({ log = console, state, clock = null, dataDir = '' 
       const qq = String(key).slice(8)
       const st = state.get(key)
       const lastAt = Number(st.lastInboundAt || 0)
-      // 从没说过话 / 刚被回复过 都从"它时间线"算：取最近一次入站与出站里较晚的那个
-      const lastTouch = Math.max(lastAt, Number(st.lastSendAt || 0))
+      // 从没说过话 / 刚被回复过 都从"它时间线"算：取最近一次入站、出站、**上次起念**里较晚的那个。
+      // ⚠️ 2026-11-03 修：上次起念（不管发没发出）也要算"摸过这条线"——
+      //    原来只看 lastInboundAt/lastSendAt，起念后模型没接（没发出）时这两个都不动，
+      //    冷场条件一直满足，节拍从「冷场 50 分钟」塌缩成 minGap（30 分钟），额度被加速烧光。
+      const lastFire = (privateRings.get(qq) || []).slice(-1)[0] || 0
+      const lastTouch = Math.max(lastAt, Number(st.lastSendAt || 0), lastFire)
       // 每一步 continue 都记下原因，再也不用猜
       let code = ''
       let why = ''
@@ -762,12 +777,17 @@ export function createPacing({ log = console, state, clock = null, dataDir = '' 
           logPrivateSkip(key, 'not-allowed', '不在白名单 或 好友名单取不到（协议端 get_friend_list 失败？）')
           return
         }
-        // 先记一条"已开口"的时间戳（配额就是靠它算的），再起回合
-        const stamps = privateRings.get(qq) || []
-        stamps.push(nowMs())
-        privateRings.set(qq, stamps)
-        savePrivateRings()   // 落盘：重启后额度不重置
-        fire(key, qq, 'private-silence', 1)
+        // 先起回合，真的起了（fire 返回 true）才记一条"已开口"的时间戳（配额就是靠它算的）。
+        // ⚠️ 2026-11-03 修：原来先记账再 fire —— 静默时段 fire 直接 return，
+        //    配额照扣，一晚白扣 14 次，20 次/天中午就被「用光」。
+        //    口径：**起念一次算一次**（模型接不接、发没发出都不影响这笔账），用户已确认。
+        const fired = fire(key, qq, 'private-silence', 1)
+        if (fired !== false) {
+          const stamps = privateRings.get(qq) || []
+          stamps.push(nowMs())
+          privateRings.set(qq, stamps)
+          savePrivateRings()   // 落盘：重启后额度不重置
+        }
       })
       .catch((e) => log.error(`[主动接话] 私聊起念失败 ${key}: ${e.stack || e.message}`))
       .finally(() => { privatePending.delete(qq) })
@@ -1023,6 +1043,15 @@ export function createPacing({ log = console, state, clock = null, dataDir = '' 
     interestFor,
     proactiveEnabled, allowedGroupIds, stats,
     privateEnabled, allowedPrivateQqs: () => [...allowedPrivate()], privateAllowed,
+    /** 控制台「重置私聊额度」：清掉全部开口记录（0 = 立刻满血）。返回清掉的笔数给人看。 */
+    resetPrivateQuota: () => {
+      let n = 0
+      for (const list of privateRings.values()) n += list.length
+      privateRings.clear()
+      savePrivateRings()
+      log.info(`[主动接话] 私聊配额已手动重置（清掉 ${n} 条开口记录）`)
+      return n
+    },
     nextOpportunityAt: (chatKey) => {
       const o = opp.get(String(chatKey))
       return o && Number.isFinite(o.dueAt) ? o.dueAt : null

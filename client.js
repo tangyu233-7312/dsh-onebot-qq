@@ -745,7 +745,7 @@ window.__ModuleLoader__.load({
 			{ id: 'active', label: '活泼', hint: '每小时最多 6 次；更容易在普通聊天里接话' },
 		]
 		function ReplyModeTab(props) {
-			const { schema, status, busy, run, call } = props
+			const { schema, status, busy, run, call, setBusy, setMsg, setConfirmBox } = props
 			const { useState } = react
 			const [showAdv, setShowAdv] = useState(false)
 			// 「连续对话」这类具名折叠块：每个 section 一个开合状态，默认收起
@@ -803,6 +803,29 @@ window.__ModuleLoader__.load({
 					}, showAdv ? '▾ 高级（收起）' : '▸ 高级（展开）'),
 				]),
 				showAdv ? h('div', { key: 'advbox' }, advanced.map((c) => ctrlRow(c, props))) : null,
+				// ═══ 本页自己的动作按钮（如「重置私聊接话额度」）：与 GroupTab 底部同款，带二次确认 ═══
+				...((schema.actions || []).filter((a) => a.onGroup && a.group === '主动接话')).map((a) =>
+					h('div', { style: S.row, key: 'act:' + a.id }, [
+						h('button', {
+							style: S.btn, disabled: busy, title: a.hint || '',
+							onClick: () => {
+								if (a.confirm) {
+									setBusy(true); setMsg('')
+									call('action', { id: a.id }).then((p) => {
+										if (p && p.ok === false) throw new Error(p.error || p.message || '操作失败')
+										setConfirmBox({
+											title: (a.confirm && a.confirm.title) || ('⚠️ 确认执行「' + a.label + '」？'),
+											lines: (p.previewLines && p.previewLines.length) ? p.previewLines : [p.message || '（预演没有输出）'],
+											okLabel: (a.confirm && a.confirm.okLabel) || '确认执行',
+											onOk: () => run(a.label, () => call('action', { id: a.id, confirm: true })),
+										})
+									}).catch((err) => setMsg(a.label + ' ✗ ' + err.message)).finally(() => setBusy(false))
+									return
+								}
+								run(a.label, () => call('action', { id: a.id }))
+							},
+						}, a.label),
+					])),
 				reply ? h('div', { key: 'st' }, [
 					h('div', { style: S.group, key: 'stg' }, '最近状态（调参数时看这里）'),
 					groups.length
