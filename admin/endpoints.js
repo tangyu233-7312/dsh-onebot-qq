@@ -12,6 +12,7 @@
  *   action  动作：reply-preset / reset-session / welcome-images / welcome-test / clear-qq-sessions
  *           + 新手引导（onebot-check / onebot-reconnect / imagegen-check）
  *           + 生图提示词优化试跑（imagegen-optimize-preview：只调一次文本模型、不画图、不占冷却）
+ *           + 本机模型清单（imagegen-local-models：只查服务，不改配置、不出图）
  *           + 运维诊断（diagnose → admin/diagnostics.js，生成脱敏报告）
  *           + 运维动作（selfcheck / cleanup-tmp / dedup-baks）→ ops provider，没有则“本机未配置”
  *
@@ -1523,6 +1524,22 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
         ok: requiredOk, id, checks, advice,
         error: requiredOk ? undefined : `生图配置不完整 —— ${failHint || '见逐项提示'}`,
         message: requiredOk ? (advice || '✅ 生图配置完整') : '生图配置还不完整（见下面逐项提示）',
+      }
+    }
+
+    // ── 生图：列本机服务里可用的模型（只查询，不改配置、不出图）──────
+    if (id === 'imagegen-local-models') {
+      const fn = kernel?.shared?.imagegen?.listModels
+      if (typeof fn !== 'function') return { ok: false, error: '生图插件未启用（或该版本还没有这个能力）' }
+      const r = await safeAsync(() => fn({ url: toStr(payload?.url) }), null)
+      if (!r || typeof r !== 'object') return { ok: false, error: '读取失败（插件抛错，详见日志）' }
+      if (r.ok === false) return { ok: false, error: r.reason || '读取失败' }
+      const items = r.items || []
+      return {
+        ok: true, id, items,
+        message: '本机服务现有 ' + items.length + ' 个模型：\n'
+          + items.map((x) => '· ' + (x.label ? x.id + '（' + x.label + '）' : x.id)).join('\n')
+          + '\n\n把要用的那个填到「本机模型名」，留空则用服务端默认。',
       }
     }
 

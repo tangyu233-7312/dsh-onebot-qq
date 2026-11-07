@@ -163,9 +163,14 @@ test('schema（新手引导）：protocol enum / 模型 suggestions / info 控�
   assert.equal('value' in info, false)
   assert.equal(readValue(h.kernel, info.key, h.raw), undefined)
   assert.throws(() => writeValue(h.kernel, info.key, 'x', JSON.parse(JSON.stringify(h.raw))), /说明块|不能写/)
-  // suggestions 只加在"模型名"输入框上：中转站模型 + 本机 ComfyUI 模型（2026-11-07 新增本地那条线）
+  // suggestions 只给"中转站模型名"：本地模型名**故意不给**，因为每套本地服务能跑的模型都不一样，
+  // 写死建议列表等于把插件绑在某一个人的部署上（2026-11-07 决定）。本地模型靠「🔍 读取本机可用模型」现查。
   const withSuggestions = schema.controls.filter((c) => Array.isArray(c.suggestions))
-  assert.deepEqual(withSuggestions.map((c) => c.key).sort(), ['credentials.gptImage.model', 'imagegen.localModel'].sort())
+  assert.deepEqual(withSuggestions.map((c) => c.key), ['credentials.gptImage.model'])
+  const localModelCtrl = schema.controls.find((c) => c.key === 'imagegen.localModel')
+  assert.ok(localModelCtrl, '本地模型名控件应存在')
+  assert.equal(localModelCtrl.suggestions, undefined, '本地模型名不能带写死的建议列表')
+  assert.equal(localModelCtrl.default, '', '本地模型名默认空，不预设任何模型')
 })
 
 test('status（新手引导）：meta / onboarding 5 项 / onebot / imagegen（绝不回显 key）', async (t) => {

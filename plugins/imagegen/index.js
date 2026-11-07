@@ -463,6 +463,39 @@ async function fetchJsonOrThrow(url, opts, timeoutMs, label) {
 }
 
 /**
+ * 列本机服务里**实际可用**的模型名。
+ * 为什么要有：模型标识是每套服务自己的事（有人叫 zimage、有人叫 sdxl、有人叫 flux1-dev），
+ * 插件里写死任何一个都是错的 —— 所以让服务自己报，用户照着填。
+ * 兼容两种常见形状：`{ models: { key: {label} } }` 和 `{ models: [key,...] }`。
+ * @returns {Promise<{ok:boolean, items:Array<{id:string,label:string}>, reason:string}>}
+ */
+async function listLocalModels(baseUrl, timeoutMs = 5000) {
+  const base = String(baseUrl || '').replace(/\/+$/, '')
+  if (!base) return { ok: false, items: [], reason: '没配本地服务地址' }
+  let j
+  try {
+    j = await fetchJsonOrThrow(base + '/api/status', { method: 'GET' }, timeoutMs, '读取本机模型')
+  } catch (e) {
+    return { ok: false, items: [], reason: String(e && e.message ? e.message : e).slice(0, 120) }
+  }
+  const raw = j && j.models
+  const items = []
+  if (Array.isArray(raw)) {
+    for (const one of raw) {
+      if (typeof one === 'string') items.push({ id: one, label: '' })
+      else if (one && (one.id || one.name || one.model)) items.push({ id: String(one.id || one.name || one.model), label: String(one.label || '') })
+    }
+  } else if (raw && typeof raw === 'object') {
+    for (const [id, v] of Object.entries(raw)) {
+      const label = v && typeof v === 'object' ? String(v.label || '') : (typeof v === 'string' ? v : '')
+      items.push({ id, label })
+    }
+  }
+  if (!items.length) return { ok: false, items: [], reason: '服务没报出模型清单（可能不是 /api/status 这套接口）' }
+  return { ok: true, items, reason: '' }
+}
+
+/**
  * 本地 ComfyUI 出图：提交 → 轮询 → 取图。
  *
  * 状态机（server.py 的 /api/progress 只有这几种）：
@@ -474,7 +507,9 @@ async function fetchJsonOrThrow(url, opts, timeoutMs, label) {
  */
 async function comfyGenerate({ prompt, refs, size, timeoutMs, local, tmp, log }) {
   const base = String(local.baseUrl || '').replace(/\/+$/, '')
-  const model = String(local.model || 'zimage')
+  // 模型名**由用户自己填**（每个服务/每台机器都可能不同）；留空就不传，
+  // 让服务端用它自己的默认 —— 插件里不假定任何具体模型。
+  const model = String(local.model || '').trim()
   const sizeStr = String(size || '1024x1024')
   const mapped = LOCAL_SIZE_MAP[sizeStr]
   const [wRaw, hRaw] = sizeStr.split('x')
@@ -497,7 +532,8 @@ async function comfyGenerate({ prompt, refs, size, timeoutMs, local, tmp, log })
     initImage = String(up.name || name)
   }
 
-  const body = { model, prompt, width: dim.w, height: dim.h, seed: 0, batch: 1 }
+  const body = { prompt, width: dim.w, height: dim.h, seed: 0, batch: 1 }
+  if (model) body.model = model
   if (initImage) {
     body.init_image = initImage
     body.denoise = Number(local.denoise) > 0 ? Number(local.denoise) : 0.65
@@ -514,7 +550,8 @@ async function comfyGenerate({ prompt, refs, size, timeoutMs, local, tmp, log })
   const pid = String(sub.prompt_id || '')
   if (!pid) throw new Error('提交成功但没拿到 prompt_id')
 
-  const deadline = Date.now() + totalMs
+  const tSubmit = Date.now()
+  const deadline = tSubmit + totalMs
   let lastState = ''
   while (Date.now() < deadline) {
     await sleep(1500)
@@ -533,7 +570,10 @@ async function comfyGenerate({ prompt, refs, size, timeoutMs, local, tmp, log })
       if (!img.ok) throw new Error('取图 HTTP ' + img.status)
       const buf = Buffer.from(await img.arrayBuffer())
       if (!buf.length) throw new Error('取到的图是空的')
-      if (log) log.info('[生图] 本地出图完成（' + model + ' ' + dim.w + 'x' + dim.h + '，' + Math.round((totalMs - (deadline - Date.now())) / 1000) + 's 内）')
+      if (log) {
+        const used = Math.max(0, Date.now() - tSubmit)
+        log.info('[生图] 本地出图完成（' + (model || '服务端默认模型') + ' ' + dim.w + 'x' + dim.h + '，' + (used / 1000).toFixed(1) + 's）')
+      }
       return saveBuf(buf, tmp)
     }
     if (state === 'unknown') {
@@ -601,8 +641,8 @@ export default {
     },
     enabled: { type: 'bool', default: true, group: '生图', label: '生图', hint: '开：群里叫它画图时调用生图模型出图并发出来；关：完全不出图。' },
     localFirst: {
-      type: 'bool', default: false, group: '生图', label: '优先用本机 ComfyUI',
-      hint: '开：每次生图先探一下本机画图服务（默认 http://127.0.0.1:8899），**活着就用它出图**（免费、约 11 秒）；'
+      type: 'bool', default: false, group: '生图', label: '优先用本机画图服务',
+      hint: '开：每次生图先探一下下面填的本机画图服务，**活着就用它出图**（免费、不出外网）；'
         + '没起来就**自动回落**到下面的中转站，行为与关掉时一致。\n'
         + '关（默认）：完全按中转站走，跟以前一样。\n'
         + '· 只探一次、最多等 2.5 秒；探不通只记一行日志，不打扰用户、不占冷却。\n'
@@ -610,20 +650,23 @@ export default {
         + '· 中转站也没配时，报错与以前一致（提示去填地址/Key）。',
     },
     localUrl: {
-      type: 'str', default: 'http://127.0.0.1:8899', group: '生图', label: '本机画图服务地址',
-      hint: 'ComfyUI 外面那层 server.py 的地址（默认 http://127.0.0.1:8899）。留空按默认。\n'
-        + '不要填 8188（那是 ComfyUI 原生 API，要自己拼工作流）。',
+      type: 'str', default: '', group: '生图', label: '本机画图服务地址',
+      hint: '填**你自己的**本地画图服务地址，例：http://127.0.0.1:8899。插件不预设任何端口、也不假设你装了哪套服务。\n'
+        + '要求那套服务提供这三个接口：POST /api/generate（提交，回 prompt_id）、GET /api/progress/<id>（进度）、GET /image/<name>（取图）；'
+        + '有 GET /api/status 更好（能读模型清单、能探活）。\n'
+        + '⚠️ 原生 ComfyUI 本体（8188 的 /prompt + 工作流 JSON 那套）协议不同，目前不直接支持。',
     },
     localModel: {
-      type: 'str', default: 'zimage', group: '生图', label: '本机模型',
-      suggestions: ['zimage', 'sdxl'],
-      hint: 'zimage = Z-Image Turbo（默认）：支持中文提示词、约 11 秒、反向提示词无效。\n'
-        + 'sdxl = SDXL Base：只认英文、约 22 秒、反向提示词有效。',
+      type: 'str', default: '', group: '生图', label: '本机模型名',
+      hint: '填**你这套本地服务里真实的模型标识**，每个服务都不一样 —— 插件不预设任何模型。\n'
+        + '· 留空 = 不传这个参数，用服务端自己的默认模型；\n'
+        + '· 不知道填什么：点本页底部「🔍 读取本机可用模型」，它会把服务里现有的模型列出来；\n'
+        + '· 换模型后如果提示词风格不对（比如只认英文的模型），记得同时在「提示词优化提示词」里改约束。',
     },
     localDenoise: {
       type: 'float', default: 0.65, group: '生图', label: '本机图生图降噪', min: 0.2, max: 1, step: 0.05,
       hint: '只有图生图（带参考图）时才用：0.2~0.3 轻微改、0.4~0.6 中等改、0.7~0.8 大幅改、0.9+ 几乎重画。\n'
-        + 'Z-Image 建议 0.5~0.65。填 1.0 会被服务端强制压到 0.65。',
+        + '通用区间 0.5~0.65 较稳；具体以你那个模型的手感为准。',
     },
     cooldownMs: { type: 'int', unit: '秒', scale: 1000, default: 60, group: '生图', label: '全局冷却', hint: '两次生图之间至少隔多久（所有群共用），防止连刷烧额度。' },
     ackCooldownMs: { type: 'int', unit: '秒', scale: 1000, default: 30, group: '生图', label: '「在画了」冷却', hint: '同一会话几秒内只说一次「在画了」，避免每张图都刷这句。' },
@@ -685,8 +728,8 @@ export default {
     /** 本机 ComfyUI 配置（每次现取，控制台改完下一张就生效） */
     const localNow = () => ({
       enabled: cfg.localFirst === true,
-      baseUrl: String(cfg.localUrl || '').trim() || 'http://127.0.0.1:8899',
-      model: String(cfg.localModel || '').trim() || 'zimage',
+      baseUrl: String(cfg.localUrl || '').trim(),
+      model: String(cfg.localModel || '').trim(),
       denoise: Number(cfg.localDenoise) > 0 ? Number(cfg.localDenoise) : 0.65,
     })
     const refDirNow = () => String(cfg.refDir || '').trim() || path.join(String(bot.core?.dataDir || '.'), 'qq-refs')
@@ -1043,6 +1086,11 @@ export default {
       bot.shared.imagegen = {
         ...(bot.shared.imagegen && typeof bot.shared.imagegen === 'object' ? bot.shared.imagegen : {}),
         previewOptimize: (payload) => previewOptimizeText({ bot, cfg, log, payload }),
+      // 控制台「读取本机可用模型」：模型标识由服务自己报，插件不预设
+      listModels: (payload) => {
+        const url = String(payload?.url ?? '').trim() || localNow().baseUrl
+        return listLocalModels(url)
+      },
       }
     }
 

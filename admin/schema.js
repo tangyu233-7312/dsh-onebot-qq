@@ -524,6 +524,13 @@ export const ACTIONS = [
     confirm: { title: '⚠️ 确认删掉旧备份代？', okLabel: '确认去重' },
   },
 
+  // 生图：读本机服务里有哪些模型（模型名由用户填，插件不预设任何模型）
+  {
+    id: 'imagegen-local-models', group: '生图', onGroup: true, label: '🔍 读取本机可用模型',
+    hint: '连本机画图服务问一次「你有哪些模型」，把结果列出来 —— 照着填上面的「本机模型名」。'
+      + '插件不写死任何模型名：每套本地服务能跑的模型都不一样，它只管调、不管你有什么。',
+  },
+
   // 生图：试跑一次「提示词优化」（按钮长在「生图」配置页底部，onGroup = 不在「运维」页重复出现）
   {
     id: 'imagegen-optimize-preview', group: '生图', onGroup: true, label: '🧪 试优化一条提示词',
