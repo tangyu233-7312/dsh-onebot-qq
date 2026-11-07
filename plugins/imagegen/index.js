@@ -407,6 +407,143 @@ function promptContextOf(bot, target) {
   }
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 本机 ComfyUI（PC 独有）
+//
+// 为什么单开一层而不是加第三种"协议"：本地和远端是**两条并存的线**，
+// 不是二选一 —— 本地活就用本地（免费、约 11 秒），本地没起来就回落中转站。
+// 所以它挂在"来源"上，不改 `credentials.gptImage.protocol`（那个仍然描述中转站怎么说话）。
+//
+// 对接的是 ComfyUI 外面那层 server.py（默认 127.0.0.1:8899），不是 8188 原生 API：
+// 原生 API 要自己拼工作流 JSON，换模型就得改代码；server.py 已经把这些封好了。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 本地尺寸映射：插件按比例给的是 1536 档，8GB 显存上比 1280² 还险，降一档。 */
+const LOCAL_SIZE_MAP = {
+  '1536x1024': { w: 1216, h: 832 },
+  '1024x1536': { w: 832, h: 1216 },
+  '512x512': { w: 768, h: 768 },
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, Math.max(0, Number(ms) || 0)))
+
+/**
+ * 本地 ComfyUI 是否**真的能出图**。
+ * 判据是 `/api/status` 里的 `comfy.alive`：8899 活着但 8188 没起来时它是 false，
+ * 那种情况提交任务会 500，不如现在就判掉、直接回落。
+ * **不抛错**：探不通只是"没有本地"，由调用方决定回落还是报错。
+ * @returns {Promise<{ok:boolean, reason:string, gpu?:string, vramFreeMB?:number}>}
+ */
+async function probeLocalComfy(baseUrl, timeoutMs = 2000) {
+  const base = String(baseUrl || '').replace(/\/+$/, '')
+  if (!base) return { ok: false, reason: '没配本地地址' }
+  try {
+    const res = await fetchWithTimeout(base + '/api/status', { method: 'GET' }, timeoutMs, '本地生图探测')
+    if (!res.ok) return { ok: false, reason: '本地服务返回 HTTP ' + res.status }
+    const j = await res.json()
+    const comfy = j && j.comfy ? j.comfy : {}
+    if (!comfy.alive) return { ok: false, reason: 'ComfyUI 主程序没起来（' + (comfy.error || '8188 不通') + '）' }
+    const vramFreeMB = Number(comfy.vram_free) > 0 ? Math.round(Number(comfy.vram_free) / 1048576) : 0
+    return { ok: true, reason: '', gpu: String(comfy.gpu || ''), vramFreeMB }
+  } catch (e) {
+    return { ok: false, reason: String(e && e.message ? e.message : e).slice(0, 120) }
+  }
+}
+
+/** POST/GET JSON：非 2xx 直接抛（带上是哪一步），别把错误页当 JSON 解析。 */
+async function fetchJsonOrThrow(url, opts, timeoutMs, label) {
+  const res = await fetchWithTimeout(url, opts, timeoutMs, label)
+  if (!res.ok) throw new Error(label + ' HTTP ' + res.status)
+  try {
+    return await res.json()
+  } catch {
+    throw new Error(label + ' 响应不是 JSON（服务没起或地址填错？）')
+  }
+}
+
+/**
+ * 本地 ComfyUI 出图：提交 → 轮询 → 取图。
+ *
+ * 状态机（server.py 的 /api/progress 只有这几种）：
+ *   running / pending / waiting → 继续等（waiting 是"还不在队列里"的瞬时态，**不是失败**）
+ *   done + images[]             → 成功，取第一张
+ *   done + 空 images            → ComfyUI 执行出错（它把错误吞在 status 里）
+ *   unknown                     → 8188 主程序挂了
+ * 超时用调用方给的总预算，不无限等。
+ */
+async function comfyGenerate({ prompt, refs, size, timeoutMs, local, tmp, log }) {
+  const base = String(local.baseUrl || '').replace(/\/+$/, '')
+  const model = String(local.model || 'zimage')
+  const sizeStr = String(size || '1024x1024')
+  const mapped = LOCAL_SIZE_MAP[sizeStr]
+  const [wRaw, hRaw] = sizeStr.split('x')
+  const dim = mapped || { w: Number(wRaw) || 1024, h: Number(hRaw) || 1024 }
+  const totalMs = Math.max(10000, Number(timeoutMs) || 240000)
+
+  // 图生图：底图必须先传到 ComfyUI 的 input 目录（它自己的 LoadImage 只认那里）
+  let initImage = ''
+  if (refs && refs.length) {
+    const buf = fs.readFileSync(refs[0])
+    const mediaType = detectImageMediaType(buf)
+    const ext = IMG_EXT[mediaType] || 'png'
+    const name = 'qqbot_' + Date.now() + '.' + ext
+    const up = await fetchJsonOrThrow(base + '/api/upload', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name, data: 'data:' + mediaType + ';base64,' + buf.toString('base64') }),
+    }, Math.min(totalMs, 60000), '本地生图(上传底图)')
+    if (!up.ok) throw new Error('上传底图失败：' + (up.error || '未知原因'))
+    initImage = String(up.name || name)
+  }
+
+  const body = { model, prompt, width: dim.w, height: dim.h, seed: 0, batch: 1 }
+  if (initImage) {
+    body.init_image = initImage
+    body.denoise = Number(local.denoise) > 0 ? Number(local.denoise) : 0.65
+  }
+  const sub = await fetchJsonOrThrow(base + '/api/generate', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  }, Math.min(totalMs, 60000), '本地生图(提交)')
+  if (!sub.ok) {
+    const detail = sub.error || JSON.stringify(sub.node_errors || '').slice(0, 160) || '未知原因'
+    throw new Error('提交失败：' + detail)
+  }
+  const pid = String(sub.prompt_id || '')
+  if (!pid) throw new Error('提交成功但没拿到 prompt_id')
+
+  const deadline = Date.now() + totalMs
+  let lastState = ''
+  while (Date.now() < deadline) {
+    await sleep(1500)
+    let st = null
+    try {
+      st = await fetchJsonOrThrow(base + '/api/progress/' + encodeURIComponent(pid), { method: 'GET' }, 15000, '本地生图(进度)')
+    } catch (e) {
+      lastState = String(e && e.message ? e.message : e)
+      continue
+    }
+    const state = String((st && st.state) || '')
+    if (state === 'done') {
+      const name = (st.images || [])[0]
+      if (!name) throw new Error('任务结束但没出图（ComfyUI 执行出错，去看它自己的窗口）')
+      const img = await fetchWithTimeout(base + '/image/' + encodeURIComponent(name), { method: 'GET' }, totalMs, '本地生图(取图)')
+      if (!img.ok) throw new Error('取图 HTTP ' + img.status)
+      const buf = Buffer.from(await img.arrayBuffer())
+      if (!buf.length) throw new Error('取到的图是空的')
+      if (log) log.info('[生图] 本地出图完成（' + model + ' ' + dim.w + 'x' + dim.h + '，' + Math.round((totalMs - (deadline - Date.now())) / 1000) + 's 内）')
+      return saveBuf(buf, tmp)
+    }
+    if (state === 'unknown') {
+      throw new Error('ComfyUI 主程序没响应了（' + ((st && st.error) || '8188 不通') + '）')
+    }
+    lastState = state || lastState
+  }
+  throw new Error('本地生图超时（' + Math.round(totalMs / 1000) + 's，最后状态 ' + (lastState || '?') + '）')
+}
+
 /** 凭据解析：实例配置注入优先，其次环境变量；代码里永远没有明文 key / 默认 baseUrl */
 function resolveCreds(injected) {
   const env = process.env
@@ -463,6 +600,31 @@ export default {
       hint: '保存后只回显占位符；环境变量 QQ_IMAGEGEN_API_KEY 优先于这个输入框。',
     },
     enabled: { type: 'bool', default: true, group: '生图', label: '生图', hint: '开：群里叫它画图时调用生图模型出图并发出来；关：完全不出图。' },
+    localFirst: {
+      type: 'bool', default: false, group: '生图', label: '优先用本机 ComfyUI',
+      hint: '开：每次生图先探一下本机画图服务（默认 http://127.0.0.1:8899），**活着就用它出图**（免费、约 11 秒）；'
+        + '没起来就**自动回落**到下面的中转站，行为与关掉时一致。\n'
+        + '关（默认）：完全按中转站走，跟以前一样。\n'
+        + '· 只探一次、最多等 2.5 秒；探不通只记一行日志，不打扰用户、不占冷却。\n'
+        + '· 本机服务不会自动拉起，需要你自己双击启动脚本（这是故意的：静默加载 6GB 权重太粗暴）。\n'
+        + '· 中转站也没配时，报错与以前一致（提示去填地址/Key）。',
+    },
+    localUrl: {
+      type: 'str', default: 'http://127.0.0.1:8899', group: '生图', label: '本机画图服务地址',
+      hint: 'ComfyUI 外面那层 server.py 的地址（默认 http://127.0.0.1:8899）。留空按默认。\n'
+        + '不要填 8188（那是 ComfyUI 原生 API，要自己拼工作流）。',
+    },
+    localModel: {
+      type: 'str', default: 'zimage', group: '生图', label: '本机模型',
+      suggestions: ['zimage', 'sdxl'],
+      hint: 'zimage = Z-Image Turbo（默认）：支持中文提示词、约 11 秒、反向提示词无效。\n'
+        + 'sdxl = SDXL Base：只认英文、约 22 秒、反向提示词有效。',
+    },
+    localDenoise: {
+      type: 'float', default: 0.65, group: '生图', label: '本机图生图降噪', min: 0.2, max: 1, step: 0.05,
+      hint: '只有图生图（带参考图）时才用：0.2~0.3 轻微改、0.4~0.6 中等改、0.7~0.8 大幅改、0.9+ 几乎重画。\n'
+        + 'Z-Image 建议 0.5~0.65。填 1.0 会被服务端强制压到 0.65。',
+    },
     cooldownMs: { type: 'int', unit: '秒', scale: 1000, default: 60, group: '生图', label: '全局冷却', hint: '两次生图之间至少隔多久（所有群共用），防止连刷烧额度。' },
     ackCooldownMs: { type: 'int', unit: '秒', scale: 1000, default: 30, group: '生图', label: '「在画了」冷却', hint: '同一会话几秒内只说一次「在画了」，避免每张图都刷这句。' },
     timeoutMs: { type: 'int', unit: '秒', scale: 1000, default: 240, group: '生图', label: '生图超时', hint: '单次生图最多等多久；超时就放弃并回一句失败说明。' },
@@ -520,6 +682,13 @@ export default {
     // 凭据每次调用现取：控制台「生图」页改完协议/地址/Key 后热生效，不用重启。
     // 优先级：bot.credentials（实例配置 live getter，热重载后指向新值）→ setup 第二参注入（兼容旧装配）→ 环境变量。
     const credsNow = () => resolveCreds(bot.credentials || opts.credentials || null)
+    /** 本机 ComfyUI 配置（每次现取，控制台改完下一张就生效） */
+    const localNow = () => ({
+      enabled: cfg.localFirst === true,
+      baseUrl: String(cfg.localUrl || '').trim() || 'http://127.0.0.1:8899',
+      model: String(cfg.localModel || '').trim() || 'zimage',
+      denoise: Number(cfg.localDenoise) > 0 ? Number(cfg.localDenoise) : 0.65,
+    })
     const refDirNow = () => String(cfg.refDir || '').trim() || path.join(String(bot.core?.dataDir || '.'), 'qq-refs')
     const avatarDirNow = () => String(cfg.avatarDir || '').trim() || path.join(String(bot.core?.dataDir || '.'), 'qq_avatars')
 
@@ -756,8 +925,24 @@ export default {
         refs.splice(0, refs.length, ...new Set(refs))
 
         const creds = credsNow()
-        if (!creds.apiKey || !creds.baseUrl) {
-          throw new Error('未配置生图凭据：请设置环境变量 QQ_IMAGEGEN_BASE_URL / QQ_IMAGEGEN_API_KEY，或在实例配置 credentials.gptImage 里填')
+        const local = localNow()
+        // 本机优先：只在开了开关时才探（探一次最多 2.5 秒，探不通静默回落，不打扰用户）
+        let localReady = false
+        let localWhy = ''
+        if (local.enabled) {
+          const probe = await probeLocalComfy(local.baseUrl, 2500)
+          localReady = probe.ok
+          localWhy = probe.reason
+          if (probe.ok) {
+            log.info(`[生图] 本机 ComfyUI 可用（${probe.gpu || '?'}，显存余 ${probe.vramFreeMB || '?'}MB），走本地出图`)
+          } else {
+            log.info(`[生图] 本机 ComfyUI 不可用（${probe.reason}），回落中转站`)
+          }
+        }
+        // 中转站凭据：本地能出图时不需要；否则沿用旧口径（两样都得有）
+        if (!localReady && (!creds.apiKey || !creds.baseUrl)) {
+          throw new Error('未配置生图凭据：请设置环境变量 QQ_IMAGEGEN_BASE_URL / QQ_IMAGEGEN_API_KEY，或在实例配置 credentials.gptImage 里填'
+            + (local.enabled ? `（本机 ComfyUI 也没起来：${localWhy}）` : ''))
         }
         const size = chooseSize(args.size, refs)
         // 额外请求字段先解析：JSON 写错要**立刻**报错（不占冷却、也不先说「在画了」）
@@ -791,13 +976,18 @@ export default {
         if (canReply) await maybeAck(genTarget)
 
         const t0 = Date.now()
+        const source = localReady ? 'local' : 'remote'
         let file
         try {
-          file = await gptGenerate({
-            prompt: finalPrompt, refs, size, extras, timeoutMs: timeoutMs(), creds, tmp: bot.core?.tmp,
-          })
+          file = localReady
+            ? await comfyGenerate({
+              prompt: finalPrompt, refs, size, timeoutMs: timeoutMs(), local, tmp: bot.core?.tmp, log,
+            })
+            : await gptGenerate({
+              prompt: finalPrompt, refs, size, extras, timeoutMs: timeoutMs(), creds, tmp: bot.core?.tmp,
+            })
         } catch (e) {
-          log.error(`[生图] ${refs.length ? '图生图' : '生图'}失败 (${Date.now() - t0}ms, prompt=${finalPrompt.slice(0, 60)}): ${e.message}`)
+          log.error(`[生图] ${refs.length ? '图生图' : '生图'}失败(${source === 'local' ? '本地' : creds.protocol}) (${Date.now() - t0}ms, prompt=${finalPrompt.slice(0, 60)}): ${e.message}`)
           // ③ **失败就到此为止**：本插件自己如实说一句（零 token），并在错误里写明"已代答、别补话、别重试"。
           //    ⚠️ 这里**没有、也不要加**任何重试逻辑 —— 重试是模型自发行为，靠错误文案三处一起掐。
           if (canReply) {
@@ -805,8 +995,8 @@ export default {
             bot.deliver(genTarget, failLine).catch((err) => log.warn(`生图失败应答发送失败 (${genTarget}): ${err.message}`))
           }
           const rawReason = String(e.message || '')
-          // 错误信息里带上「当前协议」（chat 协议自己已带前缀，别重复拼）
-          const reason = /生图\([^)]*协议\)/.test(rawReason)
+          // 错误信息里带上「走的是哪条线」（chat 协议自己已带前缀，别重复拼）
+          const reason = /生图\([^)]*协议\)/.test(rawReason) || source === 'local'
             ? rawReason.slice(0, 140)
             : `生图(${creds.protocol}协议)失败：${rawReason.slice(0, 140)}`
           throw new Error(`${reason}${canReply
@@ -822,7 +1012,9 @@ export default {
           bytes: buf.length,
           ms: Date.now() - t0,
           mode: refs.length ? 'edit' : 'generate',
-          protocol: creds.protocol,
+          // 走的哪条线：local = 本机 ComfyUI；remote = 中转站（protocol 仍描述中转站怎么说话）
+          source,
+          protocol: source === 'local' ? 'comfyui' : creds.protocol,
           size,
           refs: refs.length,
           actualSize: px ? `${px.w}x${px.h}` : null,
@@ -832,7 +1024,7 @@ export default {
           promptOriginal: prompt,
           ...(opt.used ? {} : { promptOptimizeNote: opt.reason }),
         }
-        log.info(`[生图] (${out.protocol}) ${out.mode === 'edit' ? '图生图' : '生图'}完成 (${out.ms}ms, ${out.bytes}B, `
+        log.info(`[生图] (${out.protocol}${source === 'local' ? '/本地' : ''}) ${out.mode === 'edit' ? '图生图' : '生图'}完成 (${out.ms}ms, ${out.bytes}B, `
           + `请求尺寸=${size}, 实际=${out.actualSize || '?'}${refs.length ? `, ref=${refs.join(' + ')}` : ''}, `
           + `${Object.keys(extras).length ? `额外字段=${Object.keys(extras).join(',')}, ` : ''}prompt=${finalPrompt.slice(0, 60)}`
           + `${opt.used ? `, 优化=${opt.route || '?'}/${opt.ms}ms` : ''}) → ${file}`)

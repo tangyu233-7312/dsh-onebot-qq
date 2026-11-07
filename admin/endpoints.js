@@ -413,12 +413,19 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
     const baseUrl = toStr(eff.baseUrl || rawCred.baseUrl)
     const model = toStr(eff.model || rawCred.model) || 'gpt-image-2'
     const apiKeySet = toStr(eff.apiKey) !== ''
+    // 本机 ComfyUI（插件配置，不是凭据）：用来在自检里说明"本地这条线开没开"
+    const ic = pluginCfgRuntime('imagegen')
+    const localEnabled = ic.localFirst === true
+    const localUrl = toStr(ic.localUrl) || 'http://127.0.0.1:8899'
+    const localModel = toStr(ic.localModel) || 'zimage'
     return {
-      configured: Boolean(baseUrl && apiKeySet),
+      // configured：**能出图**即可 —— 本地开着也算（不要求中转站 Key）
+      configured: Boolean(baseUrl && apiKeySet) || localEnabled,
       protocol,
       model,
       baseUrl,
       apiKeySet,
+      local: { enabled: localEnabled, url: localUrl, model: localModel },
       envOverride: {
         protocol: envSet('QQ_IMAGEGEN_PROTOCOL'),
         baseUrl: envSet('QQ_IMAGEGEN_BASE_URL'),
@@ -1460,8 +1467,36 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
       }
       checks.push(keyCheck)
 
+      // 本机 ComfyUI：开了就真探一次（探不通不算失败 —— 会回落中转站，只是提醒一句）
+      let localAlive = null
+      let localNote = ''
+      if (state.local && state.local.enabled) {
+        try {
+          const base = String(state.local.url).replace(/\/+$/, '')
+          const init = { method: 'GET' }
+          if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') init.signal = AbortSignal.timeout(3000)
+          const res = await withTimeout(fetch(`${base}/api/status`, init), 3500)
+          const j = res.ok ? await res.json().catch(() => ({})) : {}
+          localAlive = j?.comfy?.alive === true
+          localNote = localAlive
+            ? `本机 ComfyUI 可用（${j.comfy.gpu || 'GPU'}，显存余 ${Math.round((Number(j.comfy.vram_free) || 0) / 1048576)}MB）`
+            : `本机服务没就绪（${j?.comfy?.error || 'ComfyUI 主程序 8188 没起'}）—— 生图时会回落中转站`
+        } catch (e) {
+          localAlive = false
+          localNote = `连不上本机服务（${toStr(e?.message).slice(0, 60) || '超时'}）—— 生图时会回落中转站`
+        }
+        checks.push({ name: '本机 ComfyUI', ok: localAlive, optional: !localAlive, hint: localNote })
+      }
+
+      // 本地能出图时，中转站只是"回落备胎"：没配也不算失败，只作提示
+      if (localAlive) {
+        for (const c of checks) c.optional = true
+      }
+
       let advice = ''
-      if (urlOk && state.apiKeySet) {
+      if (localAlive) {
+        advice = `✅ ${localNote}；生图走本地，不用中转站。`
+      } else if (urlOk && state.apiKeySet) {
         const base = state.baseUrl.replace(/\/+$/, '')
         const key = toStr(runtimeOf()?.credentials?.gptImage?.apiKey)
         const init = { method: 'GET', headers: key ? { Authorization: `Bearer ${key}` } : {} }
@@ -1477,9 +1512,12 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
           advice = `提示：GET ${base}/models 连不上（${toStr(e?.message) || '超时'}）；部分中转站不提供该接口，可先保存后直接在聊天里试一张。`
         }
       } else {
-        advice = '必填项填全后再点一次检查；未配置生图不影响文字聊天。'
+        advice = state.local && state.local.enabled
+          ? `本机 ComfyUI 没起来，中转站也没配全 —— 两条路都不通。${localNote}`
+          : '必填项填全后再点一次检查；未配置生图不影响文字聊天。'
       }
-      const requiredOk = checks.every((c) => c.ok)
+      // optional 的检查项不参与"必填"判定（如本机服务没起，但中转站配好了 → 仍算通过）
+      const requiredOk = checks.every((c) => c.ok || c.optional === true)
       const failHint = checks.filter((c) => !c.ok).map((c) => `${c.name}：${c.hint}`).join('；')
       return {
         ok: requiredOk, id, checks, advice,

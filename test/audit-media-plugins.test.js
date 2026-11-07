@@ -675,3 +675,156 @@ test('控制台「试优化一条提示词」：动作注册在生图页，调�
   assert.equal(bad.ok, false)
   assert.equal(llm.calls.length, 1, '空需求不打模型')
 })
+// ─────────────────────────────────────────────────────────────────────────────
+// 本机 ComfyUI（2026-11-07）：本地优先，服务没起就回落中转站
+// 开关就是 localFirst —— PC 打开走本地；NAS 没有本地模型，保持关闭即完全走中转站。
+// 纪律：只探一次（≤2.5s）、探不通不打扰用户；两条线任一能用就能出图；都不行才报旧错。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 按 URL 分派的本地 ComfyUI 桩；alive=false 模拟服务没起。 */
+function comfyFetchMock(t, { alive = true, genOk = true, emptyImages = false, waitingFirst = 0 } = {}) {
+  let poll = 0
+  const calls = installFetchMock(t, (url) => {
+    if (url.endsWith('/api/status')) {
+      return jsonResponse(alive
+        ? { comfy: { alive: true, gpu: 'RTX 4060', vram_total: 8 * 1048576, vram_free: 5 * 1048576 }, models: {} }
+        : { comfy: { alive: false, error: 'Connection refused' }, models: {} })
+    }
+    if (url.endsWith('/api/generate')) {
+      return genOk ? jsonResponse({ ok: true, prompt_id: 'pid-1', model: 'zimage' }) : jsonResponse({ ok: false, error: 'bad workflow' })
+    }
+    if (url.endsWith('/api/upload')) return jsonResponse({ ok: true, name: 'qqbot_upload.png', size: 70 })
+    if (url.includes('/api/progress/')) {
+      poll += 1
+      if (poll <= waitingFirst) return jsonResponse({ state: 'waiting' })
+      return jsonResponse({ state: 'done', images: emptyImages ? [] : ['ZImage_00001_.png'], saved: [] })
+    }
+    if (url.includes('/image/')) return new Response(PNG, { status: 200, headers: { 'content-type': 'image/png' } })
+    if (url.includes('/images/generations')) return jsonResponse({ data: [{ b64_json: PNG_B64 }] })
+    return jsonResponse({})
+  })
+  return calls
+}
+
+test('本机优先：服务活着 → 走 ComfyUI，不碰中转站', async (t) => {
+  const h = await bootImagegen(t, { credentials: IMG_CREDS, imagegen: { localFirst: true } })
+  const calls = comfyFetchMock(t, { alive: true })
+  const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
+  const r = await tool.execute({ prompt: '画只胖鱼吃拉面', target: 'group:' + GROUP_ID })
+
+  assert.equal(r.ok, true)
+  assert.equal(r.source, 'local', '回执标明走的是本地')
+  assert.equal(r.protocol, 'comfyui')
+  const urls = calls.map((c) => c.url)
+  assert.ok(urls.some((u) => u.endsWith('/api/status')), '先探健康')
+  assert.ok(urls.some((u) => u.endsWith('/api/generate')), '提交任务')
+  assert.ok(urls.some((u) => u.includes('/api/progress/')), '轮询进度')
+  assert.ok(urls.some((u) => u.includes('/image/')), '取图')
+  assert.ok(!urls.some((u) => u.includes('/images/generations')), '不碰中转站')
+  assert.ok(h.sent.some((s) => s.kind === 'media'), '照常发到会话')
+})
+
+test('本机优先：服务没起 → 自动回落中转站（用户无感）', async (t) => {
+  const h = await bootImagegen(t, { credentials: IMG_CREDS, imagegen: { localFirst: true } })
+  const calls = comfyFetchMock(t, { alive: false })
+  const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
+  const r = await tool.execute({ prompt: '画只胖鱼吃拉面', target: 'group:' + GROUP_ID })
+
+  assert.equal(r.ok, true, '回落成功，用户无感')
+  assert.equal(r.source, 'remote')
+  const urls = calls.map((c) => c.url)
+  assert.ok(urls.some((u) => u.endsWith('/api/status')), '探过本地')
+  assert.ok(urls.some((u) => u.includes('/images/generations')), '走了中转站')
+  assert.ok(!urls.some((u) => u.endsWith('/api/generate')), '没往本地提交')
+})
+
+test('本机优先：没配中转站 + 本地没起 → 报旧错，并说明本地也不可用', async (t) => {
+  const h = await bootImagegen(t, { imagegen: { localFirst: true } })
+  comfyFetchMock(t, { alive: false })
+  const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
+  await assert.rejects(
+    () => tool.execute({ prompt: '画只胖鱼', target: 'group:' + GROUP_ID }),
+    (e) => /未配置生图凭据/.test(e.message) && /本机 ComfyUI 也没起来/.test(e.message),
+  )
+})
+
+test('本机优先：没配中转站但只要本地活着 → 能出图（本地不需要 API Key）', async (t) => {
+  const h = await bootImagegen(t, { imagegen: { localFirst: true } })
+  comfyFetchMock(t, { alive: true })
+  const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
+  const r = await tool.execute({ prompt: '画只胖鱼', target: 'group:' + GROUP_ID })
+  assert.equal(r.ok, true)
+  assert.equal(r.source, 'local')
+})
+
+test('开关关闭（NAS 默认）：一次都不探本地，完全按旧路径', async (t) => {
+  const h = await bootImagegen(t, { credentials: IMG_CREDS, imagegen: { localFirst: false } })
+  const calls = comfyFetchMock(t, { alive: true })
+  const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
+  const r = await tool.execute({ prompt: '画只胖鱼', target: 'group:' + GROUP_ID })
+  assert.equal(r.ok, true)
+  assert.equal(r.source, 'remote')
+  assert.ok(!calls.some((c) => c.url.endsWith('/api/status')), '关掉就完全不探本地')
+  assert.ok(!calls.some((c) => c.url.endsWith('/api/generate')), '也不往本地提交')
+})
+
+test('本机出图：尺寸自动降档（1536 档在 8GB 上太险 → 1216x832）', async (t) => {
+  const h = await bootImagegen(t, { imagegen: { localFirst: true } })
+  const calls = comfyFetchMock(t, { alive: true })
+  const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
+  await tool.execute({ prompt: '横构图', target: 'group:' + GROUP_ID, size: '1536x1024' })
+  const gen = calls.find((c) => c.url.endsWith('/api/generate'))
+  const body = JSON.parse(gen.opts.body)
+  assert.equal(body.width, 1216)
+  assert.equal(body.height, 832)
+  assert.equal(body.model, 'zimage', '默认 zimage')
+})
+
+test('本机出图：任务完成但没图（ComfyUI 执行出错）→ 明确报错 + 插件代答', async (t) => {
+  const h = await bootImagegen(t, { imagegen: { localFirst: true } })
+  comfyFetchMock(t, { alive: true, emptyImages: true })
+  const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
+  await assert.rejects(
+    () => tool.execute({ prompt: '画只胖鱼', target: 'group:' + GROUP_ID }),
+    /没出图|执行出错/,
+  )
+  assert.ok(h.sent.some((s) => s.kind === 'msg'), '插件自己代答一句，不哑火')
+})
+
+test('本机出图：waiting 是瞬时态，不能当失败（继续轮询到 done）', async (t) => {
+  const h = await bootImagegen(t, { imagegen: { localFirst: true } })
+  const calls = comfyFetchMock(t, { alive: true, waitingFirst: 2 })
+  const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
+  const r = await tool.execute({ prompt: '画只胖鱼', target: 'group:' + GROUP_ID })
+  assert.equal(r.ok, true)
+  assert.ok(calls.filter((c) => c.url.includes('/api/progress/')).length >= 3, 'waiting 时继续等')
+})
+
+test('本机出图：图生图先上传底图，再带 init_image + denoise', async (t) => {
+  const refDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qqbot-refs-'))
+  fs.writeFileSync(path.join(refDir, 'ref.png'), PNG)
+  t.after(() => { try { fs.rmSync(refDir, { recursive: true, force: true }) } catch { /* ignore */ } })
+
+  const h = await bootImagegen(t, { imagegen: { localFirst: true, refDir } })
+  const calls = comfyFetchMock(t, { alive: true })
+  const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
+  const r = await tool.execute({ prompt: '改成黑猫', image: 'ref.png', target: 'group:' + GROUP_ID })
+
+  assert.equal(r.ok, true)
+  assert.ok(calls.some((c) => c.url.endsWith('/api/upload')), '先上传底图')
+  const gen = calls.find((c) => c.url.endsWith('/api/generate'))
+  const body = JSON.parse(gen.opts.body)
+  assert.ok(body.init_image, '带 init_image')
+  assert.ok(body.denoise > 0 && body.denoise < 1, 'denoise 在有效区间')
+})
+
+test('控制台「检查生图配置」：本地活着就报通过，即使中转站没配', async (t) => {
+  const h = await bootImagegen(t, { imagegen: { localFirst: true } })
+  comfyFetchMock(t, { alive: true })
+  const r = await h.kernel.handleAdminRpc('action', { id: 'imagegen-check' })
+  assert.equal(r.ok, true)
+  const local = (r.checks || []).find((c) => c.name === '本机 ComfyUI')
+  assert.ok(local, '应列出本机 ComfyUI 这一项')
+  assert.equal(local.ok, true)
+})
+

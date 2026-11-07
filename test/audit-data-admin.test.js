@@ -163,9 +163,9 @@ test('schema（新手引导）：protocol enum / 模型 suggestions / info 控�
   assert.equal('value' in info, false)
   assert.equal(readValue(h.kernel, info.key, h.raw), undefined)
   assert.throws(() => writeValue(h.kernel, info.key, 'x', JSON.parse(JSON.stringify(h.raw))), /说明块|不能写/)
-  // suggestions 目前只加在模型输入框上
+  // suggestions 只加在"模型名"输入框上：中转站模型 + 本机 ComfyUI 模型（2026-11-07 新增本地那条线）
   const withSuggestions = schema.controls.filter((c) => Array.isArray(c.suggestions))
-  assert.deepEqual(withSuggestions.map((c) => c.key), ['credentials.gptImage.model'])
+  assert.deepEqual(withSuggestions.map((c) => c.key).sort(), ['credentials.gptImage.model', 'imagegen.localModel'].sort())
 })
 
 test('status（新手引导）：meta / onboarding 5 项 / onebot / imagegen（绝不回显 key）', async (t) => {

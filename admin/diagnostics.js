@@ -333,6 +333,13 @@ function checkDirs(kernel) {
   return makeCheck('dirs', '目录可写', true, true, `已探测 ${dirs.length} 个目录（写入 .diagnose-tmp 后已删除）`, '')
 }
 
+/** 取某插件**已加载**的生效 cfg（内核 buildPluginCfg 的产物）；拿不到返回 {}。 */
+function pluginCfgOf(kernel, id) {
+  const list = Array.isArray(kernel?.plugins) ? kernel.plugins : []
+  const hit = list.find((p) => String(p?.id || p?.plugin?.id || '') === id)
+  return hit?.cfg && typeof hit.cfg === 'object' ? hit.cfg : {}
+}
+
 function checkImagegen(kernel) {
   const runtime = safe(() => kernel?.runtime, null) || {}
   const cred = isPlainObject(runtime?.credentials?.gptImage) ? runtime.credentials.gptImage : {}
@@ -341,13 +348,21 @@ function checkImagegen(kernel) {
   const baseUrl = toStr(cred.baseUrl)
   const model = toStr(cred.model)
   const keySet = toStr(cred.apiKey) !== ''
-  const ok = Boolean(baseUrl && keySet)
-  const detail = ok
-    ? `已配置（协议 ${protocol}，模型 ${model || '未指定'}，地址 ${sanitizeUrl(baseUrl)}，API Key 已配置${env.apiKey ? '（环境变量覆盖）' : ''}）`
-    : `未配置（协议 ${protocol}，模型 ${model || '未指定'}${baseUrl ? `，地址 ${sanitizeUrl(baseUrl)}` : '，地址未填'}，API Key ${keySet ? '已配置' : '未配置'}）`
+  // 本机 ComfyUI 优先：开着就算"能出图"，不要求中转站 Key
+  const ic = safe(() => pluginCfgOf(kernel, 'imagegen'), {}) || {}
+  const localOn = ic.localFirst === true
+  const localUrl = toStr(ic.localUrl) || 'http://127.0.0.1:8899'
+  const localModel = toStr(ic.localModel) || 'zimage'
+  const remoteOk = Boolean(baseUrl && keySet)
+  const ok = localOn || remoteOk
+  const localPart = localOn ? `本机 ComfyUI 优先（${sanitizeUrl(localUrl)}，模型 ${localModel}；没起来会自动回落中转站）` : ''
+  const remotePart = remoteOk
+    ? `中转站已配置（协议 ${protocol}，模型 ${model || '未指定'}，地址 ${sanitizeUrl(baseUrl)}，API Key 已配置${env.apiKey ? '（环境变量覆盖）' : ''}）`
+    : `中转站未配置（协议 ${protocol}，模型 ${model || '未指定'}${baseUrl ? `，地址 ${sanitizeUrl(baseUrl)}` : '，地址未填'}，API Key ${keySet ? '已配置' : '未配置'}）`
+  const detail = [localPart, remotePart].filter(Boolean).join('；')
   return makeCheck(
     'imagegen', '生图配置（可选）', false, ok, detail,
-    ok ? '' : '可选能力：在控制台「生图」页填协议/地址/模型/API Key 后点「检查生图配置」；不配不影响文字聊天',
+    ok ? '' : '可选能力：控制台「生图」页填协议/地址/模型/API Key（或打开「优先用本机 ComfyUI」）后点「检查生图配置」；不配不影响文字聊天',
   )
 }
 
