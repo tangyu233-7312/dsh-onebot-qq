@@ -932,7 +932,9 @@ export async function apply(ctx, bundleConfig = {}) {
       if (ev.isGroup) {
         ev.hint.push(who + '[我自己的事] 你今天还做过这些（跟这个群无关，别主动说出来）：' + tl)
       } else {
-        ev.hint.push(who + '[我今天的经历] ' + tl + '（这些是你自己做的，不是在别的地方听到的）')
+        // `[详细需调用工具查看]`：这一行只是摘要（todayLine 只取最近 6 条、只挑 4 类 kind），
+        // 不加这句它会以为这就是全部，追问细节时凭印象编。详情走 self_log 工具。
+        ev.hint.push(who + '[我今天的经历][详细需调用工具查看] ' + tl + '（这些是你自己做的，不是在别的地方听到的）')
       }
     } catch (e) {
       log.warn(`注入今日经历失败（不影响本轮）: ${e.message}`)

@@ -35,6 +35,8 @@ test('私聊轮：把今天的经历注入成一行（带场合）', async () =>
     assert.match(hints[0], /看了个视频/)
     assert.match(hints[0], /发了条说说/)
     assert.match(hints[0], /空间工作区/, '要标出在哪干的，否则它会以为都在私聊')
+    // 2026-11-03：这一行只是摘要（最近 6 条 / 4 类 kind），必须告诉它细节得调工具，否则会凭印象编
+    assert.match(hints[0], /\[详细需调用工具查看\]/, '要标明详细内容需调 self_log 查')
   } finally { env.dispose() }
 })
 
