@@ -25,9 +25,10 @@
   图生图先 `POST /upload/image` 传底图。模型清单按钮在原生模式下读 `GET /object_info/*`（checkpoint/unet/vae）。
   缺 `{{prompt}}`、图生图缺 `{{image}}`、模板不是 API Format、节点报错都**明确报错**，不静默出无关的图。
   旧配置（简易 HTTP 接口）设 `localAdapter: simple-api` 即可，行为不变。
-- **多级降级（第 3 / 第 4 级备用接口，`fallbackApis`）**：生图来源变成顺序链 ——
+- **多级降级（第 3 / 第 4 级备用接口）**：生图来源变成顺序链 ——
   第 1 级本机 ComfyUI → 第 2 级主站 → 第 3/4 级起的备用接口。**顺序降级不是轮询**：前面能用就不碰后面。
-  - 每条备用接口：`baseUrl`（必填）、`model`/`protocol`（留空跟随主站）、`apiKeyEnv`（推荐，Key 不进配置）/ `apiKey`（内联）；最多 8 条；
+  - 控制台「生图」页两个折叠小节「备用接口 1 / 2」，字段与主站一致：`fallback{N}BaseUrl`（留空=不用）、
+    `fallback{N}Protocol` / `fallback{N}Model`（留空跟随主站）、`fallback{N}ApiKey`（脱敏，也可用环境变量 `QQ_IMAGEGEN_KEY_3/4`）；
   - 每级只打一次，不重试同一级；`400/422` 不降级（请求本身不合法），超时/连不上/5xx/401/429/没出图才往下走；
   - 总超时按剩余级数均分（单级至少 15 秒）；⚠️ 超时也会降级，对方可能已出图，极端情况会多计一次费；
   - 全失败时汇总每级原因，用户只收一句失败话术；回执新增 `tier` / `fallbackUsed`，日志写「第 N 级」；

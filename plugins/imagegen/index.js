@@ -272,48 +272,39 @@ async function gptGenerate(opts) {
   return imagesGenerate(opts)
 }
 
-/** 备用接口上限：再多就不是「降级」，是该整理额度了 */
-const MAX_FALLBACK_APIS = 8
-
 /**
- * 解析「备用生图接口」配置（第三/四级…）。格式是 JSON 数组，每项：
- *   { baseUrl, model?, protocol?, apiKeyEnv?, apiKey? }
- * 设计取舍：**顺序降级**而不是轮询 —— 主站能用就只用主站（画风稳定、省钱），
- * 主站挂了才往下一级走；每级只打一次，绝不重试同一级。
- * 留空 = 没有备用，行为与以前完全一致。
+ * 从控制台字段收集备用接口（第 3/4 级）。
+ * 每级：baseUrl 非空才算配了；protocol/model 留空跟随主站；
+ * Key 优先环境变量 QQ_IMAGEGEN_KEY_3 / _4，其次控制台输入框（secret，磁盘明文但面板脱敏）。
+ * 地址写错要**立刻**报错（不占冷却、不先说「在画了」），不能静默跳过一个用户以为配好的级。
  */
-function parseFallbackApis(raw) {
-  const text = String(raw == null ? '' : raw).trim()
-  if (!text || text === '[]') return []
-  let list
-  try { list = JSON.parse(text) } catch (e) { throw new Error('「备用生图接口」必须是 JSON 数组：' + e.message) }
-  if (list && !Array.isArray(list) && Array.isArray(list.apis)) list = list.apis
-  if (!Array.isArray(list)) {
-    throw new Error('「备用生图接口」必须是 JSON 数组，例：[{"baseUrl":"https://relay2.example/v1","model":"gpt-image-2","apiKeyEnv":"QQ_IMAGEGEN_KEY_3"}]')
-  }
-  if (list.length > MAX_FALLBACK_APIS) throw new Error('「备用生图接口」最多 ' + MAX_FALLBACK_APIS + ' 条（现在 ' + list.length + ' 条）')
-  return list.map((one, i) => {
-    const at = '备用接口第 ' + (i + 1) + ' 条'
-    if (!one || typeof one !== 'object' || Array.isArray(one)) throw new Error(at + ' 必须是对象')
-    const baseUrl = String(one.baseUrl || '').trim()
-    if (!baseUrl) throw new Error(at + ' 缺 baseUrl')
+function collectFallbacks(cfg) {
+  const out = []
+  for (const n of [1, 2]) {
+    const at = '备用接口 ' + n
+    const baseUrl = String(cfg['fallback' + n + 'BaseUrl'] || '').trim()
+    if (!baseUrl) continue
     try {
       const u = new URL(baseUrl)
       if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('proto')
-    } catch { throw new Error(at + ' 的 baseUrl 不是合法 http(s) 地址：' + baseUrl) }
-    const protocol = String(one.protocol || '').trim()
+    } catch { throw new Error(at + ' 的 API 地址不是合法 http(s) 地址：' + baseUrl) }
+    const protocol = String(cfg['fallback' + n + 'Protocol'] || '').trim()
     if (protocol && !PROTOCOLS.includes(protocol)) {
-      throw new Error(at + ' 的 protocol 不支持：' + protocol + '（可用 ' + PROTOCOLS.join(' / ') + '；留空 = 跟随主站）')
+      throw new Error(at + ' 的生图协议不支持：' + protocol + '（可用 ' + PROTOCOLS.join(' / ') + '；留空 = 跟随主站）')
     }
-    return {
+    const envKey = String(process.env['QQ_IMAGEGEN_KEY_' + (n + 2)] || '')
+    out.push({
       baseUrl,
-      model: String(one.model || '').trim(),
       protocol,
-      apiKeyEnv: String(one.apiKeyEnv || '').trim(),
-      apiKey: String(one.apiKey || ''),
-    }
-  })
+      model: String(cfg['fallback' + n + 'Model'] || '').trim(),
+      apiKey: envKey || String(cfg['fallback' + n + 'ApiKey'] || ''),
+      apiKeyEnv: envKey ? 'QQ_IMAGEGEN_KEY_' + (n + 2) : '',
+      label: '备用' + n,
+    })
+  }
+  return out
 }
+
 
 /** 主站 + 备用 → 有序候选链；Key 只从环境变量名或内联取，缺 Key 的级直接跳过并留日志 */
 function buildRemoteTiers(primary, fallbacks, log) {
@@ -713,12 +704,47 @@ export default {
       key: 'credentials.gptImage.apiKey', configPath: ['credentials', 'gptImage', 'apiKey'],
       hint: '保存后只回显占位符；环境变量 QQ_IMAGEGEN_API_KEY 优先于这个输入框。',
     },
-    fallbackApis: {
-      type: 'text', group: '生图', label: '备用生图接口（第三/四级，JSON 数组）', default: '',
-      hint: '**顺序降级**：主站（第2级）失败才按顺序试这里，某一级成功就停，不会重试同一级。留空 = 没有备用，行为与以前一样。\n'
-        + '每条：baseUrl（必填）、model（留空跟随主站）、protocol（留空跟随主站）、apiKeyEnv（推荐：环境变量名，Key 不进配置文件）、apiKey（内联，仅当你接受它写进配置时用）。\n'
-        + '例：[{"baseUrl":"https://relay2.example/v1","model":"gpt-image-2","apiKeyEnv":"QQ_IMAGEGEN_KEY_3"},{"baseUrl":"https://relay3.example/v1","apiKeyEnv":"QQ_IMAGEGEN_KEY_4"}]\n'
-        + '超时预算按剩余级数均分（单级至少 15 秒）。⚠️ 超时也会降级 —— 对方可能已经出图，极端情况下会多计一次费。',
+    fallback1BaseUrl: {
+      type: 'str', group: '生图', section: '备用接口 1', label: 'API 地址（填到 /v1）', default: '',
+      hint: '第 3 级。**顺序降级**：主站（第2级）失败才用它；留空 = 这一级不用。',
+    },
+    fallback1Protocol: {
+      type: 'enum', group: '生图', section: '备用接口 1', label: '生图协议', default: '',
+      options: [
+        { value: '', label: '跟随主站' },
+        { value: 'openai-images', label: 'OpenAI 兼容 /images/*' },
+        { value: 'openai-chat', label: 'OpenAI 兼容 chat/completions' },
+      ],
+      hint: '留空 = 和主站同一个协议；只有这个站确实不一样时才单独选。',
+    },
+    fallback1Model: {
+      type: 'str', group: '生图', section: '备用接口 1', label: '模型', default: '',
+      hint: '留空 = 跟随主站的模型名。',
+    },
+    fallback1ApiKey: {
+      type: 'str', group: '生图', section: '备用接口 1', label: 'API Key', default: '', secret: true,
+      hint: '保存后只回显占位符，留空 = 不修改。也可改用环境变量 QQ_IMAGEGEN_KEY_3（配了就优先于这里）。',
+    },
+    fallback2BaseUrl: {
+      type: 'str', group: '生图', section: '备用接口 2', label: 'API 地址（填到 /v1）', default: '',
+      hint: '第 4 级。**顺序降级**：主站（第2级）失败才用它；留空 = 这一级不用。',
+    },
+    fallback2Protocol: {
+      type: 'enum', group: '生图', section: '备用接口 2', label: '生图协议', default: '',
+      options: [
+        { value: '', label: '跟随主站' },
+        { value: 'openai-images', label: 'OpenAI 兼容 /images/*' },
+        { value: 'openai-chat', label: 'OpenAI 兼容 chat/completions' },
+      ],
+      hint: '留空 = 和主站同一个协议；只有这个站确实不一样时才单独选。',
+    },
+    fallback2Model: {
+      type: 'str', group: '生图', section: '备用接口 2', label: '模型', default: '',
+      hint: '留空 = 跟随主站的模型名。',
+    },
+    fallback2ApiKey: {
+      type: 'str', group: '生图', section: '备用接口 2', label: 'API Key', default: '', secret: true,
+      hint: '保存后只回显占位符，留空 = 不修改。也可改用环境变量 QQ_IMAGEGEN_KEY_4（配了就优先于这里）。',
     },
     enabled: { type: 'bool', default: true, group: '生图', label: '生图', hint: '开：群里叫它画图时调用生图模型出图并发出来；关：完全不出图。' },
     localFirst: {
@@ -1074,9 +1100,9 @@ export default {
           }
         }
         const size = chooseSize(args.size, refs)
-        // 额外请求字段 / 备用接口先解析：JSON 写错要**立刻**报错（不占冷却、也不先说「在画了」）
+        // 额外请求字段 / 备用接口先校验：写错要**立刻**报错（不占冷却、也不先说「在画了」）
         const extras = extrasNow()
-        const fallbacks = parseFallbackApis(cfg.fallbackApis)
+        const fallbacks = collectFallbacks(cfg)
         // 中转站候选链：主站（第2级）+ 备用（第3/4级…）；本地能出图时整条链都不用
         const remoteTiers = localReady ? [] : buildRemoteTiers(creds, fallbacks, log)
         if (!localReady && !remoteTiers.length) {

@@ -239,9 +239,33 @@ window.__ModuleLoader__.load({
 			const { schema, group, ...api } = props
 			const list = (schema.controls || []).filter((c) => c.group === group)
 			if (!list.length) return h('div', { style: S.msg }, `（${group}组暂时没有开关）`)
+			// 具名折叠块（c.section）：同一页里再分小节，默认收起 —— 如生图页的「备用接口 1/2」
+			const { useState } = react
+			const [openSec, setOpenSec] = useState({})
+			// 是否把某个 section 单独列到普通项之后（保持后端声明顺序）
+			const secOrder = []
+			const showSection = (name) => {
+				const open = !!openSec[name]
+				return h('div', { key: 'sec:' + name }, [
+					h('div', { style: S.row, key: 'hd' }, [
+						h('button', {
+							key: 'b', style: S.btn, disabled: api.busy,
+							title: `共 ${list.filter((c) => c.section === name).length} 项 —— 默认收起，点开调整`,
+							onClick: () => setOpenSec({ ...openSec, [name]: !open }),
+						}, (open ? '▾ ' : '▸ ') + name + (open ? '（收起）' : '（展开）')),
+					]),
+					open ? h('div', { key: 'body' }, list.filter((c) => c.section === name).map((c) => ctrlRow(c, api))) : null,
+				])
+			}
 			return h('div', null, [
 				h('div', { style: S.group, key: 'gt' }, group),
-				list.map((c) => ctrlRow(c, api)),
+				// 无 section 的项照常平铺；section 项收进折叠块（顺序按后端声明）
+				list.filter((c) => !c.section).map((c) => ctrlRow(c, api)),
+				...list.filter((c) => c.section).map((c) => {
+					if (secOrder.includes(c.section)) return null
+					secOrder.push(c.section)
+					return showSection(c.section)
+				}).filter(Boolean),
 			])
 		}
 

@@ -1470,20 +1470,22 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
       }
       checks.push(keyCheck)
 
-      // 备用接口（第三/四级）：只校验配置形状，不真打（免得一次检查把所有站的额度都摸一遍）
-      let fbList = null
-      let fbError = ''
-      try {
-        const raw = String(store.read()?.pluginConfig?.imagegen?.fallbackApis || '').trim()
-        if (raw) {
-          const parsed = JSON.parse(raw)
-          fbList = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.apis) ? parsed.apis : null)
-          if (!fbList) fbError = '必须是 JSON 数组'
-        }
-      } catch (e) { fbError = '不是合法 JSON：' + e.message }
+      // 备用接口（第三/四级）：只看「填了哪些」，不真打（免得一次检查把各站额度都摸一遍）
+      const fb = store.read()?.pluginConfig?.imagegen || {}
+      const fbLevels = []
+      for (const n of [1, 2]) {
+        const url = String(fb['fallback' + n + 'BaseUrl'] || '').trim()
+        if (!url) continue
+        let okUrl = false
+        try { const u = new URL(url); okUrl = u.protocol === 'http:' || u.protocol === 'https:' } catch { okUrl = false }
+        fbLevels.push({ n, url, okUrl })
+      }
+      const badFb = fbLevels.filter((x) => !x.okUrl)
       checks.push({
-        name: '备用接口', ok: !fbError,
-        hint: fbError || (fbList && fbList.length ? `已配置 ${fbList.length} 级，主站失败才用` : '未配置（可选）'),
+        name: '备用接口', ok: badFb.length === 0,
+        hint: badFb.length
+          ? `备用接口 ${badFb.map((x) => x.n).join('/')} 的地址不是合法 http(s)：${badFb.map((x) => x.url).join(' , ')}`
+          : (fbLevels.length ? `已配置第 ${fbLevels.map((x) => x.n + 2).join(' / ')} 级，主站失败才用` : '未配置（可选）'),
       })
 
       // 本机服务：开了就真探一次（探不通不算失败 —— 会回落中转站，只是提醒一句）
