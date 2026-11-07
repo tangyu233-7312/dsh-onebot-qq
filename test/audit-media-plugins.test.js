@@ -713,7 +713,7 @@ function comfyFetchMock(t, { alive = true, genOk = true, emptyImages = false, wa
 }
 
 test('本机优先：服务活着 → 走 ComfyUI，不碰中转站', async (t) => {
-  const h = await bootImagegen(t, { credentials: IMG_CREDS, imagegen: { localFirst: true, localUrl: LOCAL_URL } })
+  const h = await bootImagegen(t, { credentials: IMG_CREDS, imagegen: { localAdapter: 'simple-api', localFirst: true, localUrl: LOCAL_URL } })
   const calls = comfyFetchMock(t, { alive: true })
   const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
   const r = await tool.execute({ prompt: '画只胖鱼吃拉面', target: 'group:' + GROUP_ID })
@@ -731,7 +731,7 @@ test('本机优先：服务活着 → 走 ComfyUI，不碰中转站', async (t) 
 })
 
 test('本机优先：服务没起 → 自动回落中转站（用户无感）', async (t) => {
-  const h = await bootImagegen(t, { credentials: IMG_CREDS, imagegen: { localFirst: true, localUrl: LOCAL_URL } })
+  const h = await bootImagegen(t, { credentials: IMG_CREDS, imagegen: { localAdapter: 'simple-api', localFirst: true, localUrl: LOCAL_URL } })
   const calls = comfyFetchMock(t, { alive: false })
   const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
   const r = await tool.execute({ prompt: '画只胖鱼吃拉面', target: 'group:' + GROUP_ID })
@@ -745,7 +745,7 @@ test('本机优先：服务没起 → 自动回落中转站（用户无感）', 
 })
 
 test('本机优先：没配中转站 + 本地没起 → 报旧错，并说明本地也不可用', async (t) => {
-  const h = await bootImagegen(t, { imagegen: { localFirst: true, localUrl: LOCAL_URL } })
+  const h = await bootImagegen(t, { imagegen: { localAdapter: 'simple-api', localFirst: true, localUrl: LOCAL_URL } })
   comfyFetchMock(t, { alive: false })
   const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
   await assert.rejects(
@@ -755,7 +755,7 @@ test('本机优先：没配中转站 + 本地没起 → 报旧错，并说明本
 })
 
 test('本机优先：没配中转站但只要本地活着 → 能出图（本地不需要 API Key）', async (t) => {
-  const h = await bootImagegen(t, { imagegen: { localFirst: true, localUrl: LOCAL_URL } })
+  const h = await bootImagegen(t, { imagegen: { localAdapter: 'simple-api', localFirst: true, localUrl: LOCAL_URL } })
   comfyFetchMock(t, { alive: true })
   const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
   const r = await tool.execute({ prompt: '画只胖鱼', target: 'group:' + GROUP_ID })
@@ -775,7 +775,7 @@ test('开关关闭（NAS 默认）：一次都不探本地，完全按旧路径'
 })
 
 test('本机出图：尺寸自动降档（1536 档在 8GB 上太险 → 1216x832）', async (t) => {
-  const h = await bootImagegen(t, { imagegen: { localFirst: true, localUrl: LOCAL_URL } })
+  const h = await bootImagegen(t, { imagegen: { localAdapter: 'simple-api', localFirst: true, localUrl: LOCAL_URL } })
   const calls = comfyFetchMock(t, { alive: true })
   const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
   await tool.execute({ prompt: '横构图', target: 'group:' + GROUP_ID, size: '1536x1024' })
@@ -788,7 +788,7 @@ test('本机出图：尺寸自动降档（1536 档在 8GB 上太险 → 1216x832
 
 test('本机模型：用户填什么就传什么（不写死、不做白名单校验）', async (t) => {
   const h = await bootImagegen(t, {
-    imagegen: { localFirst: true, localUrl: LOCAL_URL, localModel: 'flux1-dev-fp8' },
+    imagegen: { localAdapter: 'simple-api', localFirst: true, localUrl: LOCAL_URL, localModel: 'flux1-dev-fp8' },
   })
   const calls = comfyFetchMock(t, { alive: true })
   const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
@@ -798,7 +798,7 @@ test('本机模型：用户填什么就传什么（不写死、不做白名单�
 })
 
 test('本机模型：留空 → 请求体里没有 model 字段（用服务端默认）', async (t) => {
-  const h = await bootImagegen(t, { imagegen: { localFirst: true, localUrl: LOCAL_URL, localModel: '' } })
+  const h = await bootImagegen(t, { imagegen: { localAdapter: 'simple-api', localFirst: true, localUrl: LOCAL_URL, localModel: '' } })
   const calls = comfyFetchMock(t, { alive: true })
   const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
   await tool.execute({ prompt: '画只猫', target: 'group:' + GROUP_ID })
@@ -807,7 +807,7 @@ test('本机模型：留空 → 请求体里没有 model 字段（用服务端�
 })
 
 test('本机模型：控制台能读出服务自己报的清单（插件不预设）', async (t) => {
-  const h = await bootImagegen(t, { imagegen: { localFirst: true, localUrl: LOCAL_URL } })
+  const h = await bootImagegen(t, { imagegen: { localAdapter: 'simple-api', localFirst: true, localUrl: LOCAL_URL } })
   comfyFetchMock(t, { alive: true })
   const r = await h.kernel.handleAdminRpc('action', { id: 'imagegen-local-models' })
   assert.equal(r.ok, true)
@@ -817,7 +817,7 @@ test('本机模型：控制台能读出服务自己报的清单（插件不预�
 })
 
 test('本机出图：任务完成但没图（ComfyUI 执行出错）→ 明确报错 + 插件代答', async (t) => {
-  const h = await bootImagegen(t, { imagegen: { localFirst: true, localUrl: LOCAL_URL } })
+  const h = await bootImagegen(t, { imagegen: { localAdapter: 'simple-api', localFirst: true, localUrl: LOCAL_URL } })
   comfyFetchMock(t, { alive: true, emptyImages: true })
   const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
   await assert.rejects(
@@ -828,7 +828,7 @@ test('本机出图：任务完成但没图（ComfyUI 执行出错）→ 明确�
 })
 
 test('本机出图：waiting 是瞬时态，不能当失败（继续轮询到 done）', async (t) => {
-  const h = await bootImagegen(t, { imagegen: { localFirst: true, localUrl: LOCAL_URL } })
+  const h = await bootImagegen(t, { imagegen: { localAdapter: 'simple-api', localFirst: true, localUrl: LOCAL_URL } })
   const calls = comfyFetchMock(t, { alive: true, waitingFirst: 2 })
   const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
   const r = await tool.execute({ prompt: '画只胖鱼', target: 'group:' + GROUP_ID })
@@ -841,7 +841,7 @@ test('本机出图：图生图先上传底图，再带 init_image + denoise', as
   fs.writeFileSync(path.join(refDir, 'ref.png'), PNG)
   t.after(() => { try { fs.rmSync(refDir, { recursive: true, force: true }) } catch { /* ignore */ } })
 
-  const h = await bootImagegen(t, { imagegen: { localFirst: true, localUrl: LOCAL_URL, refDir } })
+  const h = await bootImagegen(t, { imagegen: { localAdapter: 'simple-api', localFirst: true, localUrl: LOCAL_URL, refDir } })
   const calls = comfyFetchMock(t, { alive: true })
   const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
   const r = await tool.execute({ prompt: '改成黑猫', image: 'ref.png', target: 'group:' + GROUP_ID })
@@ -855,7 +855,7 @@ test('本机出图：图生图先上传底图，再带 init_image + denoise', as
 })
 
 test('控制台「检查生图配置」：本地活着就报通过，即使中转站没配', async (t) => {
-  const h = await bootImagegen(t, { imagegen: { localFirst: true, localUrl: LOCAL_URL } })
+  const h = await bootImagegen(t, { imagegen: { localAdapter: 'simple-api', localFirst: true, localUrl: LOCAL_URL } })
   comfyFetchMock(t, { alive: true })
   const r = await h.kernel.handleAdminRpc('action', { id: 'imagegen-check' })
   assert.equal(r.ok, true)

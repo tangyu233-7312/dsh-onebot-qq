@@ -13,10 +13,18 @@
   - **活着** → 走本地出图（免费；Z-Image 1024² 热 11 秒 / 冷 18~27 秒），**不要求中转站 API Key**；
   - **没起来** → 自动回落中转站，用户无感（只记一行日志）；
   - **两边都没配** → 仍然报「未配置生图凭据」，并在括号里说明本地也不可用。
-  对接的是 ComfyUI 外面那层 `server.py`（8899），不是 8188 原生 API —— 后者要自己拼工作流 JSON。
+  对接的是 ComfyUI 外面那层 `server.py`（8899）这类简易 HTTP 接口；**同日起还支持官方 ComfyUI 本体**（见下一条）。
   提交 → 轮询 `/api/progress` → `GET /image/<name>` 取图；`waiting/running/pending` 继续等，
   `done` 无图才算失败，`unknown` 单独提示（8188 主程序挂了）。
 - **图生图走本地**：先 `/api/upload` 传底图，再带 `init_image` + `denoise`（默认 0.65，可配）。
+- **官方 ComfyUI 本体直连（`localAdapter: native`，默认）**：不需要任何包装服务，装了官方 ComfyUI 就能用。
+  使用者在 ComfyUI 里搭好工作流（模型 / LoRA / 采样器 / 步数都在工作流里定），菜单 **Save (API Format)** 导出，
+  把 JSON 贴进控制台「本机工作流模板」，把要机器人填的值写成占位符：
+  `{{prompt}}` / `{{negative}}` / `{{width}}` / `{{height}}` / `{{seed}}`（图生图再加 `{{image}}`、`{{denoise}}`）。
+  插件只做占位符替换，不猜模型：探活 `GET /system_stats`，提交 `POST /prompt`，轮询 `GET /history/<id>`，取图 `GET /view`；
+  图生图先 `POST /upload/image` 传底图。模型清单按钮在原生模式下读 `GET /object_info/*`（checkpoint/unet/vae）。
+  缺 `{{prompt}}`、图生图缺 `{{image}}`、模板不是 API Format、节点报错都**明确报错**，不静默出无关的图。
+  旧配置（简易 HTTP 接口）设 `localAdapter: simple-api` 即可，行为不变。
 - **尺寸自动降档**：插件默认给 1536 档；本地 8GB 显存上降到 `1216x832` / `832x1216`。
 - 控制台「生图」页新增四项：`优先用本机画图服务` / `本机画图服务地址` / `本机模型名` / `本机图生图降噪`。
 - **本机模型名不写死**：每套本地服务的模型标识都不一样（`zimage`、`sdxl`、`flux1-dev`、自己 merge 的……），

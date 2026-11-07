@@ -32,6 +32,8 @@ import { isInsidePath, resolveTmpDir } from '../../platform/paths.js'
 import { cqImage } from '../../platform/cq-file.js'
 import { atomicWriteFileSync } from '../../platform/atomic.js'
 import { DEFAULT_OPTIMIZE_PROMPT, refinePrompt } from './prompt-refine.js'
+import { nativeGenerate, probeNative, listNativeModels } from './native.js'
+import { saveBuf, fetchWithTimeout, fetchJsonOrThrow, LOCAL_SIZE_MAP } from './local-runtime.js'
 
 // 句池取不到时的兜底话（不带角色口吻，换人设也不会穿帮）
 const FALLBACK_ACK = '在画了，稍等'
@@ -82,29 +84,6 @@ function appendFormFields(form, extras) {
   }
 }
 
-let tmpSeq = 0
-
-/** 生成快照存平台临时目录（用完由内核 best-effort 清理）；按真实文件头定扩展名 */
-function saveBuf(buf, tmp) {
-  const ext = IMG_EXT[detectImageMediaType(buf)] || 'png'
-  const file = tmp?.file
-    ? tmp.file('imagegen', `.${ext}`)
-    : path.join(resolveTmpDir('imagegen'), `qq_imagegen_${Date.now()}_${++tmpSeq}.${ext}`)
-  fs.writeFileSync(file, buf)
-  return file
-}
-
-/** 带超时 fetch：生图/下载都是几十秒级，不限时会把整轮挂死 */
-async function fetchWithTimeout(url, opts, timeoutMs, label) {
-  try {
-    return await fetch(url, { ...opts, signal: AbortSignal.timeout(Math.max(1000, Number(timeoutMs) || 240000)) })
-  } catch (e) {
-    if (e.name === 'TimeoutError' || e.name === 'AbortError') {
-      throw new Error(`${label}超时 (${Math.round((Number(timeoutMs) || 240000) / 1000)}s)`)
-    }
-    throw e
-  }
-}
 
 /** 上游失败时把可读原因挖出来（别把整页 HTML 甩给模型） */
 async function throwImagegenError(res) {
@@ -420,12 +399,6 @@ function promptContextOf(bot, target) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** 本地尺寸映射：插件按比例给的是 1536 档，8GB 显存上比 1280² 还险，降一档。 */
-const LOCAL_SIZE_MAP = {
-  '1536x1024': { w: 1216, h: 832 },
-  '1024x1536': { w: 832, h: 1216 },
-  '512x512': { w: 768, h: 768 },
-}
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, Math.max(0, Number(ms) || 0)))
 
 /**
@@ -448,17 +421,6 @@ async function probeLocalComfy(baseUrl, timeoutMs = 2000) {
     return { ok: true, reason: '', gpu: String(comfy.gpu || ''), vramFreeMB }
   } catch (e) {
     return { ok: false, reason: String(e && e.message ? e.message : e).slice(0, 120) }
-  }
-}
-
-/** POST/GET JSON：非 2xx 直接抛（带上是哪一步），别把错误页当 JSON 解析。 */
-async function fetchJsonOrThrow(url, opts, timeoutMs, label) {
-  const res = await fetchWithTimeout(url, opts, timeoutMs, label)
-  if (!res.ok) throw new Error(label + ' HTTP ' + res.status)
-  try {
-    return await res.json()
-  } catch {
-    throw new Error(label + ' 响应不是 JSON（服务没起或地址填错？）')
   }
 }
 
@@ -649,16 +611,24 @@ export default {
         + '· 本机服务不会自动拉起，需要你自己双击启动脚本（这是故意的：静默加载 6GB 权重太粗暴）。\n'
         + '· 中转站也没配时，报错与以前一致（提示去填地址/Key）。',
     },
+    localAdapter: {
+      type: 'enum', default: 'native', group: '生图', label: '本机服务类型',
+      options: [{ value: 'native', label: '官方 ComfyUI（推荐）' }, { value: 'simple-api', label: '简易 HTTP 接口（兼容旧配置）' }],
+      hint: '官方 ComfyUI：直接填它的地址（默认通常 8188），再贴一份 API Format 工作流。简易 HTTP：兼容带 /api/generate 的自建包装服务。',
+    },
+    localWorkflow: {
+      type: 'text', default: '', group: '生图', label: '本机工作流模板（官方 ComfyUI）',
+      hint: '在 ComfyUI 里搭好工作流，菜单选 Save (API Format) 导出，把 JSON 整段贴这里。把要由机器人填的值改成 {{prompt}}、{{negative}}、{{width}}、{{height}}、{{seed}}；图生图额外用 {{image}}、{{denoise}}。模型/LoRA/采样器/步数都留在工作流里，插件不猜也不替换。',
+    },
     localUrl: {
       type: 'str', default: '', group: '生图', label: '本机画图服务地址',
-      hint: '填**你自己的**本地画图服务地址，例：http://127.0.0.1:8899。插件不预设任何端口、也不假设你装了哪套服务。\n'
-        + '要求那套服务提供这三个接口：POST /api/generate（提交，回 prompt_id）、GET /api/progress/<id>（进度）、GET /image/<name>（取图）；'
-        + '有 GET /api/status 更好（能读模型清单、能探活）。\n'
-        + '⚠️ 原生 ComfyUI 本体（8188 的 /prompt + 工作流 JSON 那套）协议不同，目前不直接支持。',
+      hint: '填**你自己的**本地服务地址，插件不预设端口。官方 ComfyUI 通常是 http://127.0.0.1:8188；简易 HTTP 接口按你那套服务的地址填。\n'
+        + '官方 ComfyUI 用 /system_stats 探活、/prompt 提交、/history 查结果、/view 取图；简易 HTTP 用 /api/status、/api/generate、/api/progress、/image。',
     },
     localModel: {
       type: 'str', default: '', group: '生图', label: '本机模型名',
-      hint: '填**你这套本地服务里真实的模型标识**，每个服务都不一样 —— 插件不预设任何模型。\n'
+      hint: '**只用于简易 HTTP 接口**；官方 ComfyUI 的模型直接留在工作流模板里，此项不生效。\n'
+        + '填你这套简易服务里真实的模型标识，插件不预设任何模型。\n'
         + '· 留空 = 不传这个参数，用服务端自己的默认模型；\n'
         + '· 不知道填什么：点本页底部「🔍 读取本机可用模型」，它会把服务里现有的模型列出来；\n'
         + '· 换模型后如果提示词风格不对（比如只认英文的模型），记得同时在「提示词优化提示词」里改约束。',
@@ -729,6 +699,8 @@ export default {
     const localNow = () => ({
       enabled: cfg.localFirst === true,
       baseUrl: String(cfg.localUrl || '').trim(),
+      adapter: String(cfg.localAdapter || 'native').trim() === 'simple-api' ? 'simple-api' : 'native',
+      workflow: String(cfg.localWorkflow || ''),
       model: String(cfg.localModel || '').trim(),
       denoise: Number(cfg.localDenoise) > 0 ? Number(cfg.localDenoise) : 0.65,
     })
@@ -973,7 +945,7 @@ export default {
         let localReady = false
         let localWhy = ''
         if (local.enabled) {
-          const probe = await probeLocalComfy(local.baseUrl, 2500)
+          const probe = local.adapter === 'native' ? await probeNative(local.baseUrl, 2500) : await probeLocalComfy(local.baseUrl, 2500)
           localReady = probe.ok
           localWhy = probe.reason
           if (probe.ok) {
@@ -1023,7 +995,7 @@ export default {
         let file
         try {
           file = localReady
-            ? await comfyGenerate({
+            ? await (local.adapter === 'native' ? nativeGenerate : comfyGenerate)({
               prompt: finalPrompt, refs, size, timeoutMs: timeoutMs(), local, tmp: bot.core?.tmp, log,
             })
             : await gptGenerate({
@@ -1088,8 +1060,9 @@ export default {
         previewOptimize: (payload) => previewOptimizeText({ bot, cfg, log, payload }),
       // 控制台「读取本机可用模型」：模型标识由服务自己报，插件不预设
       listModels: (payload) => {
-        const url = String(payload?.url ?? '').trim() || localNow().baseUrl
-        return listLocalModels(url)
+        const current = localNow()
+        const url = String(payload?.url ?? '').trim() || current.baseUrl
+        return current.adapter === 'native' ? listNativeModels(url) : listLocalModels(url)
       },
       }
     }
