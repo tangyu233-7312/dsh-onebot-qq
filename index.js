@@ -35,6 +35,7 @@ import { ChatState, Pipeline, createDeliver, turnStore } from './kernel/state-pi
 import { createPacing, REPLY_DEFAULTS } from './kernel/pacing.js'
 import { createSelfLog } from './kernel/self-log.js'
 import { createDshDriver } from './kernel/dsh-driver.js'
+import { createTextCompletion } from './kernel/llm-text.js'
 import { startCompatServer } from './kernel/compat-server.js'
 import { loadConfig, validateConfig, resolveRuntimePaths, saveConfig } from './kernel/config-store.js'
 import { ensureDir, resolveTmpDir, normForCompare } from './platform/paths.js'
@@ -620,6 +621,11 @@ export async function apply(ctx, bundleConfig = {}) {
   })
   kernel.dsh = dsh
 
+  // ── 一次性文本补全（辅助任务用：生图提示词优化等）──────────────
+  // 不进 QQ 线、不建会话、不给工具面：只借宿主的 llm 服务问一句、拿一段文字。
+  // 拿不到 llm 服务时 available()=false，调用方自行降级（绝不因此打断主流程）。
+  kernel.textCompletion = createTextCompletion({ ctx, log: logFor('llm') })
+
   // ── 历史会话归位：升级 / 换数据目录后，旧 session 的 header cwd 可能是旧路径 ──
   // 旧数据目录名（dsh-qq-bot）现在是指向新目录的兼容软链时，attachSession 会按 header cwd 的
   // realpath 校验并允许挂到新工作区；不挂的话这些映射里的旧会话会一直停在侧栏「未分组」。
@@ -815,6 +821,8 @@ export async function apply(ctx, bundleConfig = {}) {
       }
     },
     get dsh() { return dsh },
+    /** 一次性文本补全（`complete({prompt,maxTokens,timeoutMs})` → `{ok,text,reason}`）；宿主没 llm 服务时 ok=false，别当异常 */
+    get llm() { return kernel.textCompletion },
     /** 我自己的流水账（跨会话）：插件用它记「我今天干了什么」，内核用它拼每轮的一行提示。 */
     get selfLog() { return kernel.selfLog },
     /** 当前生效的人设版本名（人设版本化）：工具回执与每轮头顶那行都用它。 */
@@ -1529,6 +1537,19 @@ export async function apply(ctx, bundleConfig = {}) {
     return adminHost.handle('set', { key, value })
   }
   kernel.handleAdminRpc = adminHandle
+  /**
+   * 控制台「生图 → 🧪 试优化一条提示词」的后端入口。
+   * 插件能力挂在 core.imagegen.previewOptimize（插件没启用就没有）；这里只做转发，不重复实现在 admin 层。
+   * 只调一次文本模型：不画图、不占生图冷却、不改配置。
+   */
+  kernel.previewImagePrompt = async ({ text, system } = {}) => {
+    // 能力每次现取（热重载后指向新实例）；插件没启用 / 旧版本没有这个能力 → 说清楚，别静默
+    const fn = kernel.shared?.imagegen?.previewOptimize
+    if (typeof fn !== 'function') {
+      return { ok: false, error: '生图插件未启用（或该版本还没有这个能力），先到「生图」页把「生图」开关打开' }
+    }
+    return fn({ text, system })
+  }
 
   // ── 配置热重载（控制台写盘后调用；插件每轮回读 bot.cfg，所以原地同步即可） ──
   /**

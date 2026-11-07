@@ -178,19 +178,30 @@ window.__ModuleLoader__.load({
 				// key 带 c.value → 保存后 schema 回读归一化后的真值，控件重挂显示真值（同数字输入）。
 				if (c.type === 'text') {
 					const initText = String(c.value ?? '')
-					return h('textarea', {
-						key: `v:${c.value}`,
-						style: Object.assign({}, S.input, {
-							width: '100%', minHeight: 84, fontFamily: 'inherit', color: 'inherit', lineHeight: 1.5,
-							resize: 'vertical', boxSizing: 'border-box',
+					// 提示词类字段：插件通过 helper 现算了一份「内置默认原文」（c.helperDefault），这里给一键恢复。
+					// 为什么需要：默认文案升级后，改过的人是「旧副本」、没改过的人「自动跟上」，光看框分不出来 —— 给个明确的回默认。
+					const helperDefault = typeof c.helperDefault === 'string' ? c.helperDefault : ''
+					const canReset = Boolean(helperDefault) && initText !== helperDefault
+					return h('span', { key: 'tw', style: { display: 'block', width: '100%' } }, [
+						h('textarea', {
+							key: `v:${c.value}`,
+							style: Object.assign({}, S.input, {
+								width: '100%', minHeight: 84, fontFamily: 'inherit', color: 'inherit', lineHeight: 1.5,
+								resize: 'vertical', boxSizing: 'border-box',
+							}),
+							defaultValue: initText, rows: 4, disabled: busy, spellCheck: false,
+							onBlur: (e) => {
+								const raw = String(e.target.value ?? '')
+								if (raw === initText) return
+								run(`${c.label} 已保存`, () => call('set', { key: c.key, value: raw }))
+							},
 						}),
-						defaultValue: initText, rows: 4, disabled: busy, spellCheck: false,
-						onBlur: (e) => {
-							const raw = String(e.target.value ?? '')
-							if (raw === initText) return
-							run(`${c.label} 已保存`, () => call('set', { key: c.key, value: raw }))
-						},
-					})
+						canReset ? h('button', {
+							key: 'reset', style: Object.assign({}, S.btn, { marginTop: 4, fontSize: 12 }), disabled: busy,
+							title: '把这段提示词恢复成插件内置的默认原文（保存后立即生效）',
+							onClick: () => run('恢复默认提示词', () => call('set', { key: c.key, value: helperDefault })),
+						}, '↺ 恢复默认提示词') : null,
+					])
 				}
 				return h('span', { key: 'nw', style: { display: 'inline-flex', alignItems: 'center', gap: 5 } }, [
 					h('input', {
@@ -249,6 +260,87 @@ window.__ModuleLoader__.load({
 			const { group, ...api } = props
 			// 这一组自己的动作按钮（如「空间日记」的立刻回顾 / 重置额度）：长在本页底部，不去「运维」页挤
 			const acts = (props.schema.actions || []).filter((a) => a.onGroup && a.group === group)
+			// 「要填几个字段再跑」的动作（如生图的 🧪 试优化）：按 action.prompt 描述自动渲染弹窗，不用为此抄一遍 UI
+			const { useState } = react
+			const [promptBox, setPromptBox] = useState(null)
+			const [pv, setPv] = useState({ busy: false, result: null, error: '', values: {} })
+			// 打开弹窗：字段初值 → ① valueFrom（取 schema 里某个控件的当前值）② 显式 value ③ 空
+			const openPrompt = (a) => {
+				const fields = (a.prompt && a.prompt.fields) || []
+				const values = {}
+				for (const f of fields) {
+					const ctrl = f.valueFrom ? (props.schema.controls || []).find((c) => c.key === f.valueFrom) : null
+					values[f.name] = String(ctrl && ctrl.value != null ? ctrl.value : (f.value ?? ''))
+				}
+				setPv({ busy: false, result: null, error: '', values })
+				setPromptBox(a)
+			}
+			const submitPrompt = async (a) => {
+				const fields = (a.prompt && a.prompt.fields) || []
+				const payload = { id: a.id }
+				for (const f of fields) payload[f.name] = String(pv.values[f.name] ?? '')
+				const missing = fields.filter((f) => f.required && !String(payload[f.name] || '').trim())
+				if (missing.length) { setPv((s) => Object.assign({}, s, { error: `「${missing[0].label}」不能空` })); return }
+				setPv((s) => Object.assign({}, s, { busy: true, error: '', result: null }))
+				try {
+					const r = await api.call('action', payload)
+					if (!r || typeof r !== 'object') throw new Error('后端没有返回结果')
+					if (r.ok === false) throw new Error(r.error || '没成功')
+					setPv((s) => Object.assign({}, s, { result: r }))
+				} catch (e) {
+					setPv((s) => Object.assign({}, s, { error: e.message }))
+				} finally {
+					setPv((s) => Object.assign({}, s, { busy: false }))
+				}
+			}
+			const dialog = promptBox ? h('div', {
+				key: 'pb', style: {
+					position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 9999,
+					display: 'flex', alignItems: 'center', justifyContent: 'center',
+				},
+				onClick: () => { if (!pv.busy) setPromptBox(null) },
+			}, [
+				h('div', {
+					key: 'box', style: {
+						background: '#fff', color: '#111', borderRadius: 12, padding: '16px 18px',
+						maxWidth: 760, width: '100%', maxHeight: '88vh', overflow: 'auto',
+						boxShadow: '0 12px 40px rgba(0,0,0,.35)', border: '1px solid #d0d5dd', boxSizing: 'border-box',
+					},
+					onClick: (e) => e.stopPropagation(),
+				}, [
+					h('div', { key: 't', style: { fontWeight: 700, marginBottom: 4, fontSize: 15 } }, (promptBox.prompt && promptBox.prompt.title) || promptBox.label),
+					h('div', { key: 'h', style: { fontSize: 12, opacity: .7, marginBottom: 10, lineHeight: 1.5 } },
+						'只跑一次很短的模型调用：不画图、不占生图冷却、不花钱出图。改完再点一次就能对比效果。'),
+					...((promptBox.prompt && promptBox.prompt.fields) || []).map((f) => h('div', { key: 'f-' + f.name, style: { marginBottom: 10 } }, [
+						h('div', { key: 'l', style: { fontSize: 13, fontWeight: 600, marginBottom: 4 } }, f.label || f.name),
+						h('textarea', {
+							key: 'v', rows: f.rows || 4, spellCheck: false, disabled: pv.busy,
+							value: String(pv.values[f.name] ?? ''),
+							onChange: (e) => { const v = e.target.value; setPv((s) => Object.assign({}, s, { values: Object.assign({}, s.values, { [f.name]: v }) })) },
+							style: Object.assign({}, S.area, { minHeight: f.rows ? f.rows * 22 : 88, width: '100%', fontSize: 12.5, lineHeight: 1.6, padding: '8px 10px', borderRadius: 8, border: '1px solid #d0d5dd', boxSizing: 'border-box', resize: 'vertical' }),
+						}),
+						f.hint ? h('div', { key: 'hint', style: { fontSize: 12, opacity: .65, marginTop: 3, lineHeight: 1.5 } }, f.hint) : null,
+					])),
+					pv.result ? h('div', { key: 'res', style: { marginTop: 4, marginBottom: 8 } }, [
+						h('div', { key: 'l', style: { fontSize: 13, fontWeight: 600, marginBottom: 4 } },
+							'优化后的提示词' + (pv.result.route ? `（${pv.result.route}${pv.result.ms ? '，' + pv.result.ms + 'ms' : ''}）` : '')),
+						h('div', { key: 'o', style: { fontSize: 12, opacity: .65, marginBottom: 4, lineHeight: 1.5, wordBreak: 'break-all' } }, '原话：' + String(pv.result.original || '')),
+						h('textarea', {
+							key: 'pv', readOnly: true, value: String(pv.result.prompt || ''), spellCheck: false, style: { width: '100%', minHeight: 110, fontSize: 12.5, lineHeight: 1.6, padding: '8px 10px', borderRadius: 8, border: '1px solid #d0d5dd', boxSizing: 'border-box' },
+						}),
+						h('div', { key: 'n', style: { fontSize: 12, opacity: .65, marginTop: 4, lineHeight: 1.5 } },
+							'这就是聊天里生图时会真正发给生图模型的提示词（同一份规则）。'),
+					]) : null,
+					pv.error ? h('div', { key: 'err', style: { color: '#b3261e', fontSize: 13, marginBottom: 8, whiteSpace: 'pre-wrap' } }, pv.error) : null,
+					h('div', { key: 'b', style: { display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12, flexWrap: 'wrap' } }, [
+						h('button', { key: 'c', style: S.btn, disabled: pv.busy, onClick: () => setPromptBox(null) }, '关闭'),
+						h('button', {
+							key: 'ok', style: Object.assign({}, S.btn, { fontWeight: 600 }), disabled: pv.busy,
+							onClick: () => submitPrompt(promptBox),
+						}, pv.busy ? '优化中…' : ((promptBox.prompt && promptBox.prompt.okLabel) || '跑一次')),
+					]),
+				]),
+			]) : null
 			return h('div', null, [
 				GROUP_NOTES[group] ? h('div', { key: 'note', style: S.msg }, GROUP_NOTES[group]) : null,
 				h(SwitchGroup, Object.assign({}, api, { key: 'sw', group })),
@@ -261,22 +353,27 @@ window.__ModuleLoader__.load({
 								const { run, call, setBusy, setMsg, setConfirmBox } = api
 								if (a.confirm) {
 									setBusy(true); setMsg('')
-									call('action', { id: a.id }).then((p) => {
+									const params = Object.assign({ id: a.id }, a.params || {})
+									call('action', params).then((p) => {
 										if (p && p.ok === false) throw new Error(p.error || p.message || '操作失败')
 										setConfirmBox({
 											title: (a.confirm && a.confirm.title) || `⚠️ 确认执行「${a.label}」？`,
 											lines: (p.previewLines && p.previewLines.length) ? p.previewLines : [p.message || '（预演没有输出）'],
 											okLabel: (a.confirm && a.confirm.okLabel) || '确认执行',
-											onOk: () => run(a.label, () => call('action', { id: a.id, confirm: true })),
+											onOk: () => run(a.label, () => call('action', Object.assign({}, params, { confirm: true }))),
 										})
 									}).catch((e) => setMsg(`${a.label} ✗ ${e.message}`)).finally(() => setBusy(false))
 									return
 								}
+								// 要填字段的动作（如「🧪 试优化一条提示词」）：先开弹窗填，不直接跑
+								// 要填字段的动作只在它自己的配置页（GroupTab 的弹窗）里跑；这两页遇到就提示一句，不静默无反应
+								if (a.prompt) { setMsg('「' + a.label + '」要点开它自己的配置页，在那一页底部操作'); return }
 								run(a.label, () => call('action', { id: a.id }))
 							},
 						}, a.label),
 					])),
 				]) : null,
+				dialog,
 			])
 		}
 
@@ -429,6 +526,8 @@ window.__ModuleLoader__.load({
 										.finally(() => setBusy(false))
 									return
 								}
+								// 要填字段的动作只在它自己的配置页（GroupTab 的弹窗）里跑；这两页遇到就提示一句，不静默无反应
+								if (a.prompt) { setMsg('「' + a.label + '」要点开它自己的配置页，在那一页底部操作'); return }
 								run(a.label, () => call('action', { id: a.id }))
 							},
 						}, a.label),
@@ -822,6 +921,8 @@ window.__ModuleLoader__.load({
 									}).catch((err) => setMsg(a.label + ' ✗ ' + err.message)).finally(() => setBusy(false))
 									return
 								}
+								// 要填字段的动作只在它自己的配置页（GroupTab 的弹窗）里跑；这两页遇到就提示一句，不静默无反应
+								if (a.prompt) { setMsg('「' + a.label + '」要点开它自己的配置页，在那一页底部操作'); return }
 								run(a.label, () => call('action', { id: a.id }))
 							},
 						}, a.label),

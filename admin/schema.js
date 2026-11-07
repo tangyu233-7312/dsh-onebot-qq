@@ -524,6 +524,30 @@ export const ACTIONS = [
     confirm: { title: '⚠️ 确认删掉旧备份代？', okLabel: '确认去重' },
   },
 
+  // 生图：试跑一次「提示词优化」（按钮长在「生图」配置页底部，onGroup = 不在「运维」页重复出现）
+  {
+    id: 'imagegen-optimize-preview', group: '生图', onGroup: true, label: '🧪 试优化一条提示词',
+    hint: '先用当前（或你刚改的）优化提示词跑一次，看看大模型会把它改成什么样 —— 只花一次很短的模型调用，**不画图、不占生图冷却、不花钱出图**。'
+      + '在弹窗里改需求/改提示词可以反复试，满意了再回聊天里让它画。',
+    prompt: {
+      title: '试优化一条提示词',
+      okLabel: '优化看看',
+      fields: [
+        {
+          name: 'text', label: '用户需求', multiline: true, rows: 3, required: true,
+          value: '画一只胖胖的蓝色大肥鱼在拉面店里吃拉面',
+          hint: '这里写"用户会怎么说"，不用自己加工 —— 优化器就是要把这种人话变成生图提示词。试试换成你平时会说的话。',
+        },
+        {
+          name: 'system', label: '提示词优化提示词', multiline: true, rows: 12,
+          valueFrom: 'imagegen.promptOptimizeText',
+          value: '',
+          hint: '默认带出控制台里那份；改这里只影响本次试跑，**想长期生效要去上面那个框里改**（改完下一张图就生效）。',
+        },
+      ],
+    },
+  },
+
   // 新手向导 / 连接自检（契约 §3.1）
   {
     id: 'onebot-check', group: '运维', label: '🔌 测试 OneBot 连接',
@@ -610,6 +634,11 @@ export function visibleActions() {
     label: a.label,
     hint: a.hint || '',
     confirm: a.confirm || null,
+    // 要填字段再跑的动作（如「🧪 试优化一条提示词」）：前端据此弹出"填几个框 + 看结果"的弹窗。
+    // 不在这里透传，按钮点了就会只发 {id}，后端只能报"先写一条需求"—— 看着像没反应。
+    prompt: a.prompt || null,
+    // 附带参数（危险动作预演/确认两段用同一份参数）
+    params: a.params || null,
   }))
 }
 
@@ -683,6 +712,8 @@ function coreEntries() {
     text: c.text,
     suggestions: Array.isArray(c.suggestions) ? c.suggestions : null,
     default: c.default,
+    // helper：与子插件项同口径（没设过值时现算初值，见 pluginEntries）
+    helper: typeof c.helper === 'function' ? c.helper : null,
     secret: c.secret === true,
     // 进阶项：控制台折叠显示（如「主动接话」页的「高级」按钮）
     advanced: c.advanced === true,
@@ -728,10 +759,14 @@ function pluginEntries(kernel) {
         max: fdef.max,
         step: fdef.step,
         options: Array.isArray(fdef.options) ? fdef.options : null,
+        // hint 可以是函数（与核心项同口径，见 resolveHint）：要提"当前值"的提示词必须现算
         hint: fdef.hint || '',
         text: fdef.text,
         suggestions: Array.isArray(fdef.suggestions) ? fdef.suggestions : null,
         default: fdef.default,
+        // helper：字段**没设过值**时，控制台按它现算一个初值显示出来（不落盘）。
+        // 解决"提示词类字段改了默认值，老用户还看到旧副本"——插件只放函数，不在配置里存一份默认文案。
+        helper: typeof fdef.helper === 'function' ? fdef.helper : null,
         secret: fdef.secret === true,
       })
     }
@@ -757,16 +792,27 @@ function storedValue(entry, rawConfig = {}, kernel = {}) {
   if (entry.kind === 'core') return getPath(raw, entry.configPath)
   const inFile = getPath(raw, entry.configPath)
   if (inFile !== undefined) return inFile
+  // cfg 来的值**只在它是"用户真的设过"的时候**才算数：
+  //   · 内核 buildPluginCfg 会把 schema 默认值套进 cfg（withDefaults），所以 cfg 里几乎总有值；
+  //   · 默认值里有函数的（提示词类字段的 helper）一律当作"没设过"——不然用户永远看不到
+  //     可编辑的默认原文，也就没有"改了就生效"这回事（2026-11-06 踩过：提示词框进来是空的）。
+  // runtime（已解析配置，含 raw 文件里的覆盖）优先级高于 cfg。
+  const fromRt = kernel?.runtime ? getPath(kernel.runtime, entry.configPath) : undefined
+  if (fromRt !== undefined) return fromRt
   const fromCfg = entry.cfg && entry.field ? entry.cfg[entry.field] : undefined
-  if (fromCfg !== undefined) return fromCfg
-  return kernel?.runtime ? getPath(kernel.runtime, entry.configPath) : undefined
+  // 只有 helper 字段的空串算"没设过"（其余字段原样返回，行为与以前一致）
+  if (entry.helper && fromCfg === '') return undefined
+  return fromCfg
 }
 
 /** 存储值 → 面板值（核心项按 scale 除；子插件项原样；秘密字段回显占位符）。 */
 function panelValue(entry, rawConfig, kernel) {
   if (entry.type === 'info') return undefined
   const stored = storedValue(entry, rawConfig, kernel)
-  let value = stored === undefined ? entry.default : stored
+  // 没设过值 + 插件给了 helper → 用 helper 现算的初值（只影响显示，不写盘）
+  let value = stored === undefined
+    ? (typeof entry.helper === 'function' ? safeHelper(entry.helper, kernel) : entry.default)
+    : stored
   if (entry.secret && value) return SECRET_MASK
   // 列表型（group）：配置里既可能是数组，也可能是 {"编号": true} 这种对象写法（如 pacing.reply.privateQqs），
   // 面板一律显示成数组，否则前端 join 会得到 "[object Object]"
@@ -896,6 +942,16 @@ function resolveHint(entry, kernel, rawConfig) {
   } catch { return '' }
 }
 
+/** helper 兜底：现算出错就当没给（退回 default），不让一个插件把整张控制表搞崩。 */
+function safeHelper(fn, kernel) {
+  try {
+    const v = fn(kernel)
+    return v === undefined ? undefined : v
+  } catch {
+    return undefined
+  }
+}
+
 /** 控制面板值（含默认值回填；schema 端点直接返回它）。 */
 function controlView(entry, rawConfig, kernel) {
   if (entry.type === 'info') {
@@ -930,6 +986,9 @@ function controlView(entry, rawConfig, kernel) {
     step: entry.step,
     options: entry.options,
     value: panelValue(entry, rawConfig, kernel),
+    // helper 现算出来的"默认原文"（多为提示词类字段）：控制台据此提供「恢复默认」。
+    // 只在插件声明了 helper 时才带，其它控件不受影响。
+    ...(typeof entry.helper === 'function' ? { helperDefault: safeHelper(entry.helper, kernel) } : {}),
     hint: resolveHint(entry, kernel, rawConfig),
     default: entry.default,
   }

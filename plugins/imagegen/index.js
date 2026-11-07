@@ -31,6 +31,7 @@ import { detectImageMediaType, imagePixelSize, pickImageSizeByRatio } from '../.
 import { isInsidePath, resolveTmpDir } from '../../platform/paths.js'
 import { cqImage } from '../../platform/cq-file.js'
 import { atomicWriteFileSync } from '../../platform/atomic.js'
+import { DEFAULT_OPTIMIZE_PROMPT, refinePrompt } from './prompt-refine.js'
 
 // 句池取不到时的兜底话（不带角色口吻，换人设也不会穿帮）
 const FALLBACK_ACK = '在画了，稍等'
@@ -319,6 +320,93 @@ async function imagesGenerate({ prompt, refs, size, extras = {}, timeoutMs, cred
   return imagegenResult(res, what, timeoutMs, tmp)
 }
 
+/** 控制台「提示词优化提示词」框没填时的默认提示词（同时用于生成时兜底）。 */
+function defaultOptimizePromptText() {
+  return DEFAULT_OPTIMIZE_PROMPT
+}
+
+/**
+ * 控制台「试优化一条提示词」：用**当前（或面板上正在编辑的）**提示词跑一次优化，只返回结果、不画图。
+ * payload: { text: 需求原话, system?: 面板上正在编辑的优化提示词 }
+ */
+async function previewOptimizeText({ bot, cfg, log, payload }) {
+  const demand = String(payload?.text ?? '').trim()
+  if (!demand) return { ok: false, error: '先写一条需求（比如「画只胖鱼在吃拉面」）再试' }
+  if (!bot.llm || (typeof bot.llm.available === 'function' && !bot.llm.available())) {
+    return {
+      ok: false,
+      error: '宿主没有可用的模型服务（llm）—— 该 DSH 版本或 profile 未加载 dsh-llm，这条功能只在机器人自己身上可用',
+    }
+  }
+  const system = String(payload?.system ?? '').trim() || String(cfg.promptOptimizeText || '').trim() || DEFAULT_OPTIMIZE_PROMPT
+  const t0 = Date.now()
+  const r = await refinePrompt({
+    llm: bot.llm,
+    prompt: demand,
+    system,
+    timeoutMs: Math.max(5000, Number(cfg.promptOptimizeTimeoutMs) || 30000),
+    maxTokens: 400,
+    log,
+  })
+  const route = r.route || ''
+  if (!r.used) {
+    return {
+      ok: false,
+      error: `优化没成功：${r.reason || '未知原因'}（聊天里生图会按原文照画，不会失败）`,
+      original: demand,
+      prompt: r.prompt || demand,
+      route,
+      ms: Date.now() - t0,
+    }
+  }
+  return {
+    ok: true,
+    original: demand,
+    prompt: r.prompt,
+    route,
+    ms: Date.now() - t0,
+    message: `✅ 优化完成（${route ? `${route}，` : ''}${r.prompt.length} 字）`,
+  }
+}
+
+/**
+ * 提示词优化器：一次生图**最多**调一次（不重试、不二次改写），失败退回原文。
+ * 返回 { prompt, used, reason, route, ms }；used=false 时 prompt === 原文。
+ */
+async function optimizePromptMaybe({ bot, cfg, log, prompt, genTarget }) {
+  if (!cfg.optimizePrompt) return { prompt, used: false, reason: '未开启优化' }
+  const system = String(cfg.promptOptimizeText || '').trim() || DEFAULT_OPTIMIZE_PROMPT
+  const r = await refinePrompt({
+    llm: bot.llm,
+    prompt,
+    system,
+    context: promptContextOf(bot, genTarget),
+    timeoutMs: Math.max(5000, Number(cfg.promptOptimizeTimeoutMs) || 30000),
+    maxTokens: 400,
+    log,
+  })
+  if (!r.used) {
+    log.info(`[生图] 提示词优化跳过（${r.reason}）：按原文生图`)
+  }
+  return { prompt: r.prompt, used: r.used, reason: r.reason, route: r.route || '', ms: r.ms || 0 }
+}
+
+/**
+ * 给优化器看的会话语境（最近两句，纯文本、截断）。
+ * 为什么给：用户说"画成他那样""再来一张刚才那个"时必须知道"他/刚才"指谁；
+ * 但语气/玩笑不能原样进生图提示词，所以只在优化提示词里当**参考**，抄不抄由模型判断。
+ */
+function promptContextOf(bot, target) {
+  try {
+    const st = bot?.state?.get?.(target)
+    const turns = Array.isArray(st?.turns) ? st.turns : []
+    const last = turns.slice(-2).map((t) => String(t?.text || '').trim()).filter(Boolean)
+    return last.join(' / ').slice(0, 240)
+  } catch {
+    return ''
+  }
+}
+
 /** 凭据解析：实例配置注入优先，其次环境变量；代码里永远没有明文 key / 默认 baseUrl */
 function resolveCreds(injected) {
   const env = process.env
@@ -378,6 +466,33 @@ export default {
     cooldownMs: { type: 'int', unit: '秒', scale: 1000, default: 60, group: '生图', label: '全局冷却', hint: '两次生图之间至少隔多久（所有群共用），防止连刷烧额度。' },
     ackCooldownMs: { type: 'int', unit: '秒', scale: 1000, default: 30, group: '生图', label: '「在画了」冷却', hint: '同一会话几秒内只说一次「在画了」，避免每张图都刷这句。' },
     timeoutMs: { type: 'int', unit: '秒', scale: 1000, default: 240, group: '生图', label: '生图超时', hint: '单次生图最多等多久；超时就放弃并回一句失败说明。' },
+    optimizePrompt: {
+      type: 'bool', default: true, group: '生图', label: '先让大模型优化提示词',
+      hint: '开：每次生成/改图前，先让**你的聊天模型**把需求改写成"画面要素齐全"的生图提示词（主体/外观/动作/场景/光线/构图/画风），再交给生图模型 —— '
+        + '这是画质差别最大的一步（直接把用户原话丢给生图模型，出来的东西往往又糊又没重点）。\n'
+        + '关：原文直出（旧行为）。\n'
+        + '优化单独占一次很短的模型调用（超时/失败都**自动退回原文**，不会让这次生图失败、也不会多花钱重试）。',
+    },
+    promptOptimizeText: {
+      // default 故意留空：让控制台第一次就显示**完整可编辑的默认提示词**（helper 函数形态），
+      // 而配置里不落一份千年不变的副本 —— 代码改了默认值，没改过的人自动跟上。
+      type: 'text', group: '生图', label: '提示词优化提示词（给大模型）', default: '',
+      helper: defaultOptimizePromptText,
+      // hint 写成函数：提示词规则要跟着"现在在用哪份"走，用户改过就说一声，别让他以为默认还生效
+      hint: (kernel) => {
+        // "有没有改过"以**已加载插件的生效 cfg** 为准（配置层可能又落了默认文案，raw 里不一定能看出差别）
+        const loaded = (Array.isArray(kernel?.plugins) ? kernel.plugins : []).find((p) => String(p?.id) === 'imagegen')
+        const cur = String(loaded?.cfg?.promptOptimizeText || '').trim()
+        return '上面那步"优化"用的提示词，**可以随便改**——它决定大模型把你的需求翻译成什么样。\n'
+          + '末尾保留了「用户需求：」这一行：你的原话会接在它后面；想加约束（画风偏好、比例习惯、写实 or 二次元）就写在这里。\n'
+          + `当前状态：${cur ? '用你改过的版本（清空并保存 = 回到内置默认）' : '内置默认（没改过，默认提示词升级会自动跟上）'}。改完下一张图就生效。\n`
+          + '想先看效果再去聊天里试：点本页底部「🧪 试优化一条提示词」。'
+      },
+    },
+    promptOptimizeTimeoutMs: {
+      type: 'int', unit: '秒', scale: 1000, default: 30, group: '生图', label: '优化超时',
+      hint: '优化最多等多久；超时就按原文生图（不会因此让整次生图失败）。',
+    },
     extraBody: {
       type: 'text', group: '生图', label: '额外请求字段（JSON）', default: '',
       hint: '不同平台/中转站的请求字段不一样，这里可以自己补。写一个 JSON 对象，留空 = 不加任何额外字段。\n'
@@ -588,7 +703,13 @@ export default {
         + 'mcp__qq__send_message 回一句（口吻照 suggestedText），然后结束本轮，**不要再调、不要重试**。'
         + '生成失败时本插件已代答，**不要重试、不要改写提示词再调一次**。',
       parameters: {
-        prompt: { type: 'string', required: true, description: '画面描述（提示词），越具体越好；末尾按提示词纪律带去噪/去涂抹的话。' },
+        prompt: {
+          type: 'string', required: true,
+          description: '画面描述（提示词），越具体越好。'
+            + '**原样写用户想要什么就行**：开了「先让大模型优化提示词」时插件会先把它改写成规范的生图提示词再画'
+            + '（自动补主体外观/动作/场景/光线/构图/画风），不需要你自己堆砌画质词，也**别**把语气、梗、聊天背景写进去。'
+            + '想先看看会变成什么，可以调 refine_image_prompt。',
+        },
         image: {
           description: '图生图的参考图：本地图片绝对路径，或**文件名**（如 `大肥鱼_三视图.jpg`；插件会到参考图目录/数据目录里找）。'
             + '不知道有哪些图可用时**先调 `list_images`** 查（QQ 线没有文件工具，看不到目录）。'
@@ -658,6 +779,11 @@ export default {
               + '**不要**再调 generate_image，也不要重试。',
           }
         }
+        // 先让大模型把需求改写成"能画出来的描述"（可关；失败/超时一律退回原文，绝不打断这次生图）。
+        // 放在冷却计数**之前**：这一步失败不该吃掉一次配额 —— 它不花钱画图，只是没拿到更好的提示词。
+        const opt = await optimizePromptMaybe({ bot, cfg, log, prompt, genTarget })
+        const finalPrompt = opt.prompt
+
         // ② 冷却从**触发那一刻**起算、含失败 —— 防上游抖动时反复打、反复花钱
         lastGenAt = Date.now()
         const turn = bot.currentTurn?.()
@@ -668,10 +794,10 @@ export default {
         let file
         try {
           file = await gptGenerate({
-            prompt, refs, size, extras, timeoutMs: timeoutMs(), creds, tmp: bot.core?.tmp,
+            prompt: finalPrompt, refs, size, extras, timeoutMs: timeoutMs(), creds, tmp: bot.core?.tmp,
           })
         } catch (e) {
-          log.error(`[生图] ${refs.length ? '图生图' : '生图'}失败 (${Date.now() - t0}ms, prompt=${prompt.slice(0, 60)}): ${e.message}`)
+          log.error(`[生图] ${refs.length ? '图生图' : '生图'}失败 (${Date.now() - t0}ms, prompt=${finalPrompt.slice(0, 60)}): ${e.message}`)
           // ③ **失败就到此为止**：本插件自己如实说一句（零 token），并在错误里写明"已代答、别补话、别重试"。
           //    ⚠️ 这里**没有、也不要加**任何重试逻辑 —— 重试是模型自发行为，靠错误文案三处一起掐。
           if (canReply) {
@@ -700,15 +826,61 @@ export default {
           size,
           refs: refs.length,
           actualSize: px ? `${px.w}x${px.h}` : null,
+          // 提示词优化：原文 / 实际发给生图模型的提示词 / 有没有真优化成功
+          prompt: finalPrompt,
+          promptOptimized: opt.used,
+          promptOriginal: prompt,
+          ...(opt.used ? {} : { promptOptimizeNote: opt.reason }),
         }
         log.info(`[生图] (${out.protocol}) ${out.mode === 'edit' ? '图生图' : '生图'}完成 (${out.ms}ms, ${out.bytes}B, `
           + `请求尺寸=${size}, 实际=${out.actualSize || '?'}${refs.length ? `, ref=${refs.join(' + ')}` : ''}, `
-          + `${Object.keys(extras).length ? `额外字段=${Object.keys(extras).join(',')}, ` : ''}prompt=${prompt.slice(0, 60)}) → ${file}`)
+          + `${Object.keys(extras).length ? `额外字段=${Object.keys(extras).join(',')}, ` : ''}prompt=${finalPrompt.slice(0, 60)}`
+          + `${opt.used ? `, 优化=${opt.route || '?'}/${opt.ms}ms` : ''}) → ${file}`)
         if (!canReply) return out
 
         const r = await bot.sendMedia(genTarget, cqImage(file), args.text ? String(args.text) : '')
         log.info(`[生图] 已发送 ${genTarget}`)
         return { ...out, target: genTarget, message_id: r?.messageId ?? r?.id ?? null }
+      },
+    })
+
+    // 控制台「🧪 试优化一条提示词」的后端（admin/endpoints 经 kernel.previewImagePrompt 调它）。
+    // 注意 coreOf() **每次调用都新建对象** —— 往 bot.core 上挂东西等于扔掉，白写一场。
+    // 所以内核启动时显式装配：kernel.shared.imagegen.previewOptimize。
+    if (bot.shared && typeof bot.shared === 'object') {
+      bot.shared.imagegen = {
+        ...(bot.shared.imagegen && typeof bot.shared.imagegen === 'object' ? bot.shared.imagegen : {}),
+        previewOptimize: (payload) => previewOptimizeText({ bot, cfg, log, payload }),
+      }
+    }
+
+    bot.registerTool('refine_image_prompt', {
+      description:
+        '把一句需求（或用户原话）改写成可以直接交给生图模型的提示词，**只返回文字、不画图、不占冷却**。'
+        + '用途：拿不准该怎么写提示词时先看一眼；或者想把结果给用户过目再决定画不画。'
+        + '注意：generate_image 在「先让大模型优化提示词」开着时会**自动**做这一步，正常情况下不需要先调它。',
+      parameters: {
+        prompt: { type: 'string', required: true, description: '用户的需求原话（照抄即可，不用自己加工）' },
+        template: { type: 'string', description: '可选：临时换一份优化提示词（不传就用控制台「生图」页里那份）' },
+      },
+      async execute(args = {}) {
+        const demand = String(args.prompt ?? '').trim()
+        if (!demand) throw new Error('prompt 不能为空')
+        const llm = bot.llm
+        if (!llm || (typeof llm.available === 'function' && !llm.available())) {
+          throw new Error('没有可用的模型服务（llm），只能自己写提示词再用 generate_image')
+        }
+        const r = await refinePrompt({
+          llm,
+          prompt: demand,
+          system: String(args.template ?? '').trim() || String(cfg.promptOptimizeText || '').trim() || DEFAULT_OPTIMIZE_PROMPT,
+          timeoutMs: Math.max(5000, Number(cfg.promptOptimizeTimeoutMs) || 30000),
+          maxTokens: 400,
+          log,
+        })
+        if (!r.used) return { ok: false, reason: r.reason, original: demand, prompt: demand }
+        log.info(`[生图] refine_image_prompt ${demand.slice(0, 40)} → ${r.prompt.slice(0, 60)}`)
+        return { ok: true, original: demand, prompt: r.prompt, route: r.route || '', ms: r.ms || 0 }
       },
     })
 

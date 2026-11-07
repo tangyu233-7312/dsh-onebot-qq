@@ -11,6 +11,7 @@
  *   persona 人设：list / switch（platform/persona-ref.js，跨平台软链→复制降级）
  *   action  动作：reply-preset / reset-session / welcome-images / welcome-test / clear-qq-sessions
  *           + 新手引导（onebot-check / onebot-reconnect / imagegen-check）
+ *           + 生图提示词优化试跑（imagegen-optimize-preview：只调一次文本模型、不画图、不占冷却）
  *           + 运维诊断（diagnose → admin/diagnostics.js，生成脱敏报告）
  *           + 运维动作（selfcheck / cleanup-tmp / dedup-baks）→ ops provider，没有则“本机未配置”
  *
@@ -1485,6 +1486,20 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
         error: requiredOk ? undefined : `生图配置不完整 —— ${failHint || '见逐项提示'}`,
         message: requiredOk ? (advice || '✅ 生图配置完整') : '生图配置还不完整（见下面逐项提示）',
       }
+    }
+
+    // ── 生图：试跑一次提示词优化（不画图、不占冷却、不写配置）──────────
+    if (id === 'imagegen-optimize-preview') {
+      if (typeof kernel?.previewImagePrompt !== 'function') {
+        return { ok: false, error: '内核未提供 previewImagePrompt（请升级内核或检查 imagegen 插件是否启用）' }
+      }
+      const text = toStr(payload?.text)
+      if (!text) return { ok: false, error: '先写一条需求（比如「画只胖鱼在吃拉面」）再试' }
+      const system = toStr(payload?.system)
+      const r = await safeAsync(() => kernel.previewImagePrompt({ text, system }), null)
+      if (!r || typeof r !== 'object') return { ok: false, error: '优化试跑失败（内核抛错，详见机器人日志）' }
+      // 注意顺序：id 放在后面（spread 里自带的 success 等字段不会把 id 顶掉，但 ok 以插件结论为准）
+      return { ...r, id, ok: r.ok !== false, error: r.ok === false ? (r.error || '优化没成功') : undefined }
     }
 
     // ── 运维：检查 / 创建 QQ 工作区（幂等；插件启动时已自动做一次）──

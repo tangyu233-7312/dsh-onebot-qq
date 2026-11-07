@@ -35,7 +35,7 @@ function jsonResponse(obj, status = 200) {
   return new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } })
 }
 
-async function bootImagegen(t, { imagegen = {}, credentials = null } = {}) {
+async function bootImagegen(t, { imagegen = {}, credentials = null, llm = undefined } = {}) {
   const h = await bootKernel({
     config: {
       pacing: { merge: { enabled: false } },
@@ -48,8 +48,25 @@ async function bootImagegen(t, { imagegen = {}, credentials = null } = {}) {
       },
     },
   })
+  // 一次性文本补全桩（真内核从宿主 ctx.llm 取；夹具里直接换掉内核能力对象）
+  if (llm) h.kernel.textCompletion = llm
   t.after(() => h.dispose())
   return h
+}
+
+/** 造一个假的 llm 能力：记录调用、返回固定/自定义文本。 */
+function fakeLlm(impl) {
+  const calls = []
+  return {
+    calls,
+    available: () => true,
+    route: async () => ({ provider: 'p', model: 'm', source: 'test' }),
+    complete: async (opts) => {
+      calls.push(opts)
+      if (typeof impl === 'function') return impl(opts, calls.length)
+      return { ok: true, text: impl || '优化后的提示词', reason: '', provider: 'p', model: 'm', ms: 1 }
+    },
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -534,3 +551,127 @@ test('imagegen 参考图：名字选错 → 报错里回图库清单（判断交
   assert.equal(ok.ok, true)
 })
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 生图提示词优化（2026-11-06）：先让大模型把需求改写成生图提示词，再交给生图模型
+// 纪律：一次生图最多调一次优化；失败/超时一律退回原文，绝不让这次生图失败、也不重试。
+// ─────────────────────────────────────────────────────────────────────────────
+
+const IMG_CREDS = { gptImage: { baseUrl: 'https://example.invalid/v1', apiKey: 'REPLACE_ME', model: 'gpt-image-2' } }
+const upstreamPrompt = (calls) => JSON.parse(calls[calls.length - 1].opts.body).prompt
+
+test('生图优化：开启时用优化后的提示词打生图上游，并回传原文/优化结果', async (t) => {
+  const llm = fakeLlm('一只圆滚滚的蓝色大肥鱼，面馆木桌，暖黄顶灯，近景侧光，厚涂质感')
+  const h = await bootImagegen(t, { credentials: IMG_CREDS, llm })
+  const calls = installFetchMock(t, () => jsonResponse({ data: [{ b64_json: PNG_B64 }] }))
+  const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
+  const r = await tool.execute({ prompt: '画只胖鱼吃拉面', target: `group:${GROUP_ID}` })
+
+  assert.equal(r.ok, true)
+  assert.equal(llm.calls.length, 1, '每次生图只优化一次')
+  assert.ok(llm.calls[0].prompt.includes('画只胖鱼吃拉面'), '优化请求里带上用户原话')
+  assert.ok(llm.calls[0].prompt.includes('生图提示词'), '默认优化提示词是"把需求改写成生图提示词"')
+  assert.equal(upstreamPrompt(calls), '一只圆滚滚的蓝色大肥鱼，面馆木桌，暖黄顶灯，近景侧光，厚涂质感', '生图模型收到的是优化后的提示词')
+  assert.equal(r.promptOptimized, true)
+  assert.equal(r.promptOriginal, '画只胖鱼吃拉面', '回执里保留原文，便于排查')
+})
+
+test('生图优化：优化失败（空回复/超时/没模型）→ 退回原文照画，不报错、不重试', async (t) => {
+  const llm = fakeLlm(() => ({ ok: false, text: '', reason: '模型没有返回任何文字' }))
+  const h = await bootImagegen(t, { credentials: IMG_CREDS, llm })
+  const calls = installFetchMock(t, () => jsonResponse({ data: [{ b64_json: PNG_B64 }] }))
+  const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
+  const r = await tool.execute({ prompt: '画只胖鱼吃拉面', target: `group:${GROUP_ID}` })
+
+  assert.equal(r.ok, true, '优化失败不影响生图')
+  assert.equal(llm.calls.length, 1, '失败也不重试')
+  assert.equal(calls.length, 1, '生图照常打一次上游')
+  assert.equal(upstreamPrompt(calls), '画只胖鱼吃拉面', '上游收到的是原文')
+  assert.equal(r.promptOptimized, false)
+  assert.ok(r.promptOptimizeNote, '回执里说明为什么没用优化结果')
+})
+
+test('生图优化：关掉开关 → 完全不打模型，直接原文生图（旧行为）', async (t) => {
+  const llm = fakeLlm('不该被用到')
+  const h = await bootImagegen(t, { credentials: IMG_CREDS, llm, imagegen: { optimizePrompt: false } })
+  const calls = installFetchMock(t, () => jsonResponse({ data: [{ b64_json: PNG_B64 }] }))
+  const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
+  const r = await tool.execute({ prompt: '画只胖鱼吃拉面', target: `group:${GROUP_ID}` })
+
+  assert.equal(r.ok, true)
+  assert.equal(llm.calls.length, 0, '关掉后一次都不调')
+  assert.equal(upstreamPrompt(calls), '画只胖鱼吃拉面')
+  assert.equal(r.promptOptimized, false)
+})
+
+test('生图优化：输出清洗 —— 去掉"好的，这是…："、引号、代码围栏，只留提示词本体', async (t) => {
+  const llm = fakeLlm('好的，这是优化后的提示词：\n**"一只胖胖的蓝色大肥鱼，坐在面馆木桌前吃拉面，暖黄灯光，近景特写"**')
+  const h = await bootImagegen(t, { credentials: IMG_CREDS, llm })
+  const calls = installFetchMock(t, () => jsonResponse({ data: [{ b64_json: PNG_B64 }] }))
+  const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
+  const r = await tool.execute({ prompt: '画只胖鱼吃拉面', target: `group:${GROUP_ID}` })
+
+  assert.equal(r.ok, true)
+  assert.equal(upstreamPrompt(calls), '一只胖胖的蓝色大肥鱼，坐在面馆木桌前吃拉面，暖黄灯光，近景特写')
+  assert.equal(r.promptOptimized, true)
+})
+
+test('refine_image_prompt：只返回优化后的文字，不画图、不占冷却', async (t) => {
+  const llm = fakeLlm('橘猫趴在窗台上晒太阳，午后逆光，浅景深，水彩质感')
+  const h = await bootImagegen(t, { credentials: IMG_CREDS, llm })
+  const calls = installFetchMock(t, () => jsonResponse({ data: [{ b64_json: PNG_B64 }] }))
+  const tool = h.ctx._registeredTools.get('mcp__qq__refine_image_prompt')
+  assert.ok(tool, '应注册 refine_image_prompt')
+  const r = await tool.execute({ prompt: '画只猫晒太阳' })
+
+  assert.equal(r.ok, true)
+  assert.equal(r.prompt, '橘猫趴在窗台上晒太阳，午后逆光，浅景深，水彩质感')
+  assert.equal(calls.length, 0, '不调生图上游')
+  // 没占冷却：紧接着生成一张不会被 blocked
+  const gen = h.ctx._registeredTools.get('mcp__qq__generate_image')
+  const g = await gen.execute({ prompt: '画只猫', target: `group:${GROUP_ID}` })
+  assert.equal(g.ok, true)
+  assert.notEqual(g.blocked, true, 'refine 不占生图冷却')
+})
+
+test('控制台「生图」页：三个优化配置项都在，且提示词框首次显示完整可编辑默认值', async (t) => {
+  const h = await bootImagegen(t, { credentials: IMG_CREDS })
+  const schema = h.kernel.adminSchema()   // 控制表本体（RPC 端点是 {ok,value} 信封）
+  assert.ok(Array.isArray(schema.controls) && schema.controls.length > 0, '控制表应有控件')
+  const byKey = (k) => (schema.controls || []).find((c) => c.key === k)
+  const opt = byKey('imagegen.optimizePrompt')
+  assert.ok(opt, '应有「先让大模型优化提示词」开关')
+  assert.equal(opt.type, 'bool')
+  assert.equal(opt.value, true, '默认开')
+  const txt = byKey('imagegen.promptOptimizeText')
+  assert.ok(txt, '应有可编辑的优化提示词框')
+  assert.equal(txt.type, 'text')
+  assert.equal(txt.plugin, 'imagegen')
+  assert.ok(String(txt.value).includes('生图提示词'), '首次就把默认提示词显示在框里')
+  assert.equal(txt.value, txt.helperDefault, '当前值=内置默认（没改过）')
+  assert.ok(byKey('imagegen.promptOptimizeTimeoutMs'), '应有优化超时')
+})
+
+test('控制台「试优化一条提示词」：动作注册在生图页，调用只走文本模型、不画图', async (t) => {
+  const llm = fakeLlm('一只圆滚滚的蓝色大肥鱼，面馆暖黄灯光，近景，厚涂')
+  const h = await bootImagegen(t, { credentials: IMG_CREDS, llm })
+  const calls = installFetchMock(t, () => jsonResponse({ data: [{ b64_json: PNG_B64 }] }))
+  const schema = h.kernel.adminSchema()
+  const act = (schema.actions || []).find((a) => a.id === 'imagegen-optimize-preview')
+  assert.ok(act, '应有 🧪 试优化动作')
+  assert.equal(act.group, '生图')
+  assert.equal(act.onGroup, true, '按钮长在生图页底部')
+  assert.ok(Array.isArray(act.prompt.fields) && act.prompt.fields.length >= 2, '弹窗要有"需求 + 提示词"两个字段')
+  assert.equal(act.prompt.fields[1].valueFrom, 'imagegen.promptOptimizeText', '提示词字段默认带出控制台里那份')
+
+  const r = await h.kernel.handleAdminRpc('action', { id: 'imagegen-optimize-preview', text: '画只胖鱼吃拉面' })
+  assert.equal(r.ok, true)
+  assert.equal(r.prompt, '一只圆滚滚的蓝色大肥鱼，面馆暖黄灯光，近景，厚涂')
+  assert.equal(r.original, '画只胖鱼吃拉面')
+  assert.equal(calls.length, 0, '试优化不调生图上游')
+  assert.equal(llm.calls.length, 1)
+
+  // 空需求 → 明确报错，不调用模型
+  const bad = await h.kernel.handleAdminRpc('action', { id: 'imagegen-optimize-preview', text: '   ' })
+  assert.equal(bad.ok, false)
+  assert.equal(llm.calls.length, 1, '空需求不打模型')
+})
