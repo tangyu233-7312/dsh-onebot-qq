@@ -859,8 +859,75 @@ test('控制台「检查生图配置」：本地活着就报通过，即使中�
   comfyFetchMock(t, { alive: true })
   const r = await h.kernel.handleAdminRpc('action', { id: 'imagegen-check' })
   assert.equal(r.ok, true)
-  const local = (r.checks || []).find((c) => c.name === '本机 ComfyUI')
-  assert.ok(local, '应列出本机 ComfyUI 这一项')
+  const local = (r.checks || []).find((c) => c.name === '本机服务')
+  assert.ok(local, '应列出本机服务这一项')
   assert.equal(local.ok, true)
 })
 
+
+// ── 多级 API 降级（第2级主站 → 第3/4级备用）─────────────────────────────
+
+const FB3 = JSON.stringify([{ baseUrl: 'https://relay2.invalid/v1', model: 'gpt-image-2' }])
+
+test('备用接口：主站 500 → 降到第3级并出图（回执标明 tier）', async (t) => {
+  const h = await bootImagegen(t, { credentials: IMG_CREDS, imagegen: { fallbackApis: FB3 } })
+  const calls = installFetchMock(t, (url) => {
+    if (url.startsWith('https://example.invalid')) return jsonResponse({ error: { message: 'upstream boom' } }, 500)
+    return jsonResponse({ data: [{ b64_json: PNG_B64 }] })
+  })
+  const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
+  const r = await tool.execute({ prompt: '画只胖鱼', target: 'group:' + GROUP_ID })
+  assert.equal(r.ok, true)
+  assert.equal(r.tier, 3, '第3级 = 第一个备用接口')
+  assert.equal(r.fallbackUsed, true)
+  assert.equal(r.protocol, 'openai-images')
+  assert.ok(calls.some((c) => c.url.startsWith('https://relay2.invalid')), '真的打了备用站')
+})
+
+test('备用接口：全部失败 → 汇总各级原因，用户只收到一句代答', async (t) => {
+  const h = await bootImagegen(t, { credentials: IMG_CREDS, imagegen: { fallbackApis: FB3 } })
+  installFetchMock(t, () => jsonResponse({ error: { message: 'all down' } }, 502))
+  const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
+  await assert.rejects(
+    () => tool.execute({ prompt: '画只胖鱼', target: 'group:' + GROUP_ID }),
+    (e) => /全部生图接口都失败/.test(e.message) && /主站/.test(e.message) && /备用1/.test(e.message),
+  )
+  const msgs = h.sent.filter((s) => s.kind === 'msg')
+  // 「在画了」1 条 + 失败句 1 条；不允许每级失败各刷一句
+  assert.equal(msgs.length, 2, '只应有 ack + 一句失败，不按级刷屏：' + JSON.stringify(msgs.map((m) => m.wire)))
+  assert.match(JSON.stringify(msgs[msgs.length - 1].wire), /画失败|等会儿/, '最后一条是失败句')
+})
+
+test('备用接口：主站 400（请求本身不合法）→ 不换站，避免多打一次', async (t) => {
+  const h = await bootImagegen(t, { credentials: IMG_CREDS, imagegen: { fallbackApis: FB3 } })
+  const calls = installFetchMock(t, () => jsonResponse({ error: { message: 'invalid size' } }, 400))
+  const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
+  await assert.rejects(() => tool.execute({ prompt: '画鱼', target: 'group:' + GROUP_ID }), /invalid size/)
+  assert.equal(calls.filter((c) => c.url.startsWith('https://relay2.invalid')).length, 0, '400 不降级')
+})
+
+test('备用接口：apiKeyEnv 从环境变量取 Key；没设置就跳过该级', async (t) => {
+  const ENV = 'QQ_IMAGEGEN_TEST_KEY_3'
+  const prev = process.env[ENV]
+  t.after(() => { if (prev === undefined) delete process.env[ENV]; else process.env[ENV] = prev })
+  const fb = JSON.stringify([{ baseUrl: 'https://relay2.invalid/v1', apiKeyEnv: ENV }])
+  process.env[ENV] = 'env-key-3'
+  const h = await bootImagegen(t, { credentials: IMG_CREDS, imagegen: { fallbackApis: fb } })
+  const calls = installFetchMock(t, (url) => {
+    if (url.startsWith('https://example.invalid')) return jsonResponse({ error: { message: 'boom' } }, 500)
+    return jsonResponse({ data: [{ b64_json: PNG_B64 }] })
+  })
+  const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
+  const r = await tool.execute({ prompt: '画鱼', target: 'group:' + GROUP_ID })
+  assert.equal(r.tier, 3)
+  const fbCall = calls.find((c) => c.url.startsWith('https://relay2.invalid'))
+  assert.equal(fbCall.opts.headers.authorization, 'Bearer env-key-3', 'Key 来自环境变量')
+})
+
+test('备用接口：配置不是 JSON 数组 → 立刻报错，不占冷却、不先说「在画了」', async (t) => {
+  const h = await bootImagegen(t, { credentials: IMG_CREDS, imagegen: { fallbackApis: 'relay2.invalid' } })
+  installFetchMock(t, () => jsonResponse({ data: [{ b64_json: PNG_B64 }] }))
+  const tool = h.ctx._registeredTools.get('mcp__qq__generate_image')
+  await assert.rejects(() => tool.execute({ prompt: '画鱼', target: 'group:' + GROUP_ID }), /备用生图接口/)
+  assert.equal(h.sent.filter((s) => s.kind === 'msg').length, 0, '配置错不代答、不出图')
+})

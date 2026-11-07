@@ -90,7 +90,10 @@ async function throwImagegenError(res) {
   const raw = await res.text().catch(() => '')
   let emsg = ''
   try { emsg = JSON.parse(raw).error?.message || raw } catch { emsg = `HTTP ${res.status}` }
-  throw new Error(String(emsg || `HTTP ${res.status}`).slice(0, 200))
+  const err = new Error(String(emsg || `HTTP ${res.status}`).slice(0, 200))
+  // 带上状态码：多级降级要靠它判断「换站也没用」的 4xx
+  err.status = res.status
+  throw err
 }
 
 /** 统一解析响应：`data[0].{url|b64_json}` → 本地图片路径（两条线共用） */
@@ -268,6 +271,115 @@ async function gptGenerate(opts) {
   if (protocol === 'openai-chat') return chatGenerate(opts)
   return imagesGenerate(opts)
 }
+
+/** 备用接口上限：再多就不是「降级」，是该整理额度了 */
+const MAX_FALLBACK_APIS = 8
+
+/**
+ * 解析「备用生图接口」配置（第三/四级…）。格式是 JSON 数组，每项：
+ *   { baseUrl, model?, protocol?, apiKeyEnv?, apiKey? }
+ * 设计取舍：**顺序降级**而不是轮询 —— 主站能用就只用主站（画风稳定、省钱），
+ * 主站挂了才往下一级走；每级只打一次，绝不重试同一级。
+ * 留空 = 没有备用，行为与以前完全一致。
+ */
+function parseFallbackApis(raw) {
+  const text = String(raw == null ? '' : raw).trim()
+  if (!text || text === '[]') return []
+  let list
+  try { list = JSON.parse(text) } catch (e) { throw new Error('「备用生图接口」必须是 JSON 数组：' + e.message) }
+  if (list && !Array.isArray(list) && Array.isArray(list.apis)) list = list.apis
+  if (!Array.isArray(list)) {
+    throw new Error('「备用生图接口」必须是 JSON 数组，例：[{"baseUrl":"https://relay2.example/v1","model":"gpt-image-2","apiKeyEnv":"QQ_IMAGEGEN_KEY_3"}]')
+  }
+  if (list.length > MAX_FALLBACK_APIS) throw new Error('「备用生图接口」最多 ' + MAX_FALLBACK_APIS + ' 条（现在 ' + list.length + ' 条）')
+  return list.map((one, i) => {
+    const at = '备用接口第 ' + (i + 1) + ' 条'
+    if (!one || typeof one !== 'object' || Array.isArray(one)) throw new Error(at + ' 必须是对象')
+    const baseUrl = String(one.baseUrl || '').trim()
+    if (!baseUrl) throw new Error(at + ' 缺 baseUrl')
+    try {
+      const u = new URL(baseUrl)
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('proto')
+    } catch { throw new Error(at + ' 的 baseUrl 不是合法 http(s) 地址：' + baseUrl) }
+    const protocol = String(one.protocol || '').trim()
+    if (protocol && !PROTOCOLS.includes(protocol)) {
+      throw new Error(at + ' 的 protocol 不支持：' + protocol + '（可用 ' + PROTOCOLS.join(' / ') + '；留空 = 跟随主站）')
+    }
+    return {
+      baseUrl,
+      model: String(one.model || '').trim(),
+      protocol,
+      apiKeyEnv: String(one.apiKeyEnv || '').trim(),
+      apiKey: String(one.apiKey || ''),
+    }
+  })
+}
+
+/** 主站 + 备用 → 有序候选链；Key 只从环境变量名或内联取，缺 Key 的级直接跳过并留日志 */
+function buildRemoteTiers(primary, fallbacks, log) {
+  const tiers = []
+  if (primary.baseUrl && primary.apiKey) tiers.push({ label: '主站（第2级）', creds: primary })
+  else if (primary.baseUrl && !primary.apiKey) log?.warn?.('[生图] 主站有地址但没 API Key，跳过（备用接口仍可尝试）')
+  fallbacks.forEach((one, i) => {
+    let key = one.apiKey
+    if (one.apiKeyEnv) {
+      key = String(process.env[one.apiKeyEnv] || '')
+      if (!key) {
+        log?.warn?.('[生图] 备用接口第 ' + (i + 1) + ' 条的环境变量 ' + one.apiKeyEnv + ' 没设置，跳过这一级')
+        return
+      }
+    }
+    tiers.push({
+      label: '备用' + (i + 1) + '（第' + (i + 3) + '级）',
+      creds: {
+        protocol: one.protocol || primary.protocol,
+        baseUrl: one.baseUrl,
+        model: one.model || primary.model,
+        apiKey: key,
+      },
+    })
+  })
+  return tiers
+}
+
+/** 这个错误值得换下一级吗：请求本身不合法（400/422）换站也一样，别多打一次 */
+function shouldFallbackTier(err) {
+  const status = Number(err && err.status)
+  // 400/422 = 请求本身不合法（参数/内容策略），换站也一样失败，只会多打一次
+  if (status === 400 || status === 422) return false
+  const msg = String(err && err.message ? err.message : err)
+  if (/未配置生图凭据|未知生图协议/.test(msg)) return false
+  return true
+}
+
+/**
+ * 顺序降级调用：主站 → 备用1 → 备用2 …
+ * 总超时按剩余级数均分（单级至少 15 秒），避免第一级卡死把后面全饿死。
+ * 注意：**超时也会降级** —— 对方可能其实已经出图了，极端情况下会多计一次费，已在文档写明。
+ */
+async function remoteGenerateChain({ tiers, prompt, refs, size, extras, timeoutMs, tmp, log }) {
+  const total = Math.max(10000, Number(timeoutMs) || 240000)
+  const started = Date.now()
+  const fails = []
+  for (let i = 0; i < tiers.length; i += 1) {
+    const left = tiers.length - i
+    const remaining = total - (Date.now() - started)
+    const budget = remaining >= 15000 ? Math.max(15000, Math.floor(remaining / left)) : Math.max(5000, remaining)
+    const t0 = Date.now()
+    try {
+      const file = await gptGenerate({ prompt, refs, size, extras, timeoutMs: budget, creds: tiers[i].creds, tmp })
+      if (i > 0 && log) log.info('[生图] ' + tiers[i].label + '出图成功（前面 ' + fails.length + ' 级失败）')
+      return { file, creds: tiers[i].creds, tier: i + 2 }
+    } catch (e) {
+      const reason = String(e && e.message ? e.message : e).slice(0, 160)
+      fails.push({ label: tiers[i].label, reason })
+      if (log) log.warn('[生图] ' + tiers[i].label + '失败（' + (Date.now() - t0) + 'ms）：' + reason)
+      if (!shouldFallbackTier(e)) break
+    }
+  }
+  throw new Error('全部生图接口都失败：' + fails.map((x) => x.label + '：' + x.reason).join('；'))
+}
+
 
 /** openai-images 协议：文生图 JSON，图生图 multipart（重复 `image` 字段 = 多张参考，顺序即传入顺序） */
 async function imagesGenerate({ prompt, refs, size, extras = {}, timeoutMs, creds, tmp }) {
@@ -600,6 +712,13 @@ export default {
       type: 'str', group: '生图', label: 'API Key', default: '', secret: true,
       key: 'credentials.gptImage.apiKey', configPath: ['credentials', 'gptImage', 'apiKey'],
       hint: '保存后只回显占位符；环境变量 QQ_IMAGEGEN_API_KEY 优先于这个输入框。',
+    },
+    fallbackApis: {
+      type: 'text', group: '生图', label: '备用生图接口（第三/四级，JSON 数组）', default: '',
+      hint: '**顺序降级**：主站（第2级）失败才按顺序试这里，某一级成功就停，不会重试同一级。留空 = 没有备用，行为与以前一样。\n'
+        + '每条：baseUrl（必填）、model（留空跟随主站）、protocol（留空跟随主站）、apiKeyEnv（推荐：环境变量名，Key 不进配置文件）、apiKey（内联，仅当你接受它写进配置时用）。\n'
+        + '例：[{"baseUrl":"https://relay2.example/v1","model":"gpt-image-2","apiKeyEnv":"QQ_IMAGEGEN_KEY_3"},{"baseUrl":"https://relay3.example/v1","apiKeyEnv":"QQ_IMAGEGEN_KEY_4"}]\n'
+        + '超时预算按剩余级数均分（单级至少 15 秒）。⚠️ 超时也会降级 —— 对方可能已经出图，极端情况下会多计一次费。',
     },
     enabled: { type: 'bool', default: true, group: '生图', label: '生图', hint: '开：群里叫它画图时调用生图模型出图并发出来；关：完全不出图。' },
     localFirst: {
@@ -954,14 +1073,17 @@ export default {
             log.info(`[生图] 本机 ComfyUI 不可用（${probe.reason}），回落中转站`)
           }
         }
-        // 中转站凭据：本地能出图时不需要；否则沿用旧口径（两样都得有）
-        if (!localReady && (!creds.apiKey || !creds.baseUrl)) {
+        const size = chooseSize(args.size, refs)
+        // 额外请求字段 / 备用接口先解析：JSON 写错要**立刻**报错（不占冷却、也不先说「在画了」）
+        const extras = extrasNow()
+        const fallbacks = parseFallbackApis(cfg.fallbackApis)
+        // 中转站候选链：主站（第2级）+ 备用（第3/4级…）；本地能出图时整条链都不用
+        const remoteTiers = localReady ? [] : buildRemoteTiers(creds, fallbacks, log)
+        if (!localReady && !remoteTiers.length) {
           throw new Error('未配置生图凭据：请设置环境变量 QQ_IMAGEGEN_BASE_URL / QQ_IMAGEGEN_API_KEY，或在实例配置 credentials.gptImage 里填'
+            + (fallbacks.length ? '（备用接口也都不完整：检查 baseUrl / apiKeyEnv）' : '')
             + (local.enabled ? `（本机 ComfyUI 也没起来：${localWhy}）` : ''))
         }
-        const size = chooseSize(args.size, refs)
-        // 额外请求字段先解析：JSON 写错要**立刻**报错（不占冷却、也不先说「在画了」）
-        const extras = extrasNow()
 
         // ① 全局冷却：被挡的**不生成、不排队、不代答**，只把「被挡 + 还剩多久 + 一句参考话」交回模型
         if (inCooldown()) {
@@ -993,16 +1115,23 @@ export default {
         const t0 = Date.now()
         const source = localReady ? 'local' : 'remote'
         let file
+        let usedCreds = creds
+        let usedTier = 1
         try {
-          file = localReady
-            ? await (local.adapter === 'native' ? nativeGenerate : comfyGenerate)({
+          if (localReady) {
+            file = await (local.adapter === 'native' ? nativeGenerate : comfyGenerate)({
               prompt: finalPrompt, refs, size, timeoutMs: timeoutMs(), local, tmp: bot.core?.tmp, log,
             })
-            : await gptGenerate({
-              prompt: finalPrompt, refs, size, extras, timeoutMs: timeoutMs(), creds, tmp: bot.core?.tmp,
+          } else {
+            const chain = await remoteGenerateChain({
+              tiers: remoteTiers, prompt: finalPrompt, refs, size, extras, timeoutMs: timeoutMs(), tmp: bot.core?.tmp, log,
             })
+            file = chain.file
+            usedCreds = chain.creds
+            usedTier = chain.tier
+          }
         } catch (e) {
-          log.error(`[生图] ${refs.length ? '图生图' : '生图'}失败(${source === 'local' ? '本地' : creds.protocol}) (${Date.now() - t0}ms, prompt=${finalPrompt.slice(0, 60)}): ${e.message}`)
+          log.error(`[生图] ${refs.length ? '图生图' : '生图'}失败(${source === 'local' ? '本地' : usedCreds.protocol}) (${Date.now() - t0}ms, prompt=${finalPrompt.slice(0, 60)}): ${e.message}`)
           // ③ **失败就到此为止**：本插件自己如实说一句（零 token），并在错误里写明"已代答、别补话、别重试"。
           //    ⚠️ 这里**没有、也不要加**任何重试逻辑 —— 重试是模型自发行为，靠错误文案三处一起掐。
           if (canReply) {
@@ -1011,9 +1140,9 @@ export default {
           }
           const rawReason = String(e.message || '')
           // 错误信息里带上「走的是哪条线」（chat 协议自己已带前缀，别重复拼）
-          const reason = /生图\([^)]*协议\)/.test(rawReason) || source === 'local'
-            ? rawReason.slice(0, 140)
-            : `生图(${creds.protocol}协议)失败：${rawReason.slice(0, 140)}`
+          const reason = /生图\([^)]*协议\)|全部生图接口都失败/.test(rawReason) || source === 'local'
+            ? rawReason.slice(0, 300)
+            : `生图(${usedCreds.protocol}协议)失败：${rawReason.slice(0, 300)}`
           throw new Error(`${reason}${canReply
             ? '｜已把失败如实告诉用户，本轮不要再发任何消息，也不要重试、不要改提示词再调一次'
             : '｜不要重试'}`)
@@ -1029,7 +1158,10 @@ export default {
           mode: refs.length ? 'edit' : 'generate',
           // 走的哪条线：local = 本机 ComfyUI；remote = 中转站（protocol 仍描述中转站怎么说话）
           source,
-          protocol: source === 'local' ? 'comfyui' : creds.protocol,
+          protocol: source === 'local' ? 'comfyui' : usedCreds.protocol,
+          // 实际生效的级：1=本机，2=主站，3+=备用接口（日志和排查用）
+          tier: usedTier,
+          ...(usedTier > 2 ? { fallbackUsed: true } : {}),
           size,
           refs: refs.length,
           actualSize: px ? `${px.w}x${px.h}` : null,
@@ -1039,7 +1171,7 @@ export default {
           promptOriginal: prompt,
           ...(opt.used ? {} : { promptOptimizeNote: opt.reason }),
         }
-        log.info(`[生图] (${out.protocol}${source === 'local' ? '/本地' : ''}) ${out.mode === 'edit' ? '图生图' : '生图'}完成 (${out.ms}ms, ${out.bytes}B, `
+        log.info(`[生图] (${out.protocol}${source === 'local' ? '/本地' : `/第${out.tier}级`}) ${out.mode === 'edit' ? '图生图' : '生图'}完成 (${out.ms}ms, ${out.bytes}B, `
           + `请求尺寸=${size}, 实际=${out.actualSize || '?'}${refs.length ? `, ref=${refs.join(' + ')}` : ''}, `
           + `${Object.keys(extras).length ? `额外字段=${Object.keys(extras).join(',')}, ` : ''}prompt=${finalPrompt.slice(0, 60)}`
           + `${opt.used ? `, 优化=${opt.route || '?'}/${opt.ms}ms` : ''}) → ${file}`)

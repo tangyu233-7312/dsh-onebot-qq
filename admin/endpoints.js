@@ -417,8 +417,10 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
     // 本机 ComfyUI（插件配置，不是凭据）：用来在自检里说明"本地这条线开没开"
     const ic = pluginCfgRuntime('imagegen')
     const localEnabled = ic.localFirst === true
-    const localUrl = toStr(ic.localUrl) || 'http://127.0.0.1:8899'
-    const localModel = toStr(ic.localModel) || 'zimage'
+    // 不编造默认：没填就报空，让检查项如实说「未填写」
+    const localUrl = toStr(ic.localUrl)
+    const localModel = toStr(ic.localModel)
+    const localAdapter = toStr(ic.localAdapter) === 'simple-api' ? 'simple-api' : 'native'
     return {
       // configured：**能出图**即可 —— 本地开着也算（不要求中转站 Key）
       configured: Boolean(baseUrl && apiKeySet) || localEnabled,
@@ -426,7 +428,7 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
       model,
       baseUrl,
       apiKeySet,
-      local: { enabled: localEnabled, url: localUrl, model: localModel },
+      local: { enabled: localEnabled, url: localUrl, model: localModel, adapter: localAdapter },
       envOverride: {
         protocol: envSet('QQ_IMAGEGEN_PROTOCOL'),
         baseUrl: envSet('QQ_IMAGEGEN_BASE_URL'),
@@ -1468,25 +1470,56 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
       }
       checks.push(keyCheck)
 
-      // 本机 ComfyUI：开了就真探一次（探不通不算失败 —— 会回落中转站，只是提醒一句）
+      // 备用接口（第三/四级）：只校验配置形状，不真打（免得一次检查把所有站的额度都摸一遍）
+      let fbList = null
+      let fbError = ''
+      try {
+        const raw = String(store.read()?.pluginConfig?.imagegen?.fallbackApis || '').trim()
+        if (raw) {
+          const parsed = JSON.parse(raw)
+          fbList = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.apis) ? parsed.apis : null)
+          if (!fbList) fbError = '必须是 JSON 数组'
+        }
+      } catch (e) { fbError = '不是合法 JSON：' + e.message }
+      checks.push({
+        name: '备用接口', ok: !fbError,
+        hint: fbError || (fbList && fbList.length ? `已配置 ${fbList.length} 级，主站失败才用` : '未配置（可选）'),
+      })
+
+      // 本机服务：开了就真探一次（探不通不算失败 —— 会回落中转站，只是提醒一句）
+      // 两种适配器的探活端点不同：native 用 /system_stats，simple-api 用 /api/status
       let localAlive = null
       let localNote = ''
       if (state.local && state.local.enabled) {
-        try {
-          const base = String(state.local.url).replace(/\/+$/, '')
-          const init = { method: 'GET' }
-          if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') init.signal = AbortSignal.timeout(3000)
-          const res = await withTimeout(fetch(`${base}/api/status`, init), 3500)
-          const j = res.ok ? await res.json().catch(() => ({})) : {}
-          localAlive = j?.comfy?.alive === true
-          localNote = localAlive
-            ? `本机 ComfyUI 可用（${j.comfy.gpu || 'GPU'}，显存余 ${Math.round((Number(j.comfy.vram_free) || 0) / 1048576)}MB）`
-            : `本机服务没就绪（${j?.comfy?.error || 'ComfyUI 主程序 8188 没起'}）—— 生图时会回落中转站`
-        } catch (e) {
+        const base = String(state.local.url || '').replace(/\/+$/, '')
+        const native = state.local.adapter !== 'simple-api'
+        if (!base) {
           localAlive = false
-          localNote = `连不上本机服务（${toStr(e?.message).slice(0, 60) || '超时'}）—— 生图时会回落中转站`
+          localNote = '开了本机优先但没填地址 —— 生图时会直接回落中转站'
+        } else {
+          try {
+            const init = { method: 'GET' }
+            if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') init.signal = AbortSignal.timeout(3000)
+            const res = await withTimeout(fetch(base + (native ? '/system_stats' : '/api/status'), init), 3500)
+            const j = res.ok ? await res.json().catch(() => ({})) : {}
+            if (native) {
+              const dev = (Array.isArray(j.devices) ? j.devices : [])[0] || {}
+              localAlive = Boolean(dev.name) || (Array.isArray(j.devices) && j.devices.length > 0)
+              localNote = localAlive
+                ? `本机官方 ComfyUI 可用（${dev.name || 'GPU'}，显存余 ${Math.round((Number(dev.vram_free) || 0) / 1048576)}MB）`
+                : '本机官方 ComfyUI 没就绪（/system_stats 不通）—— 生图时会回落中转站'
+            } else {
+              localAlive = j?.comfy?.alive === true
+              localNote = localAlive
+                ? `本机简易接口可用（${j.comfy.gpu || 'GPU'}，显存余 ${Math.round((Number(j.comfy.vram_free) || 0) / 1048576)}MB）`
+                : `本机简易接口没就绪（${j?.comfy?.error || '包装服务没起'}）—— 生图时会回落中转站`
+            }
+          } catch (e) {
+            localAlive = false
+            localNote = `连不上本机服务（${toStr(e?.message).slice(0, 60) || '超时'}）—— 生图时会回落中转站`
+          }
         }
-        checks.push({ name: '本机 ComfyUI', ok: localAlive, optional: !localAlive, hint: localNote })
+        checks.push({ name: '本机服务', ok: localAlive, optional: !localAlive, hint: localNote })
       }
 
       // 本地能出图时，中转站只是"回落备胎"：没配也不算失败，只作提示

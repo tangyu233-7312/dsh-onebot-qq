@@ -287,7 +287,8 @@ test('action imagegen-check：未配置逐项提示；合法配置 GET /models 4
   const endpoints = createAdminEndpoints({ kernel: h.kernel, configPath: h.configPath, dataDir: h.dataDir, log: quiet(), ops: null })
   const empty = await endpoints.handle('action', { id: 'imagegen-check' })
   assert.equal(empty.ok, false, '没填凭据 → 不通过')
-  assert.ok(Array.isArray(empty.checks) && empty.checks.length === 4)
+  assert.ok(Array.isArray(empty.checks) && empty.checks.length === 5, '协议/地址/模型/Key/备用接口')
+  assert.ok(empty.checks.some((c) => c.name === '备用接口' && c.ok), '备用接口是可选，空着算通过')
   assert.ok(empty.checks.some((c) => c.name === 'API 地址' && !c.ok))
   assert.match(String(empty.error), /生图配置不完整/)
 
@@ -312,7 +313,7 @@ test('action imagegen-check：未配置逐项提示；合法配置 GET /models 4
   const ok = await endpoints2.handle('action', { id: 'imagegen-check' })
   assert.equal(ok.ok, true, JSON.stringify(ok))
   assert.equal(fetched, 'https://example.invalid/v1/models')
-  assert.ok(ok.checks.every((c) => c.ok), '四项配置检查都应通过')
+  assert.ok(ok.checks.every((c) => c.ok), '五项配置检查都应通过')
   assert.match(String(ok.advice), /404|提示/, '404 只给提示不算失败')
 })
 
