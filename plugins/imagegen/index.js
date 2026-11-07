@@ -394,8 +394,8 @@ function promptContextOf(bot, target) {
 // 不是二选一 —— 本地活就用本地（免费、约 11 秒），本地没起来就回落中转站。
 // 所以它挂在"来源"上，不改 `credentials.gptImage.protocol`（那个仍然描述中转站怎么说话）。
 //
-// 对接的是 ComfyUI 外面那层 server.py（默认 127.0.0.1:8899），不是 8188 原生 API：
-// 原生 API 要自己拼工作流 JSON，换模型就得改代码；server.py 已经把这些封好了。
+// 两种适配器（localAdapter）：native = 官方 ComfyUI 本体（8188 原生 API，见 native.js，**默认**）；
+// simple-api = 带 /api/generate 的自建包装 HTTP 接口（本文件 comfyGenerate，旧配置兼容）。
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** 本地尺寸映射：插件按比例给的是 1536 档，8GB 显存上比 1280² 还险，降一档。 */
