@@ -16,10 +16,10 @@
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 
 import { resolveDataDir, resolveDshHome, resolveTmpDir, ensureDir } from '../platform/paths.js'
-import { readJsonFile, writeJsonFileSync, backupFileSync, atomicWriteFileSync } from '../platform/atomic.js'
+import { readJsonFile, writeJsonFileSync, backupFileSync } from '../platform/atomic.js'
 import {
   defaultConfig,
   loadConfig,
@@ -100,10 +100,6 @@ function flagString(flags, name) {
 function resolveDataDirFromFlags(flags) {
   // 与内核一致：--data-dir > DSH_QQ_DATA_DIR > $DSH_HOME/dsh-onebot-qq
   return resolveDataDir(flagString(flags, 'data-dir') || String(process.env.DSH_QQ_DATA_DIR || ''), process.env)
-}
-
-function mark(ok) {
-  return ok ? '✅' : '❌'
 }
 
 function printHelp() {

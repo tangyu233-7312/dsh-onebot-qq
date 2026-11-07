@@ -312,21 +312,14 @@ function buildRemoteTiers(primary, fallbacks, log) {
   if (primary.baseUrl && primary.apiKey) tiers.push({ label: '主站（第2级）', creds: primary })
   else if (primary.baseUrl && !primary.apiKey) log?.warn?.('[生图] 主站有地址但没 API Key，跳过（备用接口仍可尝试）')
   fallbacks.forEach((one, i) => {
-    let key = one.apiKey
-    if (one.apiKeyEnv) {
-      key = String(process.env[one.apiKeyEnv] || '')
-      if (!key) {
-        log?.warn?.('[生图] 备用接口第 ' + (i + 1) + ' 条的环境变量 ' + one.apiKeyEnv + ' 没设置，跳过这一级')
-        return
-      }
-    }
+    // Key 已在 collectFallbacks 里解析好（环境变量优先）；空 Key 也照打，交给服务端判断
     tiers.push({
       label: '备用' + (i + 1) + '（第' + (i + 3) + '级）',
       creds: {
         protocol: one.protocol || primary.protocol,
         baseUrl: one.baseUrl,
         model: one.model || primary.model,
-        apiKey: key,
+        apiKey: one.apiKey,
       },
     })
   })
@@ -1107,7 +1100,7 @@ export default {
         const remoteTiers = localReady ? [] : buildRemoteTiers(creds, fallbacks, log)
         if (!localReady && !remoteTiers.length) {
           throw new Error('未配置生图凭据：请设置环境变量 QQ_IMAGEGEN_BASE_URL / QQ_IMAGEGEN_API_KEY，或在实例配置 credentials.gptImage 里填'
-            + (fallbacks.length ? '（备用接口也都不完整：检查 baseUrl / apiKeyEnv）' : '')
+            + (fallbacks.length ? '（已填的备用接口也缺主站级凭据：检查地址 / Key）' : '')
             + (local.enabled ? `（本机 ComfyUI 也没起来：${localWhy}）` : ''))
         }
 

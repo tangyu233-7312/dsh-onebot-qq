@@ -213,15 +213,6 @@ async function fetchGroupList(kernel) {
   }
 }
 
-function runtimeIgnoreList(kernel) {
-  const ri = kernel?.state?.runtimeIgnore
-  if (!ri) return []
-  if (typeof ri.list === 'function') return toStrList(safe(() => ri.list(), []))
-  if (ri.set instanceof Set) return [...ri.set].map(String)
-  if (ri instanceof Set) return [...ri].map(String)
-  return []
-}
-
 function isRuntimeIgnored(kernel, gid) {
   const ri = kernel?.state?.runtimeIgnore
   if (!ri) return false

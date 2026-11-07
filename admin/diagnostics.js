@@ -354,19 +354,12 @@ function checkImagegen(kernel) {
   // 不写死端口/模型：没填就说没填，诊断只反映真实配置
   const localUrl = toStr(ic.localUrl)
   const localAdapter = toStr(ic.localAdapter) === 'simple-api' ? '简易接口' : '官方 ComfyUI'
-  const fallbacks = safe(() => {
-    const raw = toStr(ic.fallbackApis).trim()
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    const list = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.apis) ? parsed.apis : null)
-    return Array.isArray(list) ? list : null
-  }, null)
+  // 备用接口（第 3/4 级）：每级一个 BaseUrl 字段，填了才算配
+  const fbLevels = [1, 2].filter((n) => toStr(ic['fallback' + n + 'BaseUrl']) !== '')
   const remoteOk = Boolean(baseUrl && keySet)
-  const ok = localOn || remoteOk || Boolean(fallbacks && fallbacks.length)
+  const ok = localOn || remoteOk || fbLevels.length > 0
   const localPart = localOn ? `本机 ${localAdapter} 优先（${localUrl ? sanitizeUrl(localUrl) : '地址未填'}；没起来自动回落中转站）` : ''
-  const fallbackPart = fallbacks === null
-    ? '备用接口配置不是合法 JSON 数组'
-    : (fallbacks.length ? `备用接口 ${fallbacks.length} 级（主站失败才用）` : '')
+  const fallbackPart = fbLevels.length ? `备用接口第 ${fbLevels.map((n) => n + 2).join(' / ')} 级（主站失败才用）` : ''
   const remotePart = remoteOk
     ? `中转站已配置（协议 ${protocol}，模型 ${model || '未指定'}，地址 ${sanitizeUrl(baseUrl)}，API Key 已配置${env.apiKey ? '（环境变量覆盖）' : ''}）`
     : `中转站未配置（协议 ${protocol}，模型 ${model || '未指定'}${baseUrl ? `，地址 ${sanitizeUrl(baseUrl)}` : '，地址未填'}，API Key ${keySet ? '已配置' : '未配置'}）`

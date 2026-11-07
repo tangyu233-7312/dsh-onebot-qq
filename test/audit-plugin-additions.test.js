@@ -16,7 +16,7 @@ import path from 'node:path'
 
 import {
   bootKernel, emitRaw, tapInbound, waitFor,
-  ADMIN_QQ, GROUP_ID, MEMBER_QQ, groupAtEvent, privateEvent,
+  ADMIN_QQ, MEMBER_QQ, groupAtEvent, privateEvent,
 } from './helpers.mjs'
 import { fingerprint } from '../plugins/anti-repeat/index.js'
 
