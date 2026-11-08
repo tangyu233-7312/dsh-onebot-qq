@@ -80,6 +80,20 @@ test('脱敏：root 凭据 / 密码 / API key / Bearer 分别命中', () => {
   assert.ok(bearer.hits.includes('apiKey'))
 })
 
+test('脱敏（2026-11-08 收窄）：只是提到「密码」不算，明确给了值才拦', () => {
+  const hit = (s) => sanitizeSensitive(s).hits.includes('password')
+  // 提到词、没给值 → 原样保留（这几条以前会被整段吃掉，群里看着就是莫名其妙的 [已隐去]）
+  for (const s of ['忘记密码怎么办', '你是不是忘了密码是多少', '密码', '密码 怎么办']) {
+    assert.equal(hit(s), false, s + ' 不该命中')
+    assert.equal(sanitizeSensitive(s).text, s, s + ' 应原样保留')
+  }
+  // 明确给了值 → 照旧拦（四种问法都算）
+  for (const s of ['我主人的密码是123456', '密码：hunter2', 'password is hunter2', 'Password: abc123', '密码 abc123']) {
+    assert.equal(hit(s), true, s + ' 应该命中')
+    assert.ok(sanitizeSensitive(s).text.includes('[已隐去]'), s + ' 应被隐去')
+  }
+})
+
 test('脱敏：hits 名与契约 SENSITIVE_KINDS 对齐；exempt 只跳过过滤不删字段', () => {
   const r = sanitizeSensitive('QQ是123456789，IP 198.51.100.42', { exempt: false })
   assert.ok(r.hits.every((h) => SENSITIVE_KINDS.includes(h)), `hits=${r.hits}`)
