@@ -448,11 +448,11 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
     }
   }
 
-  /** 新手向导清单（契约 §3.2 的 5 项）。 */
-  function onboardingOf(raw, persona, health, imagegen) {
+  /** 新手向导清单（契约 §3.2 的 5 项 + 可选的语气守卫）。 */
+  function onboardingOf(raw, persona, health, imagegen, toneGuard) {
     const adminQq = Number(getPath(raw, 'adminQq')) || 0
     const napOk = Boolean(health?.linked) && !health?.stale
-    return [
+    const items = [
       {
         id: 'config', label: '配置文件', required: true, ok: configAccessOk(),
         hint: configAccessOk() ? '数据目录与配置文件可读写' : '数据目录/配置文件不可写：检查目录权限（Windows 用管理员/换目录）',
@@ -476,6 +476,21 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
         hint: imagegen?.configured ? '生图凭据已就绪' : '可选：在「生图」页填地址/模型/API Key（不填不影响聊天）',
       },
     ]
+    // 语气守卫（可选，2026-11-08）：判定接口没填时它整个不启用 —— 这件事必须在总览上看得见，
+    // 否则用户以为开着、其实一句都没判过。提醒只走控制台，绝不往 QQ 上说话。
+    if (toneGuard) {
+      const ready = toneGuard.ready === true && toneGuard.enabled !== false
+      const missing = Array.isArray(toneGuard.missing) && toneGuard.missing.length ? toneGuard.missing.join(' / ') : '地址 / 模型'
+      items.push({
+        id: 'toneGuard', label: '语气守卫', required: false, ok: ready,
+        hint: ready
+          ? (toneGuard.mode === 'host' ? '判定走宿主默认模型' : '判定接口已就绪：' + (toneGuard.model || '?') + ' @ ' + (toneGuard.baseUrl || '?'))
+          : (toneGuard.enabled === false
+            ? '已关掉（在「语气守卫」页打开）；机器人行为和以前一样'
+            : '可选：还没填判定接口（缺 ' + missing + '）→ 语气守卫未启用，不判定、不改语气、不记账。去「语气守卫」页填，改完下一句生效'),
+      })
+    }
+    return items
   }
 
   /** 控制项 → 前端「群记忆·工具配置」那一行的形状。 */
@@ -578,7 +593,9 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
       platform: toStr(safe(() => process.platform, '')),
       node: toStr(safe(() => process.version, '')),
     }
-    const onboarding = onboardingOf(raw, persona, onebotHealth, imagegen)
+    // 语气守卫的实时状态（插件没装/没加载时是 null → 总览不显示这一项）
+    const toneGuard = safe(() => kernel?.shared?.toneGuard?.judgeInfo?.(), null)
+    const onboarding = onboardingOf(raw, persona, onebotHealth, imagegen, toneGuard)
 
     const modules = collectModules(kernel, raw)
     const longForward = (() => {

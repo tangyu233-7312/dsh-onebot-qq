@@ -333,5 +333,94 @@ export default {
         return { pass: true }
       },
     })
+    // ── /tone（主人）：语气守卫的观察窗 ──────────────────────────
+    // 零 token 的看与清；test 会真跑**一次**判定（花的是语气守卫那本接口的钱，不走主模型）。
+    // 为什么放这个插件而不是语气守卫自己注册：/help 的清单是从**本插件注册表**动态生成的，
+    // 在别处注册的命令不会出现在 /help 里（纪律见文件头第 2 条）。
+    define('tone', {
+      permission: 'master',
+      description: '语气守卫：/tone status 看谁被记账；/tone test <一句话> 试判；/tone clear [QQ|all] 清记录（仅主人）',
+      async run(ev, args) {
+        if (await denyUnlessMaster(ev, 'tone')) return
+        const guard = bot.shared && bot.shared.toneGuard
+        if (!guard) {
+          await reply(ev, '⚠️ 语气守卫没启用（控制台「子插件」页确认 tone-guard 是开着的）', 'tone')
+          return
+        }
+        const list = Array.isArray(args) ? args : []
+        const sub = String(list[0] || 'status').toLowerCase()
+        const info = guard.judgeInfo()
+
+        if (sub === 'test') {
+          // 正题要整段拿（带标点/空格的辱骂话不能被按空格切碎）
+          const m = /^\/tone\s+test\s*([\s\S]*)$/i.exec(String(ev.text || '').trim())
+          const text = String(m ? m[1] : list.slice(1).join(' ')).trim()
+          if (!text) {
+            await reply(ev, '用法：/tone test 傻逼闭嘴（按你群里真实的语气写一句，别写口令）', 'tone')
+            return
+          }
+          if (!info.ready) {
+            await reply(ev, '⚠️ 判定接口没配（缺 ' + ((info.missing && info.missing.join(' / ')) || '地址 / 模型') + '） —— 语气守卫现在没启用，不会误判。去控制台「语气守卫」页填上，改完下一句话就生效。', 'tone')
+            return
+          }
+          const r = await guard.judge({
+            text,
+            chatKey: ev.chatKey,
+            qq: Number(ev.sender && ev.sender.qq),
+            name: (ev.sender && (ev.sender.card || ev.sender.name)) || '主人',
+            isGroup: ev.isGroup,
+            mentionedSelf: true,
+            hasQuote: false,
+            excludeMessageId: ev.messageId,
+          })
+          const v = r && r.verdict
+          const conf = v ? Number(v.confidence || 0) : 0
+          const minConf = Number.isFinite(Number(info.minConfidence)) ? Number(info.minConfidence) : 0.7
+          const head = v
+            ? '判定：' + v.intent + '（把握 ' + conf.toFixed(2) + '，target=' + (v.target || '未给') + '）' + (v.reason ? '\n理由：' + v.reason : '')
+            : '没判出结论：' + ((r && r.reason) || '未知原因')
+          const tailLine = v
+            ? (v.intent === 'tease' ? '→ 算调侃，什么都不做' : (conf >= minConf ? '→ 会记一次账（再攒到第 3 次才开怼）' : '→ 把握不够（低于 ' + minConf + '），当没判（宁可漏判）'))
+            : '→ 当没判，照常回话'
+          const foot = '\n（' + ((r && r.ms) || 0) + 'ms，走 ' + ((r && r.source) === 'host' ? '宿主默认模型' : '你填的接口') + '）'
+          await reply(ev, head + '\n' + tailLine + foot, 'tone')
+          return
+        }
+
+        if (sub === 'clear') {
+          const what = String(list[1] || '').toLowerCase()
+          if (what === 'all') {
+            const n = guard.clear('', 0)
+            await reply(ev, '🧹 已清掉全部 ' + n + ' 条记录（屏蔽 / 攻击态一并解除）', 'tone')
+            return
+          }
+          const qq = Number(what)
+          if (Number.isInteger(qq) && qq > 0) {
+            const n = guard.clear(ev.chatKey, qq)
+            await reply(ev, '🧹 本会话已清掉 QQ:' + qq + ' 的 ' + n + ' 条记录', 'tone')
+            return
+          }
+          const n = guard.clear(ev.chatKey, 0)
+          await reply(ev, '🧹 本会话已清掉 ' + n + ' 条记录', 'tone')
+          return
+        }
+
+        // 默认 = status
+        const lines = []
+        lines.push(info.mode === 'host'
+          ? '判定接口：宿主默认模型（每轮多一次短调用）'
+          : (info.ready
+            ? '判定接口：' + info.model + ' @ ' + info.baseUrl + (info.hasKey ? '' : '（未填 Key）')
+            : '判定接口：未配置（缺 ' + ((info.missing && info.missing.join(' / ')) || '地址 / 模型') + '）→ 语气守卫未启用，机器人行为和以前一样'))
+        if (info.enabled === false) lines.push('总开关：已关（控制台「语气守卫」页打开）')
+        const mine = guard.rows(ev.chatKey)
+        lines.push('本会话被记账：' + mine.length + ' 人')
+        for (const r of mine.slice(0, 10)) lines.push('· ' + r.label)
+        const all = guard.rows('')
+        if (all.length > mine.length) lines.push('（全机器共 ' + all.length + ' 条，/tone clear all 可全清）')
+        if (!mine.length) lines.push('（前两次辱骂、第一次垃圾消息只在日志里，不发 QQ）')
+        await reply(ev, lines.join('\n'), 'tone')
+      },
+    })
   },
 }

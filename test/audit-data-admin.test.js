@@ -173,7 +173,7 @@ test('schema（新手引导）：protocol enum / 模型 suggestions / info 控�
   assert.equal(localModelCtrl.default, '', '本地模型名默认空，不预设任何模型')
 })
 
-test('status（新手引导）：meta / onboarding 5 项 / onebot / imagegen（绝不回显 key）', async (t) => {
+test('status（新手引导）：meta / onboarding 6 项 / onebot / imagegen（绝不回显 key）', async (t) => {
   const h = await boot(t)
   const endpoints = createAdminEndpoints({ kernel: h.kernel, configPath: h.configPath, dataDir: h.dataDir, log: quiet(), ops: null })
   const st = await endpoints.handle('status', {})
@@ -186,14 +186,19 @@ test('status（新手引导）：meta / onboarding 5 项 / onebot / imagegen（�
   assert.equal(st.meta.dataDir, h.dataDir)
   assert.equal(st.meta.configReady, true, '有 adminQq 的配置 → configReady=true')
 
-  assert.ok(Array.isArray(st.onboarding) && st.onboarding.length === 5, 'onboarding 5 项')
-  assert.deepEqual(st.onboarding.map((o) => o.id), ['config', 'adminQq', 'onebot', 'persona', 'imagegen'])
+  assert.ok(Array.isArray(st.onboarding) && st.onboarding.length === 6, 'onboarding 6 项（2026-11-08 加了可选的语气守卫）')
+  assert.deepEqual(st.onboarding.map((o) => o.id), ['config', 'adminQq', 'onebot', 'persona', 'imagegen', 'toneGuard'])
   for (const item of st.onboarding) {
     for (const f of ['id', 'label', 'ok', 'required', 'hint']) assert.ok(f in item, `onboarding 项缺 ${f}`)
   }
   assert.equal(st.onboarding.find((o) => o.id === 'adminQq').ok, true)
   assert.equal(st.onboarding.find((o) => o.id === 'onebot').ok, false, '未连接 → ❌')
   assert.equal(st.onboarding.find((o) => o.id === 'imagegen').required, false, '生图是可选项')
+  // 语气守卫：没填判定接口时它是「未启用」—— 必须在总览看得见，但不能算必填失败
+  const tgItem = st.onboarding.find((o) => o.id === 'toneGuard')
+  assert.equal(tgItem.required, false, '语气守卫是可选项')
+  assert.equal(tgItem.ok, false, '没填判定接口 → 总览显示未启用')
+  assert.match(String(tgItem.hint), /未填|未启用/, '要说清怎么开起来')
 
   assert.ok(st.onebot && 'wsUrl' in st.onebot && 'wsTokenSet' in st.onebot && 'linked' in st.onebot)
   assert.ok(st.imagegen && 'configured' in st.imagegen && 'protocol' in st.imagegen)
