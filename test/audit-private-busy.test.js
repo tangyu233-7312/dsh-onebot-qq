@@ -15,6 +15,17 @@ import path from 'node:path'
 const root = path.join(import.meta.dirname, '..')
 const read = (f) => fs.readFileSync(path.join(root, f), 'utf8')
 
+/** 取某个顶层函数的完整函数体：从 `function xxx` 到下一个顶层 `function `。
+ *  为什么不用固定字数窗口：函数一长就误报。2026-11-08 实测 tickPrivateSilence 只长了 7 个字，
+ *  那条「要走节流日志」的断言就红了，而代码本身完全正常（logPrivateSkip 就在函数里）。
+ */
+function fnBody(src, name) {
+  const start = src.indexOf('function ' + name)
+  if (start < 0) return ''
+  const endRel = src.slice(start + 1).search(/\nfunction /)
+  return endRel < 0 ? src.slice(start) : src.slice(start, start + 1 + endRel)
+}
+
 test('hasPendingTurn 必须带超时（否则永久占线）', () => {
   const src = read('index.js')
   const i = src.indexOf('const hasPendingTurn')
@@ -27,15 +38,14 @@ test('hasPendingTurn 必须带超时（否则永久占线）', () => {
 
 test('私聊每一步 continue 都要能说出原因', () => {
   const src = read('kernel/pacing.js')
-  const i = src.indexOf('function tickPrivateSilence')
-  const body = src.slice(i, i + 1800)
+  const body = fnBody(src, 'tickPrivateSilence')
   for (const reason of ['还没冷场', '这条线正忙', '没有对话基线']) {
     assert.ok(body.includes(reason), '缺诊断原因：' + reason)
   }
   // 配额那道闸要**说出是哪一种**（2026-10-30：三个原因混成一句「配额或间隔未到」，
   // 线上分不清是每小时上限、每天上限还是最小间隔）
   assert.match(body, /quotaBlocked/, '配额要单独算出具体原因')
-  const quota = src.slice(src.indexOf('function privateQuotaBlocked'), src.indexOf('function privateQuotaBlocked') + 1800)
+  const quota = fnBody(src, 'privateQuotaBlocked')
   for (const why of ['每小时上限', '每天上限', '距上次主动开口还差']) {
     assert.ok(quota.includes(why), '配额原因要具体：' + why)
   }
