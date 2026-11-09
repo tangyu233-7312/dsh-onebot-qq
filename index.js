@@ -827,7 +827,7 @@ export async function apply(ctx, bundleConfig = {}) {
     get selfLog() { return kernel.selfLog },
     /** 当前生效的人设版本名（人设版本化）：工具回执与每轮头顶那行都用它。 */
     get personaLabel() { return kernel.personaLabel() },
-    /** 跨插件共享能力槽（只读视图）：插件把自己的能力挂上来供内核/控制台调用（如 memoryAccumulate）。 */
+    /** 跨插件共享能力槽（只读视图）：插件把自己的能力挂上来供内核/控制台调用（如 longMemory）。 */
     get shared() { return kernel.shared },
     /** 回复节奏能力（合批窗口 / 主动接话调度 + 状态）：插件可读 `config`、`stats()` 做控制台/自检 */
     get pacing() { return kernel.pacing },
