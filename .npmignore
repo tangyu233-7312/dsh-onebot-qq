@@ -1,5 +1,6 @@
 test/
 _reference/
+_removed/
 .github/
 *.tgz
 *.bak-*

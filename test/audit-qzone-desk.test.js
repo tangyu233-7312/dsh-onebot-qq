@@ -45,7 +45,7 @@ test('素材装配：当天所有会话（群 + 私聊）都在，且落地一�
   seedDay(dataDir)
   const r = buildDailyMaterial({
     archiveDir: path.join(dataDir, 'logs', 'qq_chat'),
-    memoryDir: path.join(dataDir, 'qq-memory'),
+    memoryFile: path.join(dataDir, 'long-memory', 'memories.jsonl'),
     workspaceDir: path.join(dataDir, 'workspace'),
     date: DAY,
   })
@@ -67,7 +67,7 @@ test('素材装配：只取当天，前一天的不进素材', () => {
     JSON.stringify({ dir: 'in', ts: start - 3600 * 1000, sender: { qq: 1, name: '昨天的人' }, text: '昨天的话' }),
     JSON.stringify({ dir: 'in', ts: start + 60000, sender: { qq: 2, name: '今天的人' }, text: '今天的话' }),
   ].join('\n'))
-  const r = buildDailyMaterial({ archiveDir: dir, memoryDir: path.join(dataDir, 'qq-memory'), workspaceDir: path.join(dataDir, 'workspace'), date: DAY })
+  const r = buildDailyMaterial({ archiveDir: dir, memoryFile: path.join(dataDir, 'long-memory', 'memories.jsonl'), workspaceDir: path.join(dataDir, 'workspace'), date: DAY })
   assert.match(r.text, /今天的话/)
   assert.doesNotMatch(r.text, /昨天的话/)
 })
@@ -158,7 +158,7 @@ test('素材装配：days=2 会把昨天也带上，并标日期', () => {
     JSON.stringify({ dir: 'in', ts: start + 60000, sender: { qq: 3, name: '今天的' }, text: '今天的话' }),
   ].join('\n'))
   const r = buildDailyMaterial({
-    archiveDir: dir, memoryDir: path.join(dataDir, 'qq-memory'), workspaceDir: path.join(dataDir, 'workspace'),
+    archiveDir: dir, memoryFile: path.join(dataDir, 'long-memory', 'memories.jsonl'), workspaceDir: path.join(dataDir, 'workspace'),
     date: DAY, days: 2,
   })
   assert.match(r.text, /最近 2 天的经历/)
@@ -168,21 +168,28 @@ test('素材装配：days=2 会把昨天也带上，并标日期', () => {
   assert.match(r.text, /\[\d{2}-\d{2} \d{2}:\d{2}\]/, '跨天要给每条带日期，否则分不清是哪天')
 })
 
-test('素材装配：过旧的群记忆不会被当成本次经历', () => {
+test('素材装配：太旧的群记忆不会被当成本次经历（long-memory 事件流口径）', () => {
   const dataDir = tmpDir('qzone-oldmem')
   seedDay(dataDir)
-  const memDir = path.join(dataDir, 'qq-memory')
+  const memDir = path.join(dataDir, 'long-memory')
   fs.mkdirSync(memDir, { recursive: true })
-  const memFile = path.join(memDir, '573144674.md')
-  fs.writeFileSync(memFile, '# 群 573144674 · 对话记忆\n\n> 最后更新：很久以前\n- 十天前的旧事\n')
-  const old = new Date(Date.now() - 6 * 24 * 3600 * 1000)
-  fs.utimesSync(memFile, old, old)
+  const memFile = path.join(memDir, 'memories.jsonl')
+  const oldTs = Date.now() - 10 * 24 * 3600 * 1000
+  const rows = [
+    // 十天前的旧事 + 一条昨天的（应该只出现后者）
+    { op: 'add', at: oldTs, memory: { id: 'm_old', scope: 'group:573144674', text: '十天前的旧事', importance: 0.6, createdAt: oldTs } },
+    { op: 'add', at: Date.now(), memory: { id: 'm_new', scope: 'group:573144674', text: '昨天说好的事', importance: 0.7, createdAt: Date.now() - 2 * 3600 * 1000 } },
+    // 私聊记忆绝不能进空间素材
+    { op: 'add', at: Date.now(), memory: { id: 'm_pm', scope: 'private:10001', text: '私聊里的秘密', importance: 0.9, createdAt: Date.now() } },
+  ]
+  fs.writeFileSync(memFile, rows.map((r) => JSON.stringify(r)).join('\n') + '\n')
   const r = buildDailyMaterial({
-    archiveDir: path.join(dataDir, 'logs', 'qq_chat'), memoryDir: memDir,
+    archiveDir: path.join(dataDir, 'logs', 'qq_chat'), memoryFile: memFile,
     workspaceDir: path.join(dataDir, 'workspace'), date: DAY, days: 2,
   })
   assert.doesNotMatch(r.text, /十天前的旧事/, '旧记忆不能冒充今天的经历')
-  assert.match(r.text, /太旧，已略过/)
+  assert.match(r.text, /昨天说好的事/, '窗口内的记忆要能进素材')
+  assert.doesNotMatch(r.text, /私聊里的秘密/, '私聊记忆一个字都不许进空间')
 })
 
 test('素材装配：onlyChatKey 只取一个群（/空间 群聊 用）', () => {
@@ -190,7 +197,7 @@ test('素材装配：onlyChatKey 只取一个群（/空间 群聊 用）', () =>
   seedDay(dataDir)
   const r = buildDailyMaterial({
     archiveDir: path.join(dataDir, 'logs', 'qq_chat'),
-    memoryDir: path.join(dataDir, 'qq-memory'),
+    memoryFile: path.join(dataDir, 'long-memory', 'memories.jsonl'),
     workspaceDir: path.join(dataDir, 'workspace'),
     date: DAY,
     onlyChatKey: 'group:573144674',

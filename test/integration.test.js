@@ -54,7 +54,7 @@ test('1. 全量装配：子插件 / 原生工具 / 命令全部注册 + 单例�
   t.after(() => h.dispose())
   // 不写死数量：新增子插件不该让测试红
   const wantPlugins = ['gate-wake', 'commands', 'file-transfer', 'persona-voice', 'group-welcome',
-    'imagegen', 'link-parser', 'stickers', 'group-memory']
+    'imagegen', 'link-parser', 'stickers', 'long-memory']
   const loadedIds = h.kernel.plugins.map((p) => p.id)
   for (const id of wantPlugins) assert.ok(loadedIds.includes(id), `子插件 ${id} 应被自动发现并加载`)
   assert.equal(h.kernel.plugins.length, h.kernel.pluginDefs.length, '发现的插件全部加载（无静默跳过）')
@@ -62,7 +62,7 @@ test('1. 全量装配：子插件 / 原生工具 / 命令全部注册 + 单例�
   assert.ok(h.kernel.pluginDefs.length >= wantPlugins.length, 'pluginDefs 至少含内置插件')
   // 原生工具只查「关键工具都在、数量不低于预期」，新增工具不该让测试红
   for (const name of ['send_message', 'recall', 'send_image', 'generate_image', 'avatar', 'send_sticker',
-    'sticker_catalog', 'read_memory', 'memory_append']) {
+    'sticker_catalog', 'remember', 'recall_memory', 'memory_status']) {
     assert.ok(h.kernel.toolDefs.has(name), `应注册原生工具 ${name}`)
   }
   assert.ok(h.kernel.toolDefs.size >= 9, `原生工具至少 9 个，实际 ${[...h.kernel.toolDefs.keys()].join(',')}`)

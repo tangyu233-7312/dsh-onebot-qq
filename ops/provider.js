@@ -1,10 +1,10 @@
 /**
  * ops/provider.js — **可选的运维能力**适配器（默认全 null；站点私有实现不进包）。
  *
- * 背景：控制台里「跑离线自检 / 清理临时文件 / 备份去重 / 群记忆积累」这些动作
+ * 背景：控制台里「跑离线自检 / 清理临时文件 / 备份去重」这些动作
  * 天然依赖"某台机器上的脚本和 systemd/cron"，不能进通用插件包。这里只定义接口：
  *
- *   ops = { selfcheck, systemdProbe, cleanup, dedup, memoryAccumulate, personaSwitch }
+ *   ops = { selfcheck, systemdProbe, cleanup, dedup, personaSwitch }
  *
  * 加载规则：
  *   · 默认读 `$DSH_HOME/dsh-onebot-qq/ops.local.mjs`（本机文件、gitignore、不进 npm 包）；
@@ -27,7 +27,7 @@ export const OPS_METHODS = [
   'systemdProbe',     // 服务探针：() => {服务名: 'active'|'inactive'|...}（Windows 站点不实现）
   'cleanup',          // 清理临时文件：({confirm}) => {previewLines, message}
   'dedup',            // 备份代际去重：({confirm}) => {previewLines, message}
-  'memoryAccumulate', // 群记忆立刻积累一轮：({confirm}) => {message}
+  // memoryAccumulate 2026-11-09 移除：群记忆下线，长期记忆由 long-memory 插件自己整理
   'personaSwitch',    // 本机自定义切人设：({name}) => {message}（不实现则走 platform/persona-ref）
 ]
 

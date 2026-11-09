@@ -3,13 +3,13 @@
  *
  * 为什么单独一层：写说说这件事的**输入**是「今天发生了什么」，而这件事散在三处：
  *   ① 聊天留档 `logs/qq_chat/{group|private}_<号>.jsonl`（当天所有消息，含机器人自己说的）
- *   ② 群记忆 `qq-memory/<群号>.md`（如果开了 group-memory，仅作摘要参考）
+ *   ② 本群的长期记忆 `long-memory/memories.jsonl`（只读 group:<群号> 作用域，私聊记忆不进）
  *   ③ 空间里已经发过的说说（由 feed.js 另取）
  * 三处都不属于任何一个 DSH 会话 —— 这正是「会话记忆各自独立、它读不到一整天」的根因。
  * 本模块把它们合成**一篇人可读的 Markdown**：既喂给模型，也能被主人直接打开看。
  *
  * 三条纪律：
- *  ① 只读，不写聊天留档（留档归 group-memory 的车轮清理管，绝不在这里删）。
+ *  ① 只读，不写聊天留档、不写记忆库（空间素材永远只是"看"）。
  *  ② 预算先给「最近」，超了从最早的开始丢 —— 越靠后越接近它此刻的心情。
  *  ③ 输出必须**人可读**（带时间、带昵称、带 QQ），排障时不用再猜模型看到了什么。
  */
@@ -115,30 +115,60 @@ function tailByChars(rows, budget, withDate) {
 }
 
 /**
- * 群记忆摘录。
- * ⚠️ 记忆可能是**很久以前**积累的（group-memory 关着就不会再更新）：
- * 2026-10-28 的素材里混进过 10-23 的旧记忆，读起来像“今天发生的事”，那是错的。
- * 所以这里按文件 mtime 判新旧：超过 memoryMaxAgeDays 天就整段不要，宁可少一段。
- * @returns {{text:string, skipped:string, ageDays:number}}
+ * 群记忆摘录（2026-11-09 起从「每群一篇 md」换成「long-memory 事件库」）。
+ *
+ * 为什么不读 md 了：旧的 group-memory 已移出 plugins/，`qq-memory/<群号>.md` 不再更新；
+ * 再读它只会把「记不清的旧摘要」当成今天的事写进空间。
+ *
+ * 新口径：从长记忆库（`<数据目录>/long-memory/memories.jsonl`）里取**这个群**作用域、
+ * 未遗忘、且最近 memoryMaxAgeDays 天内记录或被想起过的记忆，最多几条。
+ * 读不到文件 = 没有，不算错。
+ *
+ * 隐私：只读 `group:<群号>` 作用域 —— 私聊记忆一个字都不进空间素材。
+ * @returns {{text:string, skipped:string, ageDays:number, count:number}}
  */
-function memoryExcerpt(memoryDir, chatKey, maxChars, maxAgeDays) {
+function memoryExcerpt(memoryFile, chatKey, maxChars, maxAgeDays) {
   const m = /^(group|private):(\d{4,12})$/.exec(chatKey)
-  if (!m || m[1] !== 'group') return { text: '', skipped: '', ageDays: 0 }
-  const file = path.join(memoryDir, m[2] + '.md')
-  let text = ''
-  let mtime = 0
+  if (!m || m[1] !== 'group') return { text: '', skipped: '', ageDays: 0, count: 0 }
+  const scope = 'group:' + m[2]
+  let raw = ''
   try {
-    text = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')
-    mtime = fs.statSync(file).mtimeMs
-  } catch { return { text: '', skipped: '', ageDays: 0 } }
-  const t = text.trim()
-  if (!t) return { text: '', skipped: '', ageDays: 0 }
-  const ageDays = Math.floor((Date.now() - mtime) / (24 * 3600 * 1000))
-  if (maxAgeDays > 0 && ageDays > maxAgeDays) {
-    return { text: '', skipped: '记忆最后更新于 ' + ageDays + ' 天前，太旧，已略过', ageDays }
+    raw = fs.readFileSync(memoryFile, 'utf8').replace(/^\uFEFF/, '')
+  } catch { return { text: '', skipped: '', ageDays: 0, count: 0 } }
+  // 回放事件流（与 long-memory 的 store 同一口径，但这里只读、不写、不缓存）
+  const rows = new Map()
+  for (const line of raw.split('\n')) {
+    const s = line.trim()
+    if (!s) continue
+    let ev
+    try { ev = JSON.parse(s) } catch { continue } // 坏行（半行写入）跳过
+    if (!ev || typeof ev !== 'object') continue
+    if (ev.op === 'add' && ev.memory && String(ev.memory.scope || '') === scope) {
+      rows.set(String(ev.memory.id), { ...ev.memory })
+    } else if (ev.op === 'forget' && rows.has(String(ev.id))) {
+      rows.get(String(ev.id)).forgottenAt = Number(ev.at) || 1
+    } else if (ev.op === 'restore' && rows.has(String(ev.id))) {
+      rows.get(String(ev.id)).forgottenAt = 0
+    } else if (ev.op === 'recall' && rows.has(String(ev.id))) {
+      const r = rows.get(String(ev.id))
+      r.lastRecalledAt = Math.max(Number(r.lastRecalledAt) || 0, Number(ev.at) || 0)
+    }
   }
-  const body = t.length > maxChars ? t.slice(0, maxChars) + '\n…（记忆过长，已截断）' : t
-  return { text: body, skipped: '', ageDays }
+  if (!rows.size) return { text: '', skipped: '', ageDays: 0, count: 0 }
+  const span = Math.max(1, Number(maxAgeDays) || 1) * 24 * 3600 * 1000
+  const since = Date.now() - span
+  const fresh = [...rows.values()]
+    .filter((r) => !Number(r.forgottenAt) && String(r.text || '').trim())
+    .filter((r) => Math.max(Number(r.createdAt) || 0, Number(r.lastRecalledAt) || 0) >= since)
+    .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0))
+  if (!fresh.length) return { text: '', skipped: '这几天群里没有值得记的事', ageDays: 0, count: 0 }
+  let out = ''
+  for (const r of fresh.slice(0, 6)) {
+    const line = '- ' + String(r.text).replace(/\s+/g, ' ').trim()
+    if (out.length + line.length > maxChars) break
+    out += (out ? '\n' : '') + line
+  }
+  return { text: out, skipped: '', ageDays: 0, count: fresh.length }
 }
 
 /**
@@ -146,7 +176,7 @@ function memoryExcerpt(memoryDir, chatKey, maxChars, maxAgeDays) {
  * @returns {{date:string, text:string, stats:object, file:string}}
  */
 export function buildDailyMaterial({
-  archiveDir, memoryDir, workspaceDir, date,
+  archiveDir, memoryFile, workspaceDir, date,
   msgPerChat = 400, perChatChars = 8000, totalChars = 60000, memoryChars = 1200, includePrivate = true,
   onlyChatKey = '', days = 1, memoryMaxAgeDays = 0,
 } = {}) {
@@ -189,9 +219,9 @@ export function buildDailyMaterial({
       ? ((span > 1 ? mmdd(first) + ' ' : '') + hhmm(first) + '–' + (span > 1 ? mmdd(last) + ' ' : '') + hhmm(last))
       : '-'
     const head = '## ' + kind + num + '（' + (span > 1 ? '最近 ' + span + ' 天 ' : '今天 ') + c.total + ' 条，' + timeSpan + '）'
-    const mem = memoryExcerpt(String(memoryDir || ''), c.chatKey, memoryChars, memMaxAge || span)
+    const mem = memoryExcerpt(String(memoryFile || ''), c.chatKey, memoryChars, Math.max(1, Math.round((memMaxAge || span) / (24 * 3600 * 1000))))
     const body = [head]
-    if (mem.text) body.push('', '**群记忆摘要**（最后更新 ' + (mem.ageDays <= 0 ? '今天' : mem.ageDays + ' 天前') + '）', mem.text)
+    if (mem.text) body.push('', '**这个群最近的记忆**（共 ' + mem.count + ' 条）', mem.text)
     else if (mem.skipped) body.push('', '（' + mem.skipped + '）')
     if (dropped) body.push('', '（更早的 ' + dropped + ' 条已省略）')
     body.push('', lines.join('\n'))

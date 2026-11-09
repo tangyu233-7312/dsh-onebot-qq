@@ -90,7 +90,7 @@ test('e2e：假协议端 全链路（装配 / 群@入站→模型→工具→出
   // ── 1. 装配与注册 ────────────────────────────────────────────
   assert.ok(kernel.plugins.length >= 9, '至少 9 个内置子插件全部自动发现并加载')
     for (const id of ['gate-wake', 'commands', 'file-transfer', 'persona-voice', 'group-welcome',
-      'imagegen', 'link-parser', 'stickers', 'group-memory']) {
+      'imagegen', 'link-parser', 'stickers', 'long-memory']) {
       assert.ok(kernel.plugins.some((p) => p.id === id), `子插件 ${id} 应被加载`)
     }
   assert.equal(kernel.pluginErrors.size, 0, `插件加载不应有错误：${[...kernel.pluginErrors.keys()].join(',')}`)

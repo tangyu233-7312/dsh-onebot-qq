@@ -7,7 +7,8 @@
  *   set     写一个白名单配置键（热生效）
  *   module  子插件启停（写 pluginConfig.<id>.enabled）
  *   group   群管控：ignore / allowlist / blocklist / keywords / spont / welcome 的 add/remove/toggle/ensure
- *   memory  群记忆：list / read / save / config / setcfg / refresh
+ *   memory  旧·群记忆（2026-11-09 已下线，调用只回一句"去用「记忆」页"）
+ *   mem     长期记忆 long-memory：status / list / get / forget / restore / boost / purge / export / import / organize / preview / testLlm
  *   persona 人设：list / switch（platform/persona-ref.js，跨平台软链→复制降级）
  *   action  动作：reply-preset / reset-session / welcome-images / welcome-test / clear-qq-sessions
  *           + 新手引导（onebot-check / onebot-reconnect / imagegen-check）
@@ -36,9 +37,10 @@ import {
   getPath, pluginDefs, readValue, setPath, writeValue,
 } from './schema.js'
 import { hasOps } from '../ops/provider.js'
+import { isForgettable } from '../plugins/long-memory/decay.js'
 
 /** 8 个端点名（host 的未知端点报错信息也用它）。 */
-export const ENDPOINTS = ['schema', 'status', 'set', 'module', 'group', 'memory', 'persona', 'action']
+export const ENDPOINTS = ['schema', 'status', 'set', 'module', 'group', 'memory', 'mem', 'persona', 'action']
 
 /** 包版本兜底（优先 kernel.version；内核没给时读自身 package.json）。 */
 const requirePkg = createRequire(import.meta.url)
@@ -493,7 +495,7 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
     return items
   }
 
-  /** 控制项 → 前端「群记忆·工具配置」那一行的形状。 */
+  /** 控制项 → 控制台一行控件的形状（旧「群记忆·工具配置」也用它，现在给所有内联控件面板用）。 */
   function controlPayload(entry, raw) {
     return {
       key: entry.key,
@@ -897,246 +899,107 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
     }
   }
 
-  // ── memory（群记忆）──────────────────────────────────────────
-  const MEMORY_SECTIONS = ['## 唤醒与对话风格', '## 群里的人', '## 其它']
-  const gmCfg = () => pluginCfgRuntime('group-memory')
-  /** 单篇读取上限（字节）：控制台保存也按它限制，避免“保存成功但模型读不到尾巴”。 */
-  const memoryMaxBytes = () => Math.max(1000, Number(gmCfg().maxBytes) || 24000)
-  /** 历史版本保留份数（和积累器共用同一个配置键；控制台手改的 -manual 备份也按它清）。 */
-  const memoryRetain = () => Math.max(0, Math.min(200, Number(gmCfg().accumulateRetainRevisions ?? 20)))
-  const revisionStamp = () => {
-    const iso = new Date().toISOString().replace(/[-:T.]/g, '')
-    return `${iso.slice(0, 8)}-${iso.slice(8, 14)}`
-  }
-  /** 只留某群最近 keep 份（积累器 `<id>-YYYYMMDD-HHmmss[-n].md` + 控制台 `<id>-...-manual.md` 一起算）。 */
-  function pruneRevisionsFor(id, keep) {
-    if (keep <= 0) return 0
-    const revDir = path.join(memoryDir(), '.revisions')
-    let names = []
-    try { names = fs.readdirSync(revDir) } catch { return 0 }
-    const re = new RegExp(`^${id}-(?:\\d{8}-\\d{6}(?:-\\d+)?|\\d{8}-\\d{6}-manual)\\.md$`)
-    const entries = names.filter((n) => re.test(n))
-      .map((n) => ({ n, at: (() => { try { return fs.statSync(path.join(revDir, n)).mtimeMs } catch { return 0 } })() }))
-      .sort((a, b) => a.at - b.at || a.n.localeCompare(b.n))
-    let removed = 0
-    for (const e of entries.slice(0, Math.max(0, entries.length - keep))) {
-      try { fs.unlinkSync(path.join(revDir, e.n)); removed += 1 } catch { /* ignore */ }
-    }
-    return removed
+  // ── memory（旧·群记忆端点）2026-11-09 删除：控制台固定页「记忆」已换成 `mem`（long-memory 插件）。
+  //     旧端点连同 group-memory 插件一起下线；老数据在 <数据目录>/qq-memory/ 下原样保留（不删、不迁）。
+  async function memory() {
+    throw new Error('「群记忆」已下线：请用「记忆」页（long-memory）。老数据在 <数据目录>/qq-memory/ 下原样保留。')
   }
 
-  function memoryDir() {
-    const rt = runtimeOf()
-    const resolved = resolvedPathOf(pluginCfgRuntime('group-memory').dir)
-    if (resolved) return resolved
-    const rawDir = String(getPath(store.read(), ['pluginConfig', 'group-memory', 'dir']) || 'qq-memory')
-    return resolveDataPath(rawDir, dataDir || kernel?.dataDir || rt?.dataDir || '')
-  }
-
-  function memFile(gid) {
-    const id = String(gid == null ? '' : gid).trim()
-    if (!/^\d{4,12}$/.test(id)) throw new Error(`群号不合法：${JSON.stringify(gid)}`)
-    const file = path.join(memoryDir(), `${id}.md`)
-    if (!isInsidePath(memoryDir(), file)) throw new Error('记忆文件路径越界')
-    return { id, file }
-  }
-
-  function memInfo(gid) {
-    const { id, file } = memFile(gid)
-    try {
-      const st = fs.statSync(file)
-      const text = fs.readFileSync(file, 'utf8')
-      return {
-        group_id: id, exists: true, bytes: st.size,
-        mtime: new Date(st.mtimeMs).toISOString(),
-        mtimeMs: st.mtimeMs,
-        bullets: text.split(/\r?\n/).filter((l) => l.startsWith('- ')).length,
-      }
-    } catch {
-      return { group_id: id, exists: false, bytes: 0, mtime: '', bullets: 0 }
-    }
-  }
-
-  async function memoryGroupIds(onebotGroupsIn) {
-    // 口径（与现网 group-memory 的 discover_groups 一致）：有群线会话的群 ∪ 唤醒词数字键 ∪ 已有文件。
-    // ⚠️ 唤醒词键可能是 1–3 位/13+ 位纯数字（不是群号）：必须过滤成 4–12 位，否则 memFile 抛错会整页挂掉。
-    const ids = new Set()
-    for (const gid of (parseKeywordMap(pluginCfg(store.read(), 'gate-wake').keywords).keys())) {
-      if (/^\d{4,12}$/.test(gid)) ids.add(gid)
-    }
-    const dir = memoryDir()
-    try {
-      for (const name of fs.readdirSync(dir)) {
-        const m = /^(\d{4,12})\.md$/.exec(name)
-        if (m) ids.add(m[1])
-      }
-    } catch { /* 目录还没建 */ }
-    const lineGids = new Set(sessionKeysOf(kernel).filter((k) => k.startsWith('group:')).map((k) => String(k).slice(6)))
-    const onebotGroups = onebotGroupsIn || await fetchGroupList(kernel)
-    for (const g of onebotGroups) if (lineGids.has(g.id)) ids.add(g.id)
-    return [...ids].sort((a, b) => Number(a) - Number(b))
-  }
-
-  /** 群记忆自动积累的现状：优先内置积累器（插件自带定时器），否则退回 ops provider。 */
-  function memoryAccumulateStatus() {
-    const fn = kernel?.shared?.memoryAccumulateStatus
-    if (typeof fn === 'function') {
-      const st = safe(() => fn(), null)
-      if (st) return { source: 'builtin', ...st }
-    }
-    if (hasOps(opsRef, 'memoryAccumulate')) return { source: 'ops', enabled: true, running: false }
-    return { source: 'none', enabled: false, running: false }
-  }
-
-  function memorySchedule(acc = memoryAccumulateStatus()) {
-    if (acc.source === 'builtin') {
-      if (!acc.enabled) return { cron: '', text: '自动积累已关闭（可在本页打开「自动积累群记忆」）' }
-      const fmt = (ts) => { try { return new Date(ts).toLocaleString('zh-CN', { hour12: false }) } catch { return '' } }
-      const modeLabel = acc.mode === 'rewrite' ? '重写全文' : acc.mode === 'per-group' ? '逐群' : '增量要点'
-      const parts = [`每 ${acc.intervalHours} 小时`, modeLabel]
-      const keep = []
-      if (acc.keepDays) keep.push(`${acc.keepDays} 天`)
-      if (acc.keepRows) keep.push(`${acc.keepRows} 行`)
-      if (keep.length) parts.push(`原始记录保留 ${keep.join(' / ')}`)
-      if (acc.running) parts.push('正在积累…')
-      if (acc.lastRunAt) parts.push(`上次 ${fmt(acc.lastRunAt)}（${acc.lastResult?.message || '—'}）`)
-      if (acc.lastError) parts.push(`⚠️ 上次失败：${String(acc.lastError).slice(0, 120)}`)
-      if (acc.nextDueAt) parts.push(`下次约 ${fmt(acc.nextDueAt)}`)
-      return { cron: '', text: parts.join(' · '), status: acc }
-    }
-    if (acc.source === 'ops') return { cron: '', text: '由本机运维能力驱动（ops.memoryAccumulate）', status: acc }
-    return { cron: '', text: '（未启用自动积累；可打开「自动积累群记忆」或手动积累）', status: acc }
-  }
-
-  function memoryControls(raw) {
-    return allControls(kernel)
-      .filter((e) => e.kind === 'plugin' && e.plugin === 'group-memory')
-      .map((e) => controlPayload(e, raw))
-  }
-
-  async function memory(payload = {}) {
-    const op = toStr(payload.op) || 'list'
-    const raw = store.read()
-
+  // ── mem（长期记忆 long-memory 专用；与旧的「群记忆」端点 memory 完全分开）────────
+  // 为什么走插件共享槽：记忆库在插件进程内（JSONL + 内存索引），控制台只是它的一个客户端。
+  // 插件没加载 / 被关掉 → 每个 op 都如实回这个原因，不假装成功。
+  async function mem(payload = {}) {
+    const op = toStr(payload.op) || 'status'
+    const api = safe(() => kernel?.shared?.longMemory, null)
+    if (!api) return { ok: false, error: '长期记忆插件没加载（到「子插件」页看看有没有加载失败）' }
+    const id = toStr(payload.id)
+    if (op === 'status') return { ok: true, ...safe(() => api.status(), {}) }
     if (op === 'list') {
-      const accumulate = memoryAccumulateStatus()
-      const schedule = memorySchedule(accumulate)
-      const dir = memoryDir()
-      const onebotGroups = await fetchGroupList(kernel)
-      const nameByGid = new Map(onebotGroups.map((g) => [g.id, g.name]))
-      const keywordMap = parseKeywordMap(pluginCfg(raw, 'gate-wake').keywords)
-      const ids = await memoryGroupIds(onebotGroups)
-      const groups = ids.map((id) => ({
-        ...memInfo(id),
-        name: nameByGid.get(id) || '',
-        managed: keywordMap.has(id),
-      }))
+      const kw = toStr(payload.q).toLowerCase()
+      const scope = toStr(payload.scope)
+      const showForgotten = payload.forgotten === true
+      const limit = Math.max(1, Math.min(1000, Number(payload.limit) || 200))
+      const all = api.store.all()
+      const alive = all.filter((m) => !Number(m.forgottenAt))
+      const pool = showForgotten ? all : alive
+      const filtered = pool.filter((m) => {
+        if (scope && String(m.scope || '') !== scope) return false
+        if (!kw) return true
+        const hay = `${m.text || ''} ${(m.tags || []).join(' ')} ${m.scope || ''}`.toLowerCase()
+        return hay.includes(kw)
+      })
+      const expired = (m) => {
+        try { return isForgettable(m, api.decayOpts()) } catch { return false }
+      }
+      const items = filtered
+        .slice()
+        .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0))
+        .slice(0, limit)
+        .map((m) => ({
+          id: m.id, scope: m.scope, text: m.text, importance: m.importance, tags: m.tags,
+          createdAt: m.createdAt, forgottenAt: m.forgottenAt, recallCount: m.recallCount,
+          // 清晰度：已经低于遗忘阈值就显示 0（下一轮扫描会把它标成已遗忘）
+          effective: expired(m) ? 0 : Math.round(Number(m.importance) * 100) / 100,
+        }))
+      return { ok: true, total: pool.length, filtered: filtered.length, items }
+    }
+    if (op === 'get') {
+      const d = safe(() => api.store.diagnose(id), null)
+      if (!d) return { ok: false, error: `没有这条记忆：${id}` }
+      const score = safe(() => api.stats(d.memory), null)
       return {
-        ok: true, op, dir, groups, sections: MEMORY_SECTIONS,
-        schedule: schedule.text,
-        accumulate,
-        estimate: null,
+        ok: true,
+        item: { memory: d.memory, recallAt: d.recallAt, recallCount: d.recallCount },
+        score,
+        why: score ? score.why : undefined,
       }
     }
-
-    if (op === 'read') {
-      const { id, file } = memFile(payload.group_id)
-      let content = ''
-      try { content = fs.readFileSync(file, 'utf8') } catch { content = '' }
-      return { ok: true, op, ...memInfo(id), content }
+    if (op === 'forget') {
+      const ok = api.store.forget(id, toStr(payload.reason) || '控制台手动忘掉')
+      return ok ? { ok: true, message: '已忘掉（可以在「看已遗忘的」里找回）' } : { ok: false, error: `没有这条记忆：${id}` }
     }
-
-    if (op === 'save') {
-      const { id, file } = memFile(payload.group_id)
-      const content = String(payload.content == null ? '' : payload.content)
-      if (!content.trim()) throw new Error('内容不能为空（真要清空请直接删文件）')
-      const bytes = Buffer.byteLength(content, 'utf8')
-      const limit = memoryMaxBytes()
-      if (bytes > limit) {
-        throw new Error(`内容 ${bytes} 字节，超过单篇读取上限 ${limit} 字节（超过的部分模型读不到）。请精简，或先在「工具配置」调大 maxBytes。`)
-      }
-      // 乐观并发：页面读进来后可能积累器已经写过；带 ifMtime 时不匹配就拒绝，避免旧编辑器整篇覆盖新要点。
-      const ifMtime = payload.ifMtime == null ? null : Number(payload.ifMtime)
-      if (ifMtime != null && Number.isFinite(ifMtime) && fs.existsSync(file)) {
-        let cur = 0
-        try { cur = fs.statSync(file).mtimeMs } catch { cur = 0 }
-        if (cur && Math.abs(cur - ifMtime) > 0.5) {
-          throw new Error('这份记忆在你编辑期间已被更新（可能刚积累过），请点「刷新」看清后再保存，避免覆盖新内容')
-        }
-      }
-      const keep = memoryRetain()
-      if (fs.existsSync(file) && keep > 0) {
-        // 旧版留档：与积累器同一命名/同一保留策略（-manual 后缀也计入 retainRevisions）
-        try {
-          const revDir = ensureDir(path.join(memoryDir(), '.revisions'))
-          let revFile = path.join(revDir, `${id}-${revisionStamp()}-manual.md`)
-          for (let i = 1; fs.existsSync(revFile) && i < 100; i += 1) {
-            revFile = path.join(revDir, `${id}-${revisionStamp()}-${i}-manual.md`)
-          }
-          fs.copyFileSync(file, revFile)
-          try { fs.chmodSync(revFile, 0o600) } catch { /* Windows 无 chmod 语义 */ }
-          pruneRevisionsFor(id, keep)
-        } catch (e) { warn(`记忆旧版留档失败 ${id}: ${e.message}`) }
-      }
-      atomicWriteFileSync(file, content.endsWith('\n') ? content : `${content}\n`, { mode: 0o600 })
-      const missing = MEMORY_SECTIONS.filter((s) => !content.includes(s))
-      return {
-        ok: true, op, ...memInfo(id),
-        message: `已保存 ${bytes} 字节${missing.length ? `　⚠️ 缺少小节：${missing.join('、')}` : ''}`,
-      }
+    if (op === 'restore') {
+      const ok = api.store.restore(id)
+      return ok ? { ok: true, message: '已恢复' } : { ok: false, error: `没有这条记忆：${id}` }
     }
-
-    if (op === 'config') {
-      return { ok: true, op, controls: memoryControls(raw) }
+    if (op === 'boost') {
+      const v = Number(payload.importance)
+      if (!Number.isFinite(v) || v < 0 || v > 1) throw new Error('重要性要在 0~1 之间')
+      const ok = api.store.boost(id, v)
+      return ok ? { ok: true, message: `重要性改成 ${v}` } : { ok: false, error: `没有这条记忆：${id}` }
     }
-
-    if (op === 'setcfg') {
-      const key = toStr(payload.key)
-      const entry = findControl(kernel, key)
-      if (!entry || entry.plugin !== 'group-memory') throw new Error(`不在群记忆配置白名单里：${key}`)
-      // dir 是唯一能影响读写的路径键：必须落在 dataDir 内（validateConfig 不校验 pluginConfig，
-      // 否则 `../` 可以逃逸到任意目录读写 `<数字>.md`）。
-      if (entry.field === 'dir') {
-        const dirVal = toStr(payload.value).trim()
-        if (dirVal) {
-          const target = resolveDataPath(dirVal, dataDirOf())
-          if (!isInsidePath(dataDirOf(), target)) throw new Error('记忆目录必须位于数据目录内（不允许 ../ 逃逸）')
-        }
-      }
-      const next = clone(raw)
-      const written = writeValue(kernel, key, payload.value, next)
-      const saved = await store.save(next, { what: `群记忆配置 ${key} = ${JSON.stringify(written.value)}`, allowPending: true })
-      const pendingNote = saved.pending ? '（待配置模式：已保存，其余配置已热应用；填完主人 QQ 后自动连接）' : '（已热重载）'
-      return { ok: true, op, key, value: written.value, backup: saved.backup, pending: Boolean(saved.pending), message: `${entry.label} ✓${pendingNote}` }
+    if (op === 'purge') {
+      // 彻底删除是破坏性操作：必须先整库备份（插件里做），再追加 purge 事件
+      const ok = api.store.purge(id)
+      return ok ? { ok: true, message: '已彻底删除（删前整库备份在 .revisions/）' } : { ok: false, error: `没有这条记忆：${id}` }
     }
-
-    if (op === 'refresh') {
-      if (payload.confirm !== true) {
-        return { ok: true, op, needsConfirm: true, message: '（未执行）「立刻积累一轮」会调用一次大模型，确定吗？' }
-      }
-      // ① 内置积累器（插件自带调度器）优先；② 退回 ops provider（老部署）
-      const builtin = kernel?.shared?.memoryAccumulate
-      if (typeof builtin === 'function') {
-        const result = await builtin({ ...payload, confirm: true })
-        if (result && result.ok === false) return { ok: false, error: result.error || '内置积累器拒绝执行' }
-        return {
-          ok: true, op, ...(isPlainObject(result) ? result : {}),
-          message: result?.message || '已在后台开始积累（过会儿点「刷新」看结果）',
-        }
-      }
-      if (!hasOps(opsRef, 'memoryAccumulate')) {
-        return {
-          ok: false,
-          error: '没有可用的群记忆积累器：请在「群记忆」页打开「自动积累群记忆」，或安装带 ops.memoryAccumulate 的本机运维能力',
-        }
-      }
-      const result = await opsRef.memoryAccumulate({ ...payload, confirm: true })
-      if (result == null) return { ok: false, error: '本机群记忆积累器调用失败（详见日志）' }
-      return { ok: true, op, ...(isPlainObject(result) ? result : {}), message: result?.message || '已在后台开始积累（过会儿点「刷新」看结果）' }
+    if (op === 'export') {
+      const format = toStr(payload.format) === 'json' ? 'json' : 'md'
+      return { ok: true, format, text: api.store.exportText(format) }
     }
-
-    throw new Error(`未知记忆操作：${op}（可用：list / read / save / config / setcfg / refresh）`)
+    if (op === 'import') {
+      const text = String(payload.text || '')
+      if (!text.trim()) throw new Error('导入内容为空')
+      api.store.backupBook?.('import')
+      const r = api.store.importJson(text)
+      return { ok: true, ...r, message: `导入 ${r.added} 条` + (r.skipped?.length ? `，跳过 ${r.skipped.length} 条` : '') }
+    }
+    if (op === 'organize') {
+      if (payload.confirm !== true) throw new Error('organize 需要 confirm:true（会调用整理模型、花 token）')
+      const r = await api.organize({ scope: toStr(payload.scope), force: payload.force !== false })
+      return { ok: true, result: r }
+    }
+    if (op === 'preview') {
+      const r = await api.preview({ scope: toStr(payload.scope) })
+      return { ok: true, ...r }
+    }
+    if (op === 'testLlm') {
+      const r = await api.testLlm()
+      return { ...r, message: r.ok ? `接口通了（${r.ms}ms）` : `接口不通：${r.reason}` }
+    }
+    throw new Error(`未知操作：${op}（可用：status / list / get / forget / restore / boost / purge / export / import / organize / preview / testLlm）`)
   }
+
 
   // ── persona（人设）──────────────────────────────────────────
   const PERSONA_NAME_RE = /^[^\\/:*?"<>|\u0000-\u001f]{1,64}$/
@@ -1654,7 +1517,7 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
   }
 
   // ── 分发 ───────────────────────────────────────────────────
-  const HANDLERS = { schema, status, set, module, group, memory, persona, action }
+  const HANDLERS = { schema, status, set, module, group, memory, mem, persona, action }
 
   /**
    * 分发一个端点调用。**永不 throw**：业务失败 = `{ok:false,error}`（host 把它塞进 value 信封）。
@@ -1686,6 +1549,7 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
     module,
     group,
     memory,
+    mem,
     persona,
     action,
     // 给测试/调试用的纯函数

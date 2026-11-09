@@ -598,7 +598,7 @@ export default {
         const archiveDir = path.isAbsolute(archiveRaw) ? archiveRaw : path.join(dataDir, archiveRaw)
         const material = buildDailyMaterial({
           archiveDir,
-          memoryDir: path.join(dataDir, 'qq-memory'),
+          memoryFile: path.join(dataDir, 'long-memory', 'memories.jsonl'),
           workspaceDir,
           date: localDateOf(Date.now()),
           msgPerChat: Number(cfg().materialMsgsPerChat) || 400,

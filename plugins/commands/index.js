@@ -120,14 +120,14 @@ export default {
       }
     }
 
-    /** 重置时顺手清掉与本线绑定的内存态（新会话要重新拿首轮格式说明、群上文重新给基线、群记忆重新给首次指针） */
+    /** 重置时顺手清掉与本线绑定的内存态（新会话要重新拿首轮格式说明、群上文重新给基线） */
     function clearLineState(chatKey) {
       const st = bot.state?.get?.(chatKey)
       if (!st) return
       st.followUpUntil = 0
       st.followUpCache = null
       st.lastContextId = null
-      if (st._scratch) delete st._scratch['group-memory:seen']
+      if (st._scratch) delete st._scratch['long-memory:injected']
     }
 
     /** 所有 QQ 线的 chatKey：契约没给"枚举全部线"的入口，按驱动可选形态探测 */

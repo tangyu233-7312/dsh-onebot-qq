@@ -412,7 +412,7 @@ export async function apply(ctx, bundleConfig = {}) {
     activeTurns: new Map(), // chatKey → TurnContext（**正在跑**的那一轮：turn/start → turn/end）
     turnBySession: new Map(), // sessionId → TurnContext（同上；工具执行时按 DSH 会话认线）
     pendingTurns: new Map(), // sessionId → TurnContext[]（prompt 已 admission、等 turn/start 的队列）
-    maintSessionIds: new Set(), // 后台任务会话（群记忆积累等）：工具入口只放行 MAINT_ALLOWED_TOOLS（memory_append）
+    maintSessionIds: new Set(), // 后台任务会话（runIsolatedTask 起的）：工具入口一个 QQ 工具都不放行（见 MAINT_ALLOWED_TOOLS）
     // 受限会话表：sessionId → { label, tools: Set<toolName> }。
     // 「只做一件事」的系统会话（空间工作区 / 看视频的地方…）都登记在这里，
     // 各有各的一套工具白名单，加新插件不用改内核。
@@ -1053,9 +1053,11 @@ export async function apply(ctx, bundleConfig = {}) {
   }, { order: 50, pluginId: 'kernel:context' })
 
   // ── 原生工具注册：必须 inject 后再注册（受限 ctx 的坑，见文件头纪律 3） ──
-  // 后台任务（群记忆积累）允许调用的工具白名单：只有「提交结果」型的 memory_append。
-  // 这样后台会话能结构化提交数据，但调不到 send_message / 生图 / bash 等（防误发、防乱动系统）。
-  const MAINT_ALLOWED_TOOLS = new Set(['memory_append'])
+  // 后台任务（`bot.dsh.runIsolatedTask` 起的会话）**一个 QQ 工具都调不到**：
+  //   · 那些会话是「一次性的分析任务」（旧 group-memory 的积累用它提交要点）；
+  //   · 2026-11-09 长期记忆换成了 long-memory 插件，它不走后台会话、直接用 HTTP 调用户填的整理接口，
+  //     所以这里不再放行任何工具 —— 白名单空着 = 后台会话只能产出文字，不会误发消息、不会改数据。
+  const MAINT_ALLOWED_TOOLS = new Set()
   const prefix = String(runtime.toolPrefix || 'mcp__qq__')
   ctx.inject(['tools'], (child) => {
     const tools = child.tools
@@ -1072,8 +1074,8 @@ export async function apply(ctx, bundleConfig = {}) {
           },
           async execute(args, exec) {
             // 工具守卫（两道）：
-            // ① 后台任务会话（群记忆积累等）只允许 memory_append（提交群记忆要点），其它工具一律拒；
-            // ② memory_append 反过来只允许后台任务会话调，普通 QQ 会话调不到（不让它顺手改记忆）。
+            // ① 后台任务会话：一律不许调 QQ 工具（白名单为空，见 MAINT_ALLOWED_TOOLS）；
+            // ② 白名单里的工具（目前没有）反过来只允许后台会话调。
             const sid = String(exec?.agent?.session?.id || '')
             const isMaint = kernel.maintSessionIds.has(sid)
             // 受限会话（见 coreOf().markScope）：白名单之外一律拒。
@@ -1083,7 +1085,7 @@ export async function apply(ctx, bundleConfig = {}) {
               throw new Error('「' + scope.label + '」只允许调用 ' + [...scope.tools].join(' / ') + '（这里不能调用 ' + toolName + '）')
             }
             if (isMaint && !MAINT_ALLOWED_TOOLS.has(toolName)) {
-              throw new Error(`后台任务只允许调用 ${[...MAINT_ALLOWED_TOOLS].join('/')}（提交群记忆要点），不要调用其它工具`)
+              throw new Error(`后台任务不能调用 QQ 工具（${toolName}）`)
             }
             if (!isMaint && MAINT_ALLOWED_TOOLS.has(toolName)) {
               throw new Error('这个工具只能由后台任务调用（普通会话不需要）')

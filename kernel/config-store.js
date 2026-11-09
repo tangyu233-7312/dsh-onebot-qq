@@ -229,12 +229,11 @@ export function migrateLegacyConfig(old = {}) {
     if (Object.keys(st).length) pluginConfig.stickers = { ...(pluginConfig.stickers || {}), ...st }
   }
 
-  // 群记忆
-  if (isPlainObject(bridge.groupMemory)) {
-    const gm = {}
-    for (const k of ['enabled', 'dir', 'maxBytes']) if (bridge.groupMemory[k] !== undefined) gm[k] = bridge.groupMemory[k]
-    if (Object.keys(gm).length) pluginConfig['group-memory'] = gm
-  }
+  // 群记忆（旧 group-memory 的迁移桥）
+
+  // 2026-11-09：长期记忆换成 `long-memory` 插件，旧 `group-memory` 已移出 plugins/。
+  // 老配置里可能还留着 `bridge.groupMemory`（instances 时代的一次性迁移用），这里**不再写回**
+  // pluginConfig['group-memory'] —— 写了也没人读，只会让控制台多出一个「已停用」的空段。
 
   // 头像
   if (bridge.avatarDir || bridge.avatarCacheHours) {

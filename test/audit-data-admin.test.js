@@ -1,5 +1,5 @@
 /**
- * test/audit-data-admin.test.js — 表情包采集 / 群记忆 / 控制面（schema / store / 8 端点）。
+ * test/audit-data-admin.test.js — 表情包采集 / 控制面（schema / store / 端点）。长期记忆的用例在 long-memory*.test.js。
  *
  * 迁移自旧 `audit-data-admin.test.js`：保留行为级断言；删除旧 admin-api / client.js 源码内容、
  * standalone 接管、站点 config 继承等旧实现专属用例（改测新 admin/* 实现）。
@@ -74,10 +74,10 @@ test('readValue / writeValue：核心项按 scale 换算、插件项原样存；
   assert.equal(w.stored, 600000, '面板 10 分钟 → 存 600000ms')
   assert.equal(readValue(h.kernel, 'pacing.reply.minGapMs', raw), 10)
 
-  // 插件项：group-memory.maxBytes 原样存（面板单位 = 存储单位，不乘 scale）
-  const w2 = writeValue(h.kernel, 'group-memory.maxBytes', 30000, raw)
-  assert.equal(w2.value, 30000)
-  assert.equal(readValue(h.kernel, 'group-memory.maxBytes', raw), 30000)
+  // 插件项：long-memory.maxCharsPerRound 原样存（面板单位 = 存储单位，不乘 scale）
+  const w2 = writeValue(h.kernel, 'long-memory.maxCharsPerRound', 8000, raw)
+  assert.equal(w2.value, 8000)
+  assert.equal(readValue(h.kernel, 'long-memory.maxCharsPerRound', raw), 8000)
 
   assert.throws(() => writeValue(h.kernel, 'unknown.evilKey', 1, raw), /白名单/)
   assert.throws(() => writeValue(h.kernel, 'outbound.quoteAfterMsgs', 'abc', raw), /整数/)
@@ -379,14 +379,17 @@ test('persona 端点：list / switch（投递文件 + 同步配置）', async (t
   assert.ok(String(sw.message || '').includes('tester'), '返回可读提示')
 })
 
-test('ops 未配置：memory refresh 走内置积累器（不再要求 ops）/ action selfcheck 等降级不 throw', async (t) => {
+test('ops 未配置：旧「群记忆」端点已下线（memory 只回一句去用「记忆」页）/ action selfcheck 等降级不 throw', async (t) => {
   const h = await boot(t)
   const endpoints = createAdminEndpoints({ kernel: h.kernel, configPath: h.configPath, dataDir: h.dataDir, log: quiet(), ops: null })
-  // 群记忆积累已内置到插件（shared.memoryAccumulate），没有 ops 也能跑：
-  // 未确认 → 返回 needsConfirm；确认后 → 交给内置积累器（本测试只验证路由，不真跑模型）
-  const ask = await endpoints.handle('memory', { op: 'refresh' })
-  assert.equal(ask.ok, true)
-  assert.equal(ask.needsConfirm, true)
+  // 2026-11-09：group-memory 被 long-memory 取代，旧端点不再干活，但**不许 500 / 不许静默**：
+  // 必须回一句人能看懂的"去用新页面"。
+  const old = await endpoints.handle('memory', { op: 'refresh' })
+  assert.equal(old.ok, false)
+  assert.match(String(old.error), /已下线|记忆/)
+  // 新端点在没有记忆库/没配接口时也要如实降级，不抛
+  const neu = await endpoints.handle('mem', { op: 'status' })
+  assert.equal(neu.ok, true)
   for (const [ep, payload] of [
     ['action', { id: 'selfcheck' }],
     ['action', { id: 'cleanup-tmp' }],
@@ -461,46 +464,11 @@ test('表情包采集：GIF 魔数跳过（扩展名改成 .png 也挡）', asyn
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 群记忆（指针注入 / read_memory / 只读）
+// ─────────────────────────────────────────────────────────────────────────────
+// 长期记忆：`long-memory` 插件的定向测试在 test/long-memory.test.js 与 test/long-memory-admin.test.js。
+// 这里原来测的是旧 group-memory（指针注入 / read_memory / 每群一篇 md），2026-11-09 已随插件一起下线。
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('群记忆：首轮给指针不贴正文；文件未变 0 字符；更新后重提示；read_memory 剥记账注释', async (t) => {
-  const memDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'qqbot-mem-')), 'qq-memory')
-  fs.mkdirSync(memDir, { recursive: true })
-  const memFile = path.join(memDir, `${GROUP_ID}.md`)
-  fs.writeFileSync(memFile, `# 群记忆\n## 唤醒与对话风格\n- 简短回话 <!-- n=3 d=2026-10-15 -->\n## 群里的人\n- **群友(${MEMBER_QQ})**：爱聊\n`)
-  const h = await boot(t, {
-    config: { pluginConfig: { 'gate-wake': { adminQq: ADMIN_QQ }, 'group-memory': { enabled: true, dir: 'qq-memory' } } },
-  })
-  // 用相对 dataDir 的默认目录：把 fixture 放进 dataDir/qq-memory
-  fs.mkdirSync(path.join(h.dataDir, 'qq-memory'), { recursive: true })
-  fs.copyFileSync(memFile, path.join(h.dataDir, 'qq-memory', `${GROUP_ID}.md`))
-
-  await emitRaw(h.kernel, groupAtEvent({ text: '第一句', messageId: 3001 }))
-  await waitFor(() => h.ctx._prompts[0], { label: '首轮' })
-  const p0 = h.ctx._prompts[0].content[0].text
-  assert.ok(p0.includes('[本群记忆'), '首轮注入记忆指针')
-  assert.equal(p0.includes('简短回话'), false, '记忆正文绝不直接贴进 prompt')
-
-  await emitRaw(h.kernel, groupAtEvent({ text: '第二句', messageId: 3002 }))
-  await waitFor(() => h.ctx._prompts[1], { label: '第二轮' })
-  assert.equal(h.ctx._prompts[1].content[0].text.includes('[本群记忆'), false, '文件未变 → 0 字符指针')
-
-  // 更新文件 → 重提示
-  fs.appendFileSync(path.join(h.dataDir, 'qq-memory', `${GROUP_ID}.md`), '- 新增一条\n')
-  await emitRaw(h.kernel, groupAtEvent({ text: '第三句', messageId: 3003 }))
-  await waitFor(() => h.ctx._prompts[2], { label: '第三轮' })
-  assert.ok(h.ctx._prompts[2].content[0].text.includes('[本群记忆已更新'), '文件变化后给"已更新"提示')
-
-  const tool = h.ctx._registeredTools.get('mcp__qq__read_memory')
-  const res = await tool.execute({ target: `group:${GROUP_ID}` })
-  const text = typeof res === 'string' ? res : JSON.stringify(res)
-  assert.ok(text.includes('爱聊'), 'read_memory 返回正文')
-  assert.equal(text.includes('<!-- n=3'), false, '剥掉记账注释')
-  await assert.rejects(() => tool.execute({ target: 'group:../etc/passwd' }), /target|群号/)
-})
-
-// ─────────────────────────────────────────────────────────────────────────────
 // 运维诊断（diagnose）：一键诊断 → 脱敏报告落盘 → 可交给 DSH 本体修复
 // 契约：诊断报告的小节顺序与 admin/diagnostics.js 的输出保持一致
 // ─────────────────────────────────────────────────────────────────────────────
@@ -803,87 +771,10 @@ test('WAKE-P2 人设唤醒词只允许删除；删不存在的词给友好错误
   assert.match(String(miss.error), /没有「不存在的词」/)
 })
 // ─────────────────────────────────────────────────────────────────────────────
-// 群记忆控制台修复（2026-10-23）：并发 CAS / 写入上限 / dir 逃逸 / 唤醒词脏键
 // ─────────────────────────────────────────────────────────────────────────────
-
-async function memoryHarness(t, cfg = {}) {
-  const h = await boot(t, {
-    config: {
-      pluginConfig: {
-        'gate-wake': { adminQq: ADMIN_QQ },
-        'group-memory': { enabled: true, dir: 'qq-memory', ...cfg },
-      },
-    },
-  })
-  const endpoints = createAdminEndpoints({ kernel: h.kernel, configPath: h.configPath, dataDir: h.dataDir, log: quiet(), ops: null })
-  const memDir = path.join(h.dataDir, 'qq-memory')
-  fs.mkdirSync(memDir, { recursive: true })
-  return { h, endpoints, memDir }
-}
-
-test('群记忆控制台：save 带 ifMtime 时拒绝陈旧覆盖（积累器刚写过）', async (t) => {
-  const { h, endpoints, memDir } = await memoryHarness(t)
-  const file = path.join(memDir, `${GROUP_ID}.md`)
-  fs.writeFileSync(file, '# 群记忆\n## 唤醒与对话风格\n- 旧\n')
-  const read = await endpoints.handle('memory', { op: 'read', group_id: GROUP_ID })
-  assert.equal(read.ok, true)
-  assert.ok(Number(read.mtimeMs) > 0, 'read 应返回 mtimeMs 供前端做 CAS')
-
-  await sleep(20)
-  fs.writeFileSync(file, '# 群记忆\n## 唤醒与对话风格\n- 积累器刚写的新内容\n')
-  const conflict = await endpoints.handle('memory', {
-    op: 'save', group_id: GROUP_ID, content: read.content, ifMtime: read.mtimeMs,
-  })
-  assert.equal(conflict.ok, false)
-  assert.match(String(conflict.error), /已被更新/)
-  assert.match(fs.readFileSync(file, 'utf8'), /积累器刚写的新内容/, '冲突时不能覆盖新内容')
-
-  const fresh = await endpoints.handle('memory', { op: 'read', group_id: GROUP_ID })
-  const saved = await endpoints.handle('memory', {
-    op: 'save', group_id: GROUP_ID, content: '# 群记忆\n## 唤醒与对话风格\n- 手改\n', ifMtime: fresh.mtimeMs,
-  })
-  assert.equal(saved.ok, true)
-  const revs = fs.readdirSync(path.join(memDir, '.revisions'))
-  assert.ok(revs.length >= 1, '保存前应留旧版备份')
-  if (process.platform !== 'win32') {
-    assert.equal(fs.statSync(file).mode & 0o777, 0o600, '主文件权限应为 0600')
-  }
-})
-
-test('群记忆控制台：save 上限跟随 maxBytes（避免保存成功但模型读不到）', async (t) => {
-  const { endpoints } = await memoryHarness(t, { maxBytes: 1000 })
-  const body = `# 群记忆\n## 群里的人\n- ${'很长的内容'.repeat(400)}\n`
-  assert.ok(Buffer.byteLength(body, 'utf8') > 1000)
-  const r = await endpoints.handle('memory', { op: 'save', group_id: GROUP_ID, content: body })
-  assert.equal(r.ok, false)
-  assert.match(String(r.error), /超过单篇读取上限/)
-})
-
-test('群记忆控制台：setcfg 不允许把 dir 改到数据目录之外', async (t) => {
-  const { endpoints } = await memoryHarness(t)
-  const bad = await endpoints.handle('memory', { op: 'setcfg', key: 'group-memory.dir', value: '../evil' })
-  assert.equal(bad.ok, false)
-  assert.match(String(bad.error), /数据目录内/)
-})
-
-test('群记忆控制台：唤醒词里的非群号数字键不会让 list 整页崩掉', async (t) => {
-  const h = await boot(t, {
-    config: {
-      pluginConfig: {
-        'gate-wake': { adminQq: ADMIN_QQ, keywords: '123：太短\n456789：正常群' },
-        'group-memory': { enabled: true, dir: 'qq-memory' },
-      },
-    },
-  })
-  const endpoints = createAdminEndpoints({ kernel: h.kernel, configPath: h.configPath, dataDir: h.dataDir, log: quiet(), ops: null })
-  fs.mkdirSync(path.join(h.dataDir, 'qq-memory'), { recursive: true })
-  fs.writeFileSync(path.join(h.dataDir, 'qq-memory', '456789.md'), '# 群记忆\n## 唤醒与对话风格\n- x\n')
-  const r = await endpoints.handle('memory', { op: 'list' })
-  assert.equal(r.ok, true)
-  const ids = (r.groups || []).map((g) => g.group_id)
-  assert.ok(ids.includes('456789'))
-  assert.equal(ids.includes('123'), false, '非 4–12 位数字键应被忽略')
-})
+// 旧「群记忆」控制台的并发 CAS / 上限 / dir 逃逸测试已随端点下线（2026-11-09）。
+// 新「记忆」页的等价能力（软删可恢复、purge 先备份、越界拒绝）在 test/long-memory-admin.test.js 里。
+// ─────────────────────────────────────────────────────────────────────────────
 
 test('收表情开关（默认关=库只读）：不采集、不写索引；开了才收；控制台有开关和实时数量', async (t) => {
   const srcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qqbot-stk-off-'))

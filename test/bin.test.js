@@ -52,7 +52,7 @@ test('init：建数据目录 + 默认配置（adminQq=0）+ 复制模板；可�
 
   // 子目录
   for (const sub of [
-    'workspace', 'personas', 'qq-stickers', 'qq-memory', 'qq-welcome-images',
+    'workspace', 'personas', 'qq-stickers', 'long-memory', 'qq-welcome-images',
     'qq_uploads', 'qq-refs', 'logs/qq_chat', 'state',
   ]) {
     assert.ok(fs.existsSync(path.join(dataDir, sub)), `应创建子目录 ${sub}`)

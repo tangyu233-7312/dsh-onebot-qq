@@ -128,7 +128,8 @@ test('migrateLegacyConfig：旧 bridge 段 → v2（字段名与单位换算）'
   assert.equal(st.offerCooldownMs, 30, '毫秒 → 秒')
   assert.equal(st.offerPercent, 80, 'style.stickerProbability 默认 0.8 → 80%')
 
-  assert.equal(cfg.pluginConfig['group-memory'].dir, 'qq-memory')
+  // 2026-11-09：旧 group-memory 已下线，迁移桥不再写回这一节（老配置里留着也不报错）
+  assert.equal(cfg.pluginConfig['group-memory'], undefined)
   assert.equal(cfg.pluginConfig.imagegen.avatarDir, 'qq_avatars')
   assert.equal(cfg.pluginConfig.imagegen.avatarCacheHours, 12)
   assert.equal(cfg.pluginConfig.imagegen.cooldownMs, 90, '毫秒 → 秒')

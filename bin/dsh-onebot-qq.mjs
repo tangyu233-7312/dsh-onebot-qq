@@ -52,7 +52,7 @@ const DATA_SUBDIRS = [
   'workspace', // qq-lines 工作区（AGENTS.md / CLAUDE.local.md / 人设投递文件）
   'personas', // 人设库：<名字>.md / .lines.txt / .wake.txt + _default.lines.txt
   'qq-stickers', // 表情包库（索引 + 图片）
-  'qq-memory', // 群记忆（每群一篇 <群号>.md）
+  'long-memory', // 长期记忆库（memories.jsonl 事件流 + 快照 + .revisions）
   'qq-welcome-images', // 入群欢迎图片池
   'qq_uploads', // 入站文件
   'qq-refs', // 生图参考图

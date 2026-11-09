@@ -1,6 +1,7 @@
 node_modules/
 package-lock.json
 _reference/
+_removed/
 *.tgz
 *.tar.gz
 *.log

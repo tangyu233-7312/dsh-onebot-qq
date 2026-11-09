@@ -34,7 +34,7 @@ window.__ModuleLoader__.load({
 		}
 
 		// ═══════════ 页内标签页（2026-10-18 起：一项功能一页）═══════════
-		// 固定页：总览 / 运维 / 群聊 / 子插件 / 群记忆；
+		// 固定页：总览 / 运维 / 群聊 / 子插件 / 记忆（long-memory 插件）；
 		// 功能页：后端 CONTROLS 的每个 group 自动成一页（顺序 = 后端首次出现的顺序）——
 		//   现在 = OneBot 连接 / 消息设置 / 主动接话 / 回话 / 生图 / 表情包 / 链接解析。
 		//   ⇒ 以后加一组开关：group 写新名字就自动多一页，前端不用改。
@@ -121,7 +121,7 @@ window.__ModuleLoader__.load({
 			}
 			// 群唤醒词：老款「填空 + 添加」交互（存储仍是 config 的文本行格式；不用多行文本框）
 			if (c.key === 'gate-wake.keywords') return h(WakeWordsEditor, { key: c.key, ...api })
-			// 悬停解释（2026-10-11）：和「群记忆」标签页同一套 UX —— 整行 title + 行尾 ⓘ
+			// 悬停解释（2026-10-11）：整行 title + 行尾 ⓘ
 			const renderInput = () => {
 				if (c.type === 'bool') {
 					return h('input', {
@@ -1003,13 +1003,13 @@ window.__ModuleLoader__.load({
 			])
 		}
 
-		// 页内标签页定义：固定页（总览 / 运维 / 群聊 / 子插件 / 群记忆）+ 后端每个 group 一页。
+		// 页内标签页定义：固定页（总览 / 运维 / 群聊 / 子插件 / 记忆）+ 后端每个 group 一页。
 		// 顺序 = CONTROLS 里 group 首次出现的顺序；「群聊」组不单独成页（跟群卡片一起画在「群聊」页里）；
 		// 「OneBot 连接」= OneBotTab（状态/测试 + 连接配置），「入群欢迎」= WelcomeTab（都不是通用 GroupTab）；
 		// 「其他」固定排最后（权限/门禁/文件/发图/头像 五组并进去的杂项页）。
 		function tabDefs(schema) {
 			const groups = []
-			const FIXED_LABELS = ['总览', '运维', '群聊', '子插件', '群记忆'] // 固定页同名 group 不另开页
+			const FIXED_LABELS = ['总览', '运维', '群聊', '子插件', '记忆'] // 固定页同名 group 不另开页
 			const personaGroups = new Set((schema && schema.personaGroups) || [])
 			for (const c of (schema && schema.controls) || []) {
 				if (!c.group || personaGroups.has(c.group) || FIXED_LABELS.includes(c.group) || groups.includes(c.group)) continue
@@ -1026,7 +1026,7 @@ window.__ModuleLoader__.load({
 				{ id: 'groups', label: '群聊' },
 				...groups.map((g) => ({ id: 'group:' + g, label: g, group: g })),
 				{ id: 'plugins', label: '子插件' },
-				{ id: 'memory', label: '群记忆' },
+				{ id: 'memory', label: '记忆' },
 			]
 		}
 
@@ -1141,7 +1141,7 @@ window.__ModuleLoader__.load({
 								: curTab.group === '主动接话' ? h(ReplyModeTab, Object.assign({}, api, { key: 'rm' }))
 									: curTab.group ? h(GroupTab, Object.assign({}, api, { key: 'gt', group: curTab.group }))
 										: curTab.id === 'plugins' ? h(TabPlugins, { key: 'pl', ...api })
-											: h(GroupMemory, { key: 'm', ctx })
+											: h(LongMemoryTab, { key: 'lm', ...api })
 
 			return h('div', { style: S.card }, [
 				h('div', { style: S.tabs, key: 'tabs' }, TABS.map((t) => h('button', {
@@ -1237,288 +1237,244 @@ window.__ModuleLoader__.load({
 			])
 		}
 
-		// ═══════════ 标签页⑤：群记忆（每群一篇 Markdown，可预览可编辑） ═══════════
-		// 数据来自 RPC 端点 memory 的 list / read / save / refresh。
-		// 自动积累由插件自带的定时器负责（配置在下面「工具配置」里：开关 / 间隔 / 每群条数…）；
-		// 这个页面用来「看」「人工干预」和「立刻积累一轮」—— 保存/积累都会先备份旧版到 .revisions/。
-		const SM = {
-			layout: { display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' },
-			list: { flex: '0 0 230px', maxHeight: 440, overflow: 'auto' },
-			item: (on) => ({
-				padding: '6px 9px', borderRadius: 8, cursor: 'pointer', fontSize: 13, marginBottom: 4,
-				border: '1px solid ' + (on ? '#d0d5dd' : 'transparent'),
-				background: on ? 'rgba(127,127,127,.14)' : 'transparent',
-			}),
-			area: {
-				width: '100%', minHeight: 400, fontFamily: 'ui-monospace, Menlo, Consolas, monospace',
-				fontSize: 12.5, lineHeight: 1.6, padding: '10px 12px', borderRadius: 8,
-				border: '1px solid #d0d5dd', background: 'transparent', color: 'inherit',
-				resize: 'vertical', boxSizing: 'border-box',
-			},
-			mini: { padding: '1px 7px', borderRadius: 6, border: '1px solid #d0d5dd', background: 'transparent', cursor: 'pointer', fontSize: 12, lineHeight: '18px' },
-			dim: { opacity: .55, fontSize: 12 },
+		// ═══════════ 标签页：长期记忆（long-memory）═══════════
+		/**
+		 * long-memory 控制台页（「记忆」标签页）。
+		 *
+		 * 三类数据分开取，别混：
+		 *   · 配置（存储范围 / 整理模型 / 参数）→ schema 里的控件，用 ctrlRow 直接渲染并热写 config.json；
+		 *   · 状态（条数/水位/接口是否通）→ RPC `mem` 的 `status`；
+		 *   · 记忆库（列表/搜索/详情/删除/导出/导入）→ RPC `mem` 的 `list|get|forget|restore|purge|export|import`。
+		 *
+		 * 为什么单独一个组件：旧页是「每群一篇 md」的形态，新库是「一条条带分数的记忆」，
+		 * 渲染逻辑完全不同；硬塞进旧组件只会让两边都变难读。旧页在新插件跑通后整体移除。
+		 */
+		function LongMemoryTab(props) {
+		  const { ctx, schema, msg, busy, setConfirmBox } = props
+		  const { useState, useEffect, useCallback } = react
+		  const call = useCallback((payload) => ctx.connection.rpc.call(CHANNEL, 'mem', payload ?? {}), [ctx])
+
+		  const [data, setData] = useState(null)   // status
+		  const [list, setList] = useState(null)   // {items, total, filtered}
+		  const [q, setQ] = useState('')
+		  const [scopeFilter, setScopeFilter] = useState('')
+		  const [detail, setDetail] = useState(null)
+		  const [local, setLocal] = useState('')    // 本页自己的消息（装卸数据/操作的反馈）
+		  const [busy2, setBusy2] = useState(false)
+		  const [showForgotten, setShowForgotten] = useState(false)
+		  const [importText, setImportText] = useState('')
+		  const [exportText, setExportText] = useState('')
+		  const [previewScope, setPreviewScope] = useState('')
+		  const [previewOut, setPreviewOut] = useState(null)
+		  const [cfgOpen, setCfgOpen] = useState(false)
+
+		  const say = (t) => setLocal(String(t || ''))
+
+		  const loadStatus = useCallback(async () => {
+		    try {
+		      const r = await call({ op: 'status' })
+		      if (r && r.ok === false) throw new Error(r.error)
+		      setData(r)
+		    } catch (e) { say(`读取状态失败：${e.message}`) }
+		  }, [call])
+
+		  const loadList = useCallback(async (kw = q, scope = scopeFilter, forgotten = showForgotten) => {
+		    try {
+		      const r = await call({ op: 'list', q: kw, scope, forgotten, limit: 200 })
+		      if (r && r.ok === false) throw new Error(r.error)
+		      setList(r)
+		    } catch (e) { say(`读取记忆库失败：${e.message}`) }
+		  }, [call, q, scopeFilter, showForgotten])
+
+		  useEffect(() => { loadStatus(); loadList() }, []) // 只在挂载时拉一次
+
+		  const act = async (label, payload, after) => {
+		    setBusy2(true); say('')
+		    try {
+		      const r = await call(payload)
+		      if (r && r.ok === false) throw new Error(r.error)
+		      say(`${label} ✓${r && r.message ? ` ${r.message}` : ''}`)
+		      if (after) await after(r)
+		    } catch (e) { say(`${label} ✗ ${e.message}`) } finally { setBusy2(false) }
+		  }
+
+		  const kb = (n) => (n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB')
+		  const when = (ts) => {
+		    if (!ts) return '—'
+		    const d = Math.floor((Date.now() - ts) / 86400000)
+		    return d <= 0 ? '今天' : d === 1 ? '昨天' : d + ' 天前'
+		  }
+
+		  // ── 顶部状态卡 ──────────────────────────────────────────────────────
+		  const st = data || {}
+		  const llm = st.llm || {}
+		  const org = st.organize || {}
+		  const top = h('div', { style: S.card, key: 'top' }, [
+		    h('div', { style: S.title, key: 't' }, '长期记忆 · 存盘的，不靠压缩'),
+		    h('div', { style: S.row, key: 'r1' }, [
+		      h('span', { key: 'a', style: S.badge(st.entries > 0) }, `${st.entries ?? '—'} 条记忆`),
+		      h('span', { key: 'b', style: S.badge(!(st.forgotten > 0)) }, `已遗忘 ${st.forgotten ?? 0}`),
+		      h('span', { key: 'c', style: S.badge(st.llm && st.llm.configured) }, st.llm && st.llm.configured ? `整理接口 ${llm.model || ''}` : '整理接口未配置'),
+		      h('span', { key: 'd', style: S.badge(st.autoOrganize) }, st.autoOrganize ? '自动整理开' : '自动整理关'),
+		      h('span', { key: 'e', style: S.badge(st.injectEnabled) }, st.injectEnabled ? '每轮注入开' : '每轮注入关'),
+		      st.running ? h('span', { key: 'f', style: S.badge(true) }, '正在整理…') : null,
+		    ]),
+		    h('div', { style: Object.assign({}, S.msg, { whiteSpace: 'pre-wrap' }), key: 'r2' },
+		      `范围：${st.scopeSummary || '—'}｜最早 ${when(st.oldest)}，最新 ${when(st.newest)}\n`
+		      + `上次整理：${org.at ? new Date(org.at).toLocaleString() : '还没跑过'}` + (org.error ? `｜上次失败：${org.error}` : '') + '\n'
+		      + `目录：${st.dir || ''}`),
+		    h('div', { style: S.row, key: 'r3' }, [
+		      h('button', { key: 'o', style: S.btn, disabled: busy2, onClick: () => act('整理一轮', { op: 'organize', force: true }, async () => { await loadStatus(); await loadList() }) }, '⚙ 立刻整理一轮'),
+		      h('button', { key: 't', style: S.btn, disabled: busy2, onClick: () => act('测试接口', { op: 'testLlm' }) }, '🔌 测试整理接口'),
+		      h('button', { key: 'rf', style: S.btn, disabled: busy2, onClick: async () => { await loadStatus(); await loadList() } }, '刷新'),
+		      h('button', { key: 'cfg', style: S.btn, onClick: () => setCfgOpen(!cfgOpen) }, (cfgOpen ? '▾ 收起配置' : '▸ 存储范围与整理模型')),
+		    ]),
+		    local ? h('div', { style: S.msg, key: 'm' }, local) : (msg ? h('div', { style: S.msg, key: 'm2' }, msg) : null),
+		  ])
+
+		  // ── 配置区（直接复用外层的 ctrlRow，保存走统一的 set 接口）──
+		  const cfgApi = {
+		    busy: busy2,
+		    setMsg: say,
+		    async run(label, fn) {
+		      setBusy2(true); say('')
+		      try { await fn(); say(`${label} ✓`); await loadStatus() } catch (e) { say(`${label} ✗ ${e.message}`) } finally { setBusy2(false) }
+		    },
+		    call: (op, payload) => {
+		      if (op !== 'set' || !payload) return Promise.reject(new Error(`不支持的操作：${op}`))
+		      return ctx.connection.rpc.call(CHANNEL, 'set', { key: payload.key, value: payload.value })
+		        .then((r) => { if (r && r.ok === false) throw new Error(r.error); return r })
+		    },
+		  }
+		  const cfgBlock = (() => {
+		    if (!cfgOpen || !schema) return null
+		    const ctrls = (schema.controls || []).filter((c) => c.plugin === 'long-memory')
+		    const groups = []
+		    for (const c of ctrls) if (!groups.includes(c.group)) groups.push(c.group)
+		    return h('div', { style: S.card, key: 'cfg' }, groups.map((g) => {
+		      const rows = ctrls.filter((c) => c.group === g)
+		      const sections = []
+		      for (const c of rows) if (!sections.includes(c.section || '')) sections.push(c.section || '')
+		      return h('div', { key: 'g' + g }, [
+		        h('div', { style: S.pgroup, key: 't' }, g),
+		        ...sections.map((sec) => h('div', { key: 's' + sec }, [
+		          sec ? h('div', { key: 'st', style: { fontSize: 12, fontWeight: 600, opacity: .75, margin: '8px 0 2px' } }, '▸ ' + sec) : null,
+		          ...rows.filter((c) => (c.section || '') === sec).map((c) => ctrlRow(Object.assign({}, c, { group: g }), cfgApi)),
+		        ])),
+		      ])
+		    }))
+		  })()
+
+		  // ── 记忆库 ──────────────────────────────────────────────────────────
+		  const items = (list && list.items) || []
+		  const scopes = (st.scopes || []).map((s) => s.scope)
+		  const lib = h('div', { style: S.card, key: 'lib' }, [
+		    h('div', { style: S.title, key: 't' }, `记忆库${list ? `（${list.total} 条${list.filtered ? `，筛出 ${items.length}` : ''}）` : ''}`),
+		    h('div', { style: S.row, key: 'q' }, [
+		      h('input', {
+		        key: 'i', style: Object.assign({}, S.input, { width: 220 }), placeholder: '搜索正文/标签', defaultValue: q,
+		        onKeyDown: (e) => { if (e.key === 'Enter') { setQ(e.target.value); loadList(e.target.value) } },
+		      }),
+		      h('select', {
+		        key: 's', style: Object.assign({}, S.input, { width: 150 }), value: scopeFilter,
+		        onChange: (e) => { setScopeFilter(e.target.value); loadList(q, e.target.value) },
+		      }, [h('option', { key: '', value: '' }, '全部会话'), ...scopes.map((s) => h('option', { key: s, value: s }, s))]),
+		      h('label', { key: 'f', style: { fontSize: 12, opacity: .8 } }, [
+		        h('input', {
+		          key: 'c', type: 'checkbox', checked: showForgotten, style: { marginRight: 4 },
+		          onChange: (e) => { setShowForgotten(e.target.checked); loadList(q, scopeFilter, e.target.checked) },
+		        }),
+		        '看已遗忘的',
+		      ]),
+		      h('button', { key: 'b', style: S.btn, disabled: busy2, onClick: () => loadList() }, '搜索'),
+		      h('button', { key: 'e', style: S.btn, disabled: busy2, onClick: () => act('导出', { op: 'export', format: 'md' }, (r) => setExportText(r.text || '')) }, '导出 md'),
+		      h('button', { key: 'ej', style: S.btn, disabled: busy2, onClick: () => act('导出 JSON', { op: 'export', format: 'json' }, (r) => setExportText(r.text || '')) }, '导出 JSON'),
+		      h('button', {
+		        key: 'imp', style: S.btn, disabled: busy2,
+		        onClick: () => {
+		          const txt = window.prompt('粘贴要导入的记忆 JSON（导出的 JSON 格式，数组）')
+		          if (txt) act('导入', { op: 'import', text: txt }, loadList)
+		        },
+		      }, '导入 JSON'),
+		    ]),
+		    exportText ? h('textarea', {
+		      key: 'exp', readOnly: true, value: exportText, spellCheck: false,
+		      style: { width: '100%', minHeight: 120, fontSize: 12, marginTop: 6, padding: '6px 8px', borderRadius: 8, border: '1px solid #d0d5dd', boxSizing: 'border-box' },
+		    }) : null,
+		    h('div', { style: { maxHeight: 420, overflow: 'auto', marginTop: 6 }, key: 'l' },
+		      items.length ? items.map((m) => h('div', {
+		        key: m.id, style: {
+		          padding: '5px 0', borderBottom: '1px solid rgba(127,127,127,.14)', fontSize: 13,
+		          opacity: m.forgottenAt ? .5 : 1,
+		        },
+		      }, [
+		        h('div', { key: 'a', style: { display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' } }, [
+		          h('span', { key: 'w', style: { fontSize: 11, opacity: .7, minWidth: 48 } }, when(m.createdAt)),
+		          h('span', { key: 's', style: { fontSize: 11, opacity: .7 } }, String(m.scope || '')),
+		          h('span', { key: 'i', style: S.chip }, `重要 ${Number(m.importance || 0).toFixed(2)}`),
+		          m.effective != null ? h('span', { key: 'e', style: S.chip }, `清晰度 ${Number(m.effective).toFixed(2)}`) : null,
+		          Number(m.forgottenAt) > 0 ? h('span', { key: 'f', style: S.badge(false) }, '已遗忘') : null,
+		          ...(Array.isArray(m.tags) ? m.tags.slice(0, 4).map((t, i) => h('span', { key: 't' + i, style: S.chip }, t)) : []),
+		        ]),
+		        h('div', { key: 'b', style: { marginTop: 2 } }, String(m.text || '')),
+		        h('div', { key: 'c', style: S.row }, [
+		          h('button', { key: 'd', style: S.btn, disabled: busy2, onClick: () => act('查看', { op: 'get', id: m.id }, (r) => setDetail(r.item || r)) }, '为什么会被想起来'),
+		          Number(m.forgottenAt) > 0
+		            ? h('button', { key: 'r', style: S.btn, disabled: busy2, onClick: () => act('恢复', { op: 'restore', id: m.id }, loadList) }, '恢复')
+		            : h('button', { key: 'f', style: S.btn, disabled: busy2, onClick: () => act('忘掉', { op: 'forget', id: m.id }, loadList) }, '忘掉'),
+		          h('button', {
+		            key: 'b2', style: S.btn, disabled: busy2,
+		            onClick: () => {
+		              const v = window.prompt('新的重要性（0~1）', String(m.importance ?? 0.6))
+		              if (v != null) act('改重要性', { op: 'boost', id: m.id, importance: Number(v) }, loadList)
+		            },
+		          }, '改重要性'),
+		          h('button', {
+		            key: 'p', style: Object.assign({}, S.btn, { color: '#b3261e' }), disabled: busy2,
+		            onClick: () => {
+		              const ok = window.confirm('彻底删除这一条？会先整库备份到 .revisions/，然后从库和导出里都去掉。')
+		              if (ok) act('彻底删除', { op: 'purge', id: m.id }, loadList)
+		            },
+		          }, '彻底删除'),
+		          h('span', { key: 'id', style: { fontSize: 11, opacity: .5 } }, m.id),
+		        ]),
+		      ])) : h('div', { style: S.msg }, list ? '还没有记忆。先在上面配好「整理模型」，或者对面说一句「记住…」。' : '读取中…')),
+		  ])
+
+		  // ── 分项详情 ────────────────────────────────────────────────────────
+		  const detailBox = detail ? h('div', { style: S.card, key: 'detail' }, [
+		    h('div', { style: S.title, key: 't' }, '这条为什么会被想起来'),
+		    h('div', { style: Object.assign({}, S.msg, { whiteSpace: 'pre-wrap' }), key: 'b' },
+		      `${detail.memory && detail.memory.text}\n\n`
+		      + `相关 ${detail.score ? detail.score.relevance : '—'}｜新鲜 ${detail.score ? detail.score.fresh : '—'}｜重要 ${detail.score ? detail.score.importance : '—'}\n`
+		      + `综合分 ${detail.score ? detail.score.score : '—'}（相关×0.65 + 新鲜×0.20 + 重要×0.15）\n`
+		      + `来源 ${detail.memory && detail.memory.scope}｜来源消息 ${(detail.memory && detail.memory.sourceMsgIds || []).join(',') || '—'}`),
+		    detail.why && detail.why.length ? h('div', { style: S.msg, key: 'w' }, '命中原因：' + detail.why.join(' / ')) : null,
+		    h('button', { key: 'x', style: S.btn, onClick: () => setDetail(null) }, '关闭'),
+		  ]) : null
+
+		  // ── 预览 ────────────────────────────────────────────────────────────
+		  const previewBox = h('div', { style: S.card, key: 'pv' }, [
+		    h('div', { style: S.title, key: 't' }, '预览：拿最近聊天试抽一次（不写库、不推水位）'),
+		    h('div', { style: S.row, key: 'r' }, [
+		      h('input', {
+		        key: 'i', style: Object.assign({}, S.input, { width: 220 }), placeholder: 'scope，如 private:123456',
+		        defaultValue: previewScope, onChange: (e) => setPreviewScope(e.target.value),
+		      }),
+		      h('button', {
+		        key: 'b', style: S.btn, disabled: busy2,
+		        onClick: () => act('预览', { op: 'preview', scope: previewScope }, (r) => setPreviewOut(r)),
+		      }, '抽一次看看'),
+		    ]),
+		    previewOut ? h('div', { style: Object.assign({}, S.msg, { whiteSpace: 'pre-wrap' }), key: 'o' },
+		      previewOut.ok
+		        ? `会记 ${previewOut.wouldAdd || 0} 条：\n` + (previewOut.items || []).map((x) => `- [${Number(x.importance || 0).toFixed(2)}] ${x.text}`).join('\n')
+		        : `失败：${previewOut.code || ''} ${previewOut.reason || ''}`) : null,
+		  ])
+
+		  return h('div', {}, [top, cfgOpen ? cfgBlock : null, detailBox, lib, previewBox])
 		}
 
-		function GroupMemory(props) {
-			const { ctx } = props
-			const { useState, useEffect, useCallback } = react
-			const [data, setData] = useState(null)
-			const [cur, setCur] = useState(null)     // { group_id, name, content, bytes, dirty }
-			const [cfgOpen, setCfgOpen] = useState(false)   // 「工具配置」展开
-			const [cfg, setCfg] = useState(null)            // 配置表（按需拉）
-			const [msg, setMsg] = useState('')
-			const [busy, setBusy] = useState(false)
-			const [confirmBox, setConfirmBox] = useState(null)
-
-			const call = useCallback(async (op, payload) => {
-				const r = await ctx.connection.rpc.call(CHANNEL, 'memory', Object.assign({ op: op }, payload || {}))
-				if (r && r.ok === false) {
-					const err = r.error
-					throw new Error(typeof err === 'string' ? err : (err && (err.message || err.code)) || 'RPC 调用失败')
-				}
-				return r ? r.value : undefined
-			}, [ctx])
-
-			// 拉列表；wantId 指定要打开哪个群（默认保持当前选中，其次第一个）。返回是否成功。
-			const load = useCallback(async (wantId) => {
-				try {
-					const d = await call('list')
-					if (d && d.ok === false) throw new Error(d.error)
-					setData(d)
-					const gs = d.groups || []
-					const pick = wantId || (cur && cur.group_id) || (gs[0] && gs[0].group_id)
-					if (pick) await open(pick, gs)
-					return true
-				} catch (e) { setMsg(`读取列表失败：${e.message}`); return false }
-			}, [call, cur])
-
-			const open = async (gid, gs) => {
-				setBusy(true); setMsg('')
-				try {
-					const r = await call('read', { group_id: gid })
-					if (r && r.ok === false) throw new Error(r.error)
-					const g = (gs || (data && data.groups) || []).find((x) => x.group_id === gid) || {}
-					setCur({
-						group_id: gid, name: g.name || '', content: r.content || '', bytes: r.bytes || 0,
-						mtimeMs: r.mtimeMs || 0, dirty: false,
-					})
-				} catch (e) { setMsg(`读 ${gid} 失败：${e.message}`) } finally { setBusy(false) }
-			}
-
-			// 积累在后台跑：每 3s 拉一次 list（只更新列表/状态，不碰编辑器，避免覆盖未保存内容）
-			const pollStatus = async (tries = 8) => {
-				for (let i = 0; i < tries; i += 1) {
-					await new Promise((r) => setTimeout(r, 3000))
-					let d
-					try { d = await call('list') } catch { return }
-					if (d && d.ok !== false) setData(d)
-					if (!d || !d.accumulate || !d.accumulate.running) return
-				}
-			}
-
-			// 工具配置：按需拉取（不占首屏）；改一项立刻落盘 + 热重载
-			const toggleCfg = async () => {
-				if (!cfgOpen && !cfg) {
-					try {
-						const r = await call('config')
-						if (r && r.ok === false) throw new Error(r.error)
-						setCfg(r.controls || [])
-					} catch (e) { setMsg('读配置失败：' + e.message) }
-				}
-				setCfgOpen(!cfgOpen)
-			}
-
-			// 工具配置行直接复用外壳的统一渲染器 ctrlRow（bool / enum / str / int 都由它渲染），
-			// 这里只把它的 api 换成本页的保存通道：memory/setcfg 落盘 + 读回最新配置热更新。
-			const cfgApi = {
-				busy, setMsg,
-				async run(label, fn) {
-					setBusy(true); setMsg('')
-					try {
-						await fn()
-						setMsg(`${label} ✓`)
-						const rr = await call('config')
-						setCfg(rr.controls || [])
-					} catch (e) { setMsg(`${label} ✗ ${e.message}`) } finally { setBusy(false) }
-				},
-				call(op, payload) {
-					if (op !== 'set' || !payload) return Promise.reject(new Error(`不支持的操作：${op}`))
-					return call('setcfg', { key: payload.key, value: payload.value })
-						.then((r) => { if (r && r.ok === false) throw new Error(r.error); return r })
-				},
-			}
-
-			useEffect(() => { load() }, [])   // 只在挂载时拉一次
-			// 挂着页时如果积累在跑，自动跟随状态（跑完显示 lastResult / 失败原因）
-			useEffect(() => {
-				if (data && data.accumulate && data.accumulate.running) pollStatus()
-			}, [data && data.accumulate && data.accumulate.running])
-
-			const save = async () => {
-				if (!cur) return
-				setBusy(true); setMsg('')
-				try {
-					// ifMtime：页面打开后积累器可能已经写过；服务端 mtime 不一致会拒绝，避免旧内容整篇覆盖新要点。
-					const r = await call('save', {
-						group_id: cur.group_id, content: cur.content,
-						...(cur.mtimeMs ? { ifMtime: cur.mtimeMs } : {}),
-					})
-					if (r && r.ok === false) throw new Error(r.error)
-					setMsg(r && r.message ? r.message : '已保存 ✓')
-					setCur(Object.assign({}, cur, {
-						dirty: false, bytes: r && r.bytes ? r.bytes : cur.bytes,
-						mtimeMs: r && r.mtimeMs ? r.mtimeMs : cur.mtimeMs,
-					}))
-					const d = await call('list')
-					if (d && d.ok !== false) setData(d)
-				} catch (e) { setMsg(`保存 ✗ ${e.message}`) } finally { setBusy(false) }
-			}
-
-			if (!data) {
-				return h('div', { style: S.card }, [
-					h('div', { style: S.title, key: 't' }, '群记忆'),
-					h('div', { style: S.msg, key: 'm' }, msg || '读取中…'),
-				])
-			}
-
-			const groups = data.groups || []
-			const kb = (n) => n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB'
-
-			return h('div', { style: S.card }, [
-				h('div', { style: S.title, key: 't' }, '群记忆 · 每群一篇'),
-
-				h('div', { style: S.row, key: 'top' }, [
-					h('button', {
-						key: 'rf', style: S.btn, disabled: busy,
-						title: '重新读取群记忆文件（别人改了文件也会刷出来）',
-						onClick: async () => { if (await load()) setMsg('已刷新 ✓') },
-					}, '刷新'),
-					h('button', {
-						key: 'acc', style: S.btn, disabled: busy,
-						title: '立刻跑一轮积累：读各群最近聊天 → 交给模型更新这几篇文件',
-						onClick: () => setConfirmBox({
-							title: '⚠️ 立刻积累一轮？',
-							lines: [
-								'会调用大模型：默认把本轮所有「有新消息的群」合在一次调用里（群太多或聊天太长才自动拆批）。',
-								'跑在独立的临时后台会话里，后台执行、不占页面，也不会碰群里的对话。',
-								'只处理上次消化之后有新消息的群；消息太少会跳过。跑完点「刷新」看结果；节奏和开关在下面「工具配置」里改。',
-							],
-							okLabel: '开始积累',
-							onOk: async () => {
-								setBusy(true); setMsg('')
-								try {
-									const r = await call('refresh', { confirm: true })
-									if (r && r.ok === false) throw new Error(r.error)
-									setMsg(r && r.message ? r.message : '已开始')
-									if (!r || r.started !== false) pollStatus()
-								} catch (e) { setMsg(`积累 ✗ ${e.message}`) } finally { setBusy(false) }
-							},
-						}),
-					}, '⚡ 立刻积累一轮'),
-					h('span', { key: 'd', style: SM.dim }, '目录 ' + (data.dir || '')),
-					h('span', {
-						key: 'sch', style: SM.dim,
-						title: data.accumulate
-							? `来源：${data.accumulate.source === 'builtin' ? '插件内置调度器' : data.accumulate.source === 'ops' ? '本机运维能力' : '未启用'}`
-							: '',
-					}, '自动积累：' + (String(data.schedule || '') || '—')
-						+ (data.accumulate && data.accumulate.running ? '（正在积累…）' : '')),
-					data.estimate ? h('span', { key: 'est', style: SM.dim },
-						`一轮约 ${data.estimate.approxInputTokens} token（${data.estimate.groups} 群 × ${data.estimate.msgPerGroup} 条，按当前设置估）`) : null,
-				]),
-
-				h('div', { style: SM.dim, key: 'hint' },
-					'每个群一篇 Markdown：记「唤醒与对话风格」和「群里的人」。' +
-					'群聊时内核只给模型一行「有这份记忆」的指针，它需要时再自己调 read_memory 读（整篇不往对话正文里贴）；' +
-					'内容由插件自带的积累器定时更新' +
-					'（节奏见上面那行「自动积累」），' +
-					'这里可以手改（保存会先把旧版备份到 .revisions/）。'),
-
-				// ⚙ 工具配置（折叠）：改的是 config.json 的 pluginConfig['group-memory'] 段
-				h('div', { key: 'cfg' }, [
-					h('button', { style: S.btn, disabled: busy, onClick: toggleCfg },
-						(cfgOpen ? '▾ 收起工具配置' : '▸ 工具配置') + (cfg ? `（${cfg.length} 项）` : '')),
-					cfgOpen && cfg ? h('div', { key: 'body', style: { marginTop: 6 } }, (() => {
-						const gs = []
-						for (const c of cfg) if (!gs.includes(c.group)) gs.push(c.group)
-						return gs.map((gname) => h('div', { key: 'g' + gname }, [
-							h('div', { style: S.pgroup, key: 't' }, gname),
-							cfg.filter((c) => c.group === gname).map((c) => ctrlRow(c, cfgApi)),
-						]))
-					})()) : null,
-					cfgOpen ? h('div', { style: SM.dim, key: 'doc' },
-						'💡 换算口径：1 汉字 ≈ 3.2 字节，1 token ≈ 1.4 汉字（即 1000 字节 ≈ 310 字 ≈ 220 token）。　' +
-						'鼠标停在任意一行（或那个 ⓘ）上会显示用途和影响。　' +
-						'改完立刻落盘（写入前备份 config.json）并热重载：读取侧马上生效，积累器下一轮按新值跑。　' +
-						'积累方式「增量要点」只追加新条目（按 QQ / 文本去重），每节超上限从最早的开始丢；想要模型整篇重写就切「重写全文」。') : null,
-				]),
-
-				h('div', { style: SM.layout, key: 'body' }, [
-					// 左：群清单
-					h('div', { style: SM.list, key: 'l' }, groups.map((g) => h('div', {
-						key: g.group_id, style: SM.item(!!cur && cur.group_id === g.group_id),
-						title: '点一下展开预览，再点一下收起',
-						onClick: () => {
-							// 按压式开关：点已选中的那个 = 收起预览
-							const same = !!(cur && cur.group_id === g.group_id)
-							if (cur && cur.dirty && !window.confirm(same ? '当前这篇有未保存的改动，确定要收起吗？' : '当前这篇有未保存的改动，确定要切换吗？')) return
-							if (same) { setCur(null); return }
-							open(g.group_id)
-						},
-					}, [
-						h('div', { key: 'n', style: { fontWeight: 600 } }, g.name || ('群 ' + g.group_id)),
-						h('div', { key: 's', style: SM.dim },
-							g.group_id + '　' + (g.exists ? kb(g.bytes) + ' / ' + g.bullets + ' 条' : '（还没文件）') +
-							(g.managed ? '' : '　未托管')),
-					]))),
-
-					// 右：编辑器
-					h('div', { style: { flex: '1 1 420px', minWidth: 320 }, key: 'r' }, cur ? [
-						h('div', { style: S.row, key: 'hd' }, [
-							h('span', { key: 't', style: { fontWeight: 600 } },
-								(cur.name || ('群 ' + cur.group_id)) + '（' + cur.group_id + '）'),
-							h('button', { key: 'sv', style: S.btn, disabled: busy || !cur.dirty, onClick: save, title: '保存到该群的记忆文件（会写盘）' },
-								cur.dirty ? '保存' : '已保存'),
-							h('button', { key: 'rl', style: SM.mini, disabled: busy, onClick: () => open(cur.group_id), title: '丢弃未保存的改动，重新读盘' }, '放弃改动'),
-							h('span', { key: 'b', style: SM.dim }, cur.content.length + ' 字符'),
-						]),
-						h('textarea', {
-							key: 'ta', style: SM.area, value: cur.content, disabled: busy, spellCheck: false,
-							onChange: (e) => setCur(Object.assign({}, cur, { content: e.target.value, dirty: true })),
-						}),
-					] : h('div', { style: S.msg, key: 'none' }, '（左边点一个群）')),
-				]),
-
-				h('div', { style: S.msg, key: 'msg' }, msg || (busy ? '处理中…' : '')),
-
-				confirmBox ? h('div', {
-					key: 'confirm', style: {
-						position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 9999,
-						display: 'flex', alignItems: 'center', justifyContent: 'center',
-					},
-					onClick: () => { if (!busy) setConfirmBox(null) },
-				}, [
-					h('div', {
-						key: 'box', style: {
-							background: '#fff', color: '#111', borderRadius: 12, padding: '16px 18px',
-							maxWidth: 460, boxShadow: '0 12px 40px rgba(0,0,0,.35)', border: '1px solid #d0d5dd',
-						},
-						onClick: (e) => e.stopPropagation(),
-					}, [
-						h('div', { key: 't', style: { fontWeight: 700, marginBottom: 8, fontSize: 15 } }, confirmBox.title),
-						...confirmBox.lines.map((l, i) => h('div', { key: 'l' + i, style: { fontSize: 13, opacity: .85, marginBottom: 4 } }, l)),
-						h('div', { key: 'b', style: { display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 } }, [
-							h('button', { key: 'c', style: S.btn, disabled: busy, onClick: () => setConfirmBox(null) }, '取消'),
-							h('button', {
-								key: 'ok', disabled: busy,
-								style: Object.assign({}, S.btn, { background: '#b3261e', color: '#fff', border: '1px solid #b3261e', fontWeight: 600 }),
-								onClick: () => { const f = confirmBox.onOk; setConfirmBox(null); f() },
-							}, confirmBox.okLabel || '确认'),
-						]),
-					]),
-				]) : null,
-			])
-		}
 
 		function apply(ctx) {
 			ctx.slots.inject('settings.section', () => {
