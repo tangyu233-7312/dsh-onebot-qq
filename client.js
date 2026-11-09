@@ -1250,7 +1250,7 @@ window.__ModuleLoader__.load({
 		 * 渲染逻辑完全不同；硬塞进旧组件只会让两边都变难读。旧页在新插件跑通后整体移除。
 		 */
 		function LongMemoryTab(props) {
-		  const { ctx, schema, msg, busy, setConfirmBox } = props
+		  const { ctx, schema, msg } = props
 		  const { useState, useEffect, useCallback } = react
 		  const call = useCallback((payload) => ctx.connection.rpc.call(CHANNEL, 'mem', payload ?? {}), [ctx])
 
