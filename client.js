@@ -235,9 +235,33 @@ window.__ModuleLoader__.load({
 		}
 
 		/** 某一组开关（后端 group 相同的一行行开关；群聊 / 回话 / 生图… 各功能页共用） */
+		/**
+		 * 通用折叠块（2026-11-09）：一个标题按钮 + 点开才渲染的内容。
+		 * 用它把「同一类东西」收进一页（入群欢迎 / 看自己 / 记忆高级参数…），页面短、但没丢任何入口。
+		 * children 是**函数**：没展开就不执行，避免每次进页都拉接口（图片池那种）。
+		 */
+		function Fold(props) {
+			const { title, api = {}, defaultOpen = false, children, hint = '' } = props
+			const { useState } = react
+			const [open, setOpen] = useState(!!defaultOpen)
+			return h('div', { style: { marginTop: 8 } }, [
+				h('div', { style: S.row, key: 'hd' }, [
+					h('button', {
+						key: 'b', style: Object.assign({}, S.btn, open ? { fontWeight: 600 } : {}), disabled: !!api.busy,
+						title: hint || '点开 / 收起',
+						onClick: () => setOpen(!open),
+					}, (open ? '▾ ' : '▸ ') + title + (open ? '（收起）' : '（展开）')),
+				]),
+				open ? h('div', { key: 'body' }, typeof children === 'function' ? children() : children) : null,
+			])
+		}
+
 		function SwitchGroup(props) {
-			const { schema, group, ...api } = props
-			const list = (schema.controls || []).filter((c) => c.group === group)
+			const { schema, group, onlySection = '', skipSections = [], ...api } = props
+			const skipSec = new Set([].concat(skipSections || []))
+			const list = (schema.controls || []).filter((c) => c.group === group
+				&& (!onlySection || c.section === onlySection)
+				&& !(c.section && skipSec.has(c.section)))
 			if (!list.length) return h('div', { style: S.msg }, `（${group}组暂时没有开关）`)
 			// 具名折叠块（c.section）：同一页里再分小节，默认收起 —— 如生图页的「备用接口 1/2」
 			const { useState } = react
@@ -258,7 +282,7 @@ window.__ModuleLoader__.load({
 				])
 			}
 			return h('div', null, [
-				h('div', { style: S.group, key: 'gt' }, group),
+				onlySection ? null : h('div', { style: S.group, key: 'gt' }, group),
 				// 无 section 的项照常平铺；section 项收进折叠块（顺序按后端声明）
 				list.filter((c) => !c.section).map((c) => ctrlRow(c, api)),
 				...list.filter((c) => c.section).map((c) => {
@@ -281,9 +305,14 @@ window.__ModuleLoader__.load({
 
 		/** 单个功能分组页（消息设置 / 回话 / 生图 / 表情包 / 链接解析…） */
 		function GroupTab(props) {
-			const { group, ...api } = props
-			// 这一组自己的动作按钮（如「空间日记」的立刻回顾 / 重置额度）：长在本页底部，不去「运维」页挤
-			const acts = (props.schema.actions || []).filter((a) => a.onGroup && a.group === group)
+			// skipSections：父组件的 extraHead 已经画过的小节（如运维页的「OneBot 连接」），通用渲染要跳过它。
+			const { group, extraHead = null, skipSections = [], ...api } = props
+			const skip = new Set([].concat(skipSections || []))
+			// 这一组自己的动作按钮（如「空间日记」的立刻回顾 / 重置额度）：长在本页底部，不去「运维」页挤。
+			// 2026-11-09 合并后，旧分组名（群聊/入群欢迎/空间日记/看自己）的动作都挂在母页名下：
+			// 所以按「后端 actions 里的 group」再到归并表里换算，找属于本页的。
+			const MERGED = { 入群欢迎: '群聊', 看自己: '空间日记（看自己）' }
+			const acts = (props.schema.actions || []).filter((a) => a.onGroup && (a.group === group || MERGED[a.group] === group))
 			// 「要填几个字段再跑」的动作（如生图的 🧪 试优化）：按 action.prompt 描述自动渲染弹窗，不用为此抄一遍 UI
 			const { useState } = react
 			const [promptBox, setPromptBox] = useState(null)
@@ -367,7 +396,10 @@ window.__ModuleLoader__.load({
 			]) : null
 			return h('div', null, [
 				GROUP_NOTES[group] ? h('div', { key: 'note', style: S.msg }, GROUP_NOTES[group]) : null,
-				h(SwitchGroup, Object.assign({}, api, { key: 'sw', group })),
+				extraHead,
+				// 「群聊」页：群卡片（自定义交互）放在控件前面；「空间日记（看自己）」页：看自己那块放最后
+				group === '群聊' ? h(GroupCardsBody, { key: 'cards', ...api, group }) : null,
+				h(SwitchGroup, Object.assign({}, api, { key: 'sw', group, skipSections })),
 				acts.length ? h('div', { key: 'acts' }, [
 					h('div', { style: S.group, key: 'gt' }, '操作'),
 					...acts.map((a) => h('div', { style: S.row, key: a.id }, [
@@ -397,6 +429,19 @@ window.__ModuleLoader__.load({
 						}, a.label),
 					])),
 				]) : null,
+				// 入群欢迎（2026-11-09 并进群聊页）：默认收起，点开才渲染文案/图片池/测试，避免每次进群聊页都拉图片池
+				group === '群聊' ? h(Fold, {
+					key: 'wl', title: '入群欢迎', api, defaultOpen: false,
+					children: () => [
+						h(SwitchGroup, Object.assign({}, api, { key: 'wsw', group: '群聊', onlySection: '入群欢迎' })),
+						h(WelcomeBody, Object.assign({}, api, { key: 'wbody' })),
+					],
+				}) : null,
+				// 看自己（并进空间日记页）：只读，翻群摘要 / 读自己的流水账
+				group === '空间日记（看自己）' ? h(Fold, {
+					key: 'sv', title: '看自己（只读：翻群摘要 / 读自己的流水账）', api, defaultOpen: false,
+					children: () => h(SwitchGroup, Object.assign({}, api, { key: 'svsw', group: '空间日记（看自己）', onlySection: '看自己' })),
+				}) : null,
 				dialog,
 			])
 		}
@@ -510,8 +555,9 @@ window.__ModuleLoader__.load({
 		}
 
 		// ═══════════ 标签页②：运维（动作按钮 + 子插件开关；2026-10-20 从「总览」拆出）═══════════
+		// 「运维」页的动作按钮块（父页要排除某个小节时传 props.section）
 		function OpsTab(props) {
-			const { schema, busy, run, call, setBusy, setMsg, setConfirmBox, setReportBox } = props
+			const { schema, busy, run, call, setBusy, setMsg, setConfirmBox, setReportBox, section = '' } = props
 			return h('div', null, [
 				// ═══ 运维动作：危险动作走二级确认 ═══
 				h('div', { key: 'act' }, [
@@ -556,22 +602,16 @@ window.__ModuleLoader__.load({
 							},
 						}, a.label),
 					])),
-					// 子插件开关（清单为空时整段不渲染；详细说明/加载状态在「子插件」页）
-					(schema.modules || []).length ? h('div', { key: 'mod' }, [
-						h('div', { style: S.group, key: 'gt' }, '子插件开关（热停用，不卸载）'),
-						(schema.modules || []).map((m) => h('div', { style: S.row, key: m.id }, [
-							h('span', { style: S.label, key: 'l', title: m.hint || '' }, m.label),
-							h('input', { key: 'v', type: 'checkbox', checked: !!m.on, disabled: busy, title: m.hint || '', onChange: (e) => run(`${m.label} ${e.target.checked ? '开' : '关'}`, () => call('module', { id: m.id, on: e.target.checked })) }),
-						])),
-					]) : null,
+					// 2026-11-09：这里的「子插件开关」删掉了 —— 和「子插件」页重复，两处同源，留一处就够。
+					// 连接状态 + 测试按钮由父页（GroupTab 的 extraHead）渲染；连接配置在「OneBot 连接」小节里。
 				]),
 			])
 		}
 
 		// ═══════════ 标签页②：OneBot 连接（状态 + 连接测试 + 连接配置；登录/扫码交给协议端自带 WebUI）═══════════
 		// 状态与总览**同一来源**（ConsoleShell 的 status，5 秒轮询）。
-		function OneBotTab(props) {
-			const { call, refresh, status, busy } = props
+		function OneBotStatus(props) {
+			const { call, refresh, status, busy, section = '', sectionTitle = '' } = props
 			const { useState } = react
 			const [note, setNote] = useState('')
 			const [busyLocal, setBusyLocal] = useState(false)
@@ -596,7 +636,11 @@ window.__ModuleLoader__.load({
 				} finally { setBusyLocal(false) }
 			}
 
+			// 只渲染「运维动作按钮 + 连接状态 + 提示 + 测试按钮」：连接配置的控件由父页的「OneBot 连接」小节渲染。
+			// 有 section 时先画小节标题（父页的通用渲染会跳过同名小节，避免重复）。
 			return h('div', null, [
+				h(OpsTab, Object.assign({}, props, { key: 'ops' })),
+				section ? h('div', { style: S.group, key: 'sec' }, sectionTitle || section) : null,
 				h('div', { style: S.row, key: 'hd' }, [
 					h('span', { style: S.badge(linked), key: 'br' }, `内核 ${linked ? '已连接' : '断开'}`),
 					h('span', { style: S.badge(online), key: 'qq', title: loginErr || '' }, !linked
@@ -614,13 +658,14 @@ window.__ModuleLoader__.load({
 							? '正在检查 QQ 登录状态…（每 30 秒自动检查一次，也可点上面按钮立即检查）'
 							: `QQ 未登录/已掉线${loginErr ? `：${loginErr}` : ''}。请用协议端自带的 WebUI 扫码 / 密码登录（端口见各实现文档，本机在用的 SnowLuma 默认 http://127.0.0.1:5099）；登录后本页与总览会自动更新。`),
 				note ? h('div', { key: 'note', style: S.msg }, note) : null,
-				h(SwitchGroup, Object.assign({}, props, { key: 'sw', group: 'OneBot 连接' })),
 			])
 		}
 
-		// ═══════════ 标签页③：群聊（群管理 + 群聊组开关）═══════════
-		function TabGroups(props) {
-			const { schema, status, busy, run, call, ...api } = props
+		// ═══════════ 「群聊」页的群卡片块（屏蔽 / 白名单 / 黑名单 / 主动接话 / 入群欢迎）═══════════
+		// 2026-11-09 从原 TabGroups 里拆出来：它现在是「群聊」页 GroupTab 里的一个块，
+		// 而不是一整页——页面容器、页签、说明都由父页管。
+		function GroupCardsBody(props) {
+			const { status, busy, run, call } = props
 			const { useState } = react
 			const [gid, setGid] = useState('')
 			const [qqIn, setQqIn] = useState({})   // 每群的“加白名单”输入框
@@ -644,11 +689,6 @@ window.__ModuleLoader__.load({
 			})()
 
 			return h('div', null, [
-				// ═══ 群聊页顶部：全局设置（主人 QQ / @必须 / 接续窗口 / 群上文条数…）═══
-				((schema.controls || []).some((c) => c.group === '群聊'))
-					? h(SwitchGroup, Object.assign({}, props, { key: 'sw', group: '群聊' }))
-					: null,
-
 				// ═══ 群聊管理：每群一张卡片（屏蔽 / 白名单 / 黑名单 / 允许主动接话）═══
 				h('div', { key: 'gmanage' }, [
 					h('div', { style: S.group, key: 'gt' }, '群聊管理（屏蔽 / 白名单 / 黑名单 / 主动接话每群独立；免@唤醒词全局生效）'),
@@ -657,9 +697,7 @@ window.__ModuleLoader__.load({
 						h('button', { style: S.btn, disabled: busy, onClick: () => gid && run(`纳入管理 ${gid}`, () => call('group', { kind: 'allowlist', op: 'ensure', group_id: gid })), title: '把这个群纳入管理：加进白名单后「群聊」页会出现它的卡片，方便逐群设置' }, '纳入管理'),
 						h('button', { style: S.btn, disabled: busy, onClick: () => gid && run(`屏蔽 ${gid}`, () => call('group', { kind: 'ignore', op: 'add', group_id: gid })), title: '整群屏蔽：@ 和唤醒词都不理（在卡片里取消屏蔽即可恢复）' }, '直接屏蔽'),
 					]),
-					h('div', { style: S.msg, key: 'hint' }, '说明：屏蔽 = 该群 @ 和关键词都不理；白名单留空 = 群里谁叫都理，填了人 = 只有名单里的人叫得动；**黑名单 = 这些人发的消息机器人不回、也不进留档（优先于白名单）**；免@唤醒词是**全局**的，所有群共用一份。'),
-					// 全局免@唤醒词：和「总览 → 人设」下的同一份 config 词表共用编辑器（填空 + 添加）
-					h(WakeWordsEditor, { key: 'gkw', call, run, busy, status }),
+					h('div', { style: S.msg, key: 'hint' }, '说明：屏蔽 = 该群 @ 和关键词都不理；白名单留空 = 群里谁叫都理，填了人 = 只有名单里的人叫得动；**黑名单 = 这些人发的消息机器人不回、也不进留档（优先于白名单）**；免@唤醒词是**全局**的，所有群共用一份（在「人设与语气 → 唤醒」里改）。'),
 					gl.length === 0
 						? h('div', { style: S.msg, key: 'none' }, '（还没有纳入管理的群）')
 						: gl.map((grp) => h('div', {
@@ -740,7 +778,7 @@ window.__ModuleLoader__.load({
 		// 开关文案来自 schema 的 group==='入群欢迎'（后端 CONTROLS 里加就自动多出这一页）；
 		// 图片池 + 测试走 RPC 端点 action 的 welcome-images / welcome-test 两个动作。
 		// 字段全用可选链兜底：后端还没上线时这页照样能渲染，只是读不到数据。
-		function WelcomeTab(props) {
+		function WelcomeBody(props) {
 			const { schema, status, busy, run, call, setBusy, setMsg, setConfirmBox } = props
 			const { useState, useEffect, useCallback, useRef } = react
 			const w = (status && status.welcome) || {}
@@ -1003,30 +1041,38 @@ window.__ModuleLoader__.load({
 			])
 		}
 
-		// 页内标签页定义：固定页（总览 / 运维 / 群聊 / 子插件 / 记忆）+ 后端每个 group 一页。
-		// 顺序 = CONTROLS 里 group 首次出现的顺序；「群聊」组不单独成页（跟群卡片一起画在「群聊」页里）；
-		// 「OneBot 连接」= OneBotTab（状态/测试 + 连接配置），「入群欢迎」= WelcomeTab（都不是通用 GroupTab）；
-		// 「其他」固定排最后（权限/门禁/文件/发图/头像 五组并进去的杂项页）。
+		// 页内标签页：总览 / 子插件 + 后端归并后的每个分组一页（顺序按 schema.groupOrder，「其他」固定排最后）。
+		// 合并页里的额外内容（只在这里拼，不动 GroupTab 主体）：
+		//   · 运维（OneBot 连接在这个页的「OneBot 连接」小节）→ extraHead = OpsTab（危险动作按钮）
+		//   · 群聊（入群欢迎并进来了）→ GroupCardsBody（群卡片）+ WelcomeBody（入群欢迎）
+		//   · 空间日记（看自己）→ SwitchGroup 只渲染「看自己」那一个小节
+		//   · 主动接话 / 记忆 → 各自的专用组件（有自定义交互）
 		function tabDefs(schema) {
+			// 后端已经把分组归并过（admin/schema.js 的 GROUP_MERGE），并给了页签顺序 groupOrder。
+			// 固定页：总览（状态/向导）、子插件（清单与开关）；其余都是「合并后的分组页」。
 			const groups = []
-			const FIXED_LABELS = ['总览', '运维', '群聊', '子插件', '记忆'] // 固定页同名 group 不另开页
+			const FIXED_LABELS = ['总览', '子插件']
 			const personaGroups = new Set((schema && schema.personaGroups) || [])
 			for (const c of (schema && schema.controls) || []) {
 				if (!c.group || personaGroups.has(c.group) || FIXED_LABELS.includes(c.group) || groups.includes(c.group)) continue
 				groups.push(c.group)
 			}
-			// 「其他」永远排最后（它是杂项汇总页，不该夹在功能页中间）
+			const order = Array.isArray(schema && schema.groupOrder) ? schema.groupOrder : []
+			groups.sort((a, b) => {
+				const ia = order.indexOf(a)
+				const ib = order.indexOf(b)
+				if (ia >= 0 || ib >= 0) return (ia < 0 ? 9999 : ia) - (ib < 0 ? 9999 : ib)
+				return 0
+			})
+			// 「其他」永远排最后（杂项汇总页，不该夹在功能页中间）
 			if (groups.includes('其他')) {
 				groups.splice(groups.indexOf('其他'), 1)
 				groups.push('其他')
 			}
 			return [
 				{ id: 'overview', label: '总览' },
-				{ id: 'ops', label: '运维' },
-				{ id: 'groups', label: '群聊' },
 				...groups.map((g) => ({ id: 'group:' + g, label: g, group: g })),
 				{ id: 'plugins', label: '子插件' },
-				{ id: 'memory', label: '记忆' },
 			]
 		}
 
@@ -1134,14 +1180,14 @@ window.__ModuleLoader__.load({
 			const body = (!schema || !status)
 				? h('div', { style: S.msg, key: 'loading' }, msg || '读取中…')
 				: curTab.id === 'overview' ? h(TabOverview, { key: 'o', ...api })
-					: curTab.id === 'ops' ? h(OpsTab, { key: 'op', ...api })
-						: curTab.id === 'groups' ? h(TabGroups, { key: 'g', ...api })
-							: curTab.group === 'OneBot 连接' ? h(OneBotTab, Object.assign({}, api, { key: 'nc' }))
-							: curTab.group === '入群欢迎' ? h(WelcomeTab, Object.assign({}, api, { key: 'wt' }))
-								: curTab.group === '主动接话' ? h(ReplyModeTab, Object.assign({}, api, { key: 'rm' }))
+					: curTab.id === 'plugins' ? h(TabPlugins, { key: 'pl', ...api })
+						// 合并后需要「动作按钮 + 自定义交互」的页走专用组件；其余全是通用折叠渲染
+						: curTab.group === '运维' ? h(GroupTab, Object.assign({}, api, { key: 'op', group: '运维', skipSections: ['OneBot 连接'], extraHead: h(OneBotStatus, Object.assign({}, api, { key: 'oh', section: 'OneBot 连接', sectionTitle: '运维动作' })) }))
+						: curTab.group === '群聊' ? h(GroupTab, Object.assign({}, api, { key: 'g', group: '群聊' }))
+							: curTab.group === '主动接话' ? h(ReplyModeTab, Object.assign({}, api, { key: 'rm' }))
+								: curTab.group === '记忆' ? h(LongMemoryTab, { key: 'lm', ...api })
 									: curTab.group ? h(GroupTab, Object.assign({}, api, { key: 'gt', group: curTab.group }))
-										: curTab.id === 'plugins' ? h(TabPlugins, { key: 'pl', ...api })
-											: h(LongMemoryTab, { key: 'lm', ...api })
+										: h(TabOverview, { key: 'o2', ...api })
 
 			return h('div', { style: S.card }, [
 				h('div', { style: S.tabs, key: 'tabs' }, TABS.map((t) => h('button', {
@@ -1346,23 +1392,19 @@ window.__ModuleLoader__.load({
 		        .then((r) => { if (r && r.ok === false) throw new Error(r.error); return r })
 		    },
 		  }
+		  // 「记忆」页不再分两页：所有控件都在这一页，按小节折成折叠块（存储范围 / 整理模型 / 高级参数）。
+		  // 后端已经把 `记忆（高级）` 并进「记忆」（section 仍是各自的名字），这里只决定块的顺序与默认开合。
 		  const cfgBlock = (() => {
 		    if (!cfgOpen || !schema) return null
 		    const ctrls = (schema.controls || []).filter((c) => c.plugin === 'long-memory')
-		    const groups = []
-		    for (const c of ctrls) if (!groups.includes(c.group)) groups.push(c.group)
-		    return h('div', { style: S.card, key: 'cfg' }, groups.map((g) => {
-		      const rows = ctrls.filter((c) => c.group === g)
-		      const sections = []
-		      for (const c of rows) if (!sections.includes(c.section || '')) sections.push(c.section || '')
-		      return h('div', { key: 'g' + g }, [
-		        h('div', { style: S.pgroup, key: 't' }, g),
-		        ...sections.map((sec) => h('div', { key: 's' + sec }, [
-		          sec ? h('div', { key: 'st', style: { fontSize: 12, fontWeight: 600, opacity: .75, margin: '8px 0 2px' } }, '▸ ' + sec) : null,
-		          ...rows.filter((c) => (c.section || '') === sec).map((c) => ctrlRow(Object.assign({}, c, { group: g }), cfgApi)),
-		        ])),
-		      ])
-		    }))
+		    const sections = []
+		    for (const c of ctrls) if (!sections.includes(c.section || '')) sections.push(c.section || '')
+		    // 常用两块默认展开；「高级参数」里的所有小节默认收起（参数多，别一进来就刷屏）
+		    const OPEN_BY_DEFAULT = { 存储范围: true, 整理模型: true }
+		    return h('div', { key: 'cfg' }, sections.map((sec) => h(Fold, {
+		      key: 's' + sec, api: cfgApi, title: sec || '设置', defaultOpen: !!OPEN_BY_DEFAULT[sec],
+		      children: () => ctrls.filter((c) => (c.section || '') === sec).map((c) => ctrlRow(c, cfgApi)),
+		    })))
 		  })()
 
 		  // ── 记忆库 ──────────────────────────────────────────────────────────

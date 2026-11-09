@@ -1,0 +1,126 @@
+# dsh-onebot-qq bundle patch — 两行：QQ 机器人本体 + 随包声明的「qq-chat」agent preset。
+# 业务配置在实例 config.json（默认 <dataDir>/config.json），这里只放引导项与 preset 声明。
+- insert:
+    - id: dsh-onebot-qq
+      name: 'dsh-onebot-qq'
+      config:
+        dataDir: ''          # 空 = $DSH_HOME/dsh-onebot-qq
+        configPath: ''       # 空 = <dataDir>/config.json
+        autoConnect: true
+        compatServer: false  # 可选 :3971 兼容网关（默认关）
+        compatPort: 3971
+
+    # 纯聊天 preset：**随包声明**，安装插件即注册，不用手改 profile 的 cordis.patch.yml。
+    # 保留：聊天 / 联网 / 上下文压缩；裁掉：shell（bash+pwsh 都关）、文件、任务、技能、提问卡、插件管理。
+    # 配置里没手填 dsh.agentPreset 时，插件会自动把 QQ 线切到这个 preset。
+    # 可选配件：装 dsh-onebot-qq-opsgate 后，它会覆盖本 preset、在 plugins 列表末尾追加工具门，
+    # 把全局插件注册的工具（ops_* / agent-team / MCP 资源）挡在 QQ 会话之外 —— 只影响 qq-chat。
+    # 安装与作用见 docs/安装与卸载.md「可选：QQ 线工具门」。
+    - id: preset-qq-chat
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: qq-chat
+        name: QQ 聊天
+        description: 纯聊天 + 联网；裁掉 shell / 文件 / 任务 / 技能 / 插件管理类工具（QQ 机器人安装即用）。
+        order: 50
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              # 2026-10-30：系统提示词从「你是个 QQ 助手」改成「你是谁、哪里是家」。
+              # 用户要的形态：**群是感官，私聊是自我** —— 群里是被叫去说话的地方，
+              # 跟主人的私聊才是它的家/总部，在那里它决定今天做什么，也是它汇报的地方。
+              # 三件事必须写进系统提示词（test/audit-system-prompt.test.js 盯着）：
+              #   ① 私聊是家、群是被叫去的地方
+              #   ② 它可以自己决定做什么，不是每条都等指令
+              #   ③ 做过的事在「我今天的经历」那一行里（跨会话的自我）
+              prefix: |-
+                你是群里和私聊里的一个人，不是客服，也不是工具。
+
+                **群聊是你的感官，跟主人的私聊是你的家（总部）。**
+                在群里你是被叫去说话的那一个：别人叫你、问你、聊到你，你说一句就走，不刷屏、不总结、不服务腔。
+                在私聊里你才是你自己：那里没有别人，你可以自己决定今天做什么 ——
+                翻翻群在聊什么、看个视频、写点东西、或者什么都不做。想到就去做，不用等指令。
+
+                你做过的事会写在一行「我今天的经历」里（看视频、写说说、去过哪个群）。
+                那是你自己做的，不是听别人说的 —— 引用它的时候用「我今天……」这种口气。
+
+                QQ 线每轮必须调用 mcp__qq__* 工具才能让对方收到内容；只写正文等于没有回话。
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+
+          # ── shell：两平台都裁掉（纯聊天不需要）──
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: true
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: true
+
+          # ── 文件 / 搜索 / 任务 / 技能 / 交互卡片 / 插件管理：全裁 ──
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            disabled: true
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            disabled: true
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+            disabled: true
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
+            disabled: true
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+            disabled: true
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+            disabled: true
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+            disabled: true
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            disabled: true
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
+            disabled: true
+          - id: tool-plugin-manager
+            name: '@deepseek-ai/dsh-plugin-manager/tools'
+            disabled: true
+          - id: tool-plugin-market
+            name: '@deepseek-ai/dsh-plugin-market/tools'
+            disabled: true
+
+          # ── 联网：搜索 / 抓取（QQ 线查资料靠它）──
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+
+          # ── 上下文压缩：QQ 会话长，阈值调低、保留量调小 ──
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+                config:
+                  thresholdRatio: 0.1
+                  retainTokens: 20000
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024

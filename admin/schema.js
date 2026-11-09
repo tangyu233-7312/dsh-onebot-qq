@@ -931,6 +931,70 @@ export function writeValue(kernel, key, value, rawConfig = {}) {
 const OTHER_GROUPS = new Set(['权限', '门禁', '文件', '发图', '头像'])
 const OTHER_LABEL = '其他'
 
+/**
+ * 分组归并（2026-11-09 控制台精简）：把性质相同的旧分组并进一页，**配置路径与插件读取逻辑完全不变**，
+ * 只换面板入口。合并后每页的小节由 `sectionOf()` 给名字，前端按它渲染成折叠块（功能名版）。
+ *
+ * 原则：一页 = 用户心里的一件事。
+ *   · 「人设与语气」= 它怎么说话（消息设置 / 唤醒 / 语气守卫 / 句池 / 人设版本）
+ *   · 「空间日记（看自己）」= 它自己记录什么、又怎么看自己（看自己只是空间日记同一类「翻自己的记录」）
+ *   · 入群欢迎属于群设置 → 并进「群聊」；OneBot 连接属于运维 → 并进「运维」；记忆高级参数收进「记忆」。
+ */
+const GROUP_MERGE = {
+  消息设置: '人设与语气',
+  唤醒: '人设与语气',
+  语气守卫: '人设与语气',
+  句池: '人设与语气',
+  人设版本: '人设与语气',
+  入群欢迎: '群聊',
+  看自己: '空间日记（看自己）',
+  'OneBot 连接': '运维',
+  '记忆（高级）': '记忆',
+}
+
+/** 归并后各页的首选页签顺序（没列到的按后端首次出现顺序排在后面）。 */
+const GROUP_ORDER = ['运维', '群聊', '人设与语气', '主动接话', '文件与图片', '生图', '空间日记（看自己）', '记忆', '其他']
+
+/** 分组（合并后）→ 小节名。同一页里多个旧分组各自成块；没列到的用 group 当小节名。 */
+const SECTION_OF = {
+  群聊: '群设置',
+  入群欢迎: '入群欢迎',
+  运维: '运维',
+  'OneBot 连接': 'OneBot 连接',
+  消息设置: '消息设置',
+  唤醒: '唤醒',
+  语气守卫: '语气守卫',
+  句池: '句池',
+  人设版本: '人设版本',
+  '空间日记（看自己）': '空间日记',
+  看自己: '看自己',
+  记忆: '存储与整理',
+  主动接话: '主动接话',
+  文件与图片: '文件与图片',
+  生图: '生图',
+  表情包: '表情包',
+  链接解析: '链接解析',
+  自己找视频看: '自己找视频看',
+  语音与唱歌: '语音与唱歌',
+}
+
+/** 原来的分组名 → 合并后的页名（没在表里的原样返回）。 */
+export function mergedGroupOf(group) {
+  const g = String(group || '')
+  if (OTHER_GROUPS.has(g)) return OTHER_LABEL
+  return GROUP_MERGE[g] || g
+}
+
+/**
+ * 某一项在它所属页里的小节名（= 折叠块标题）。
+ * 入参是**合并后**的页名与原分组名；两者相同时用 SECTION_OF 给个更像人话的块名。
+ */
+export function sectionOf(mergedPage, originalGroup) {
+  const key = String(originalGroup || '')
+  if (SECTION_OF[key]) return SECTION_OF[key]
+  return String(mergedPage || key)
+}
+
 /** 跟随「人设」显示在同一页（「总览」的人设区块下方）的分组。当前为空：句池 / 唤醒 已各自成页（子插件 1:1）。 */
 const PERSONA_GROUPS = []
 
@@ -1083,8 +1147,17 @@ export function collectModules(kernel, rawConfig = {}) {
  */
 export function collectSchema(kernel, rawConfig) {
   const raw = isPlainObject(rawConfig) ? rawConfig : (isPlainObject(kernel?.raw) ? kernel.raw : {})
-  // 权限/门禁/文件/发图/头像 → 统一并到「其他」页（配置路径不变，只是换分组）
-  const entries = allControls(kernel).map((e) => (OTHER_GROUPS.has(e.group) ? { ...e, group: OTHER_LABEL } : e))
+  // ① 分组归并（2026-11-09）：权限/门禁/文件/发图/头像 →「其他」；消息设置/唤醒/语气守卫/句池/人设版本 →「人设与语气」；
+  //    入群欢迎 →「群聊」；看自己 →「空间日记（看自己）」；OneBot 连接 →「运维」；记忆（高级）→「记忆」。
+  //    配置路径一个都不变，只是换面板入口与小节名。
+  //    ⚠️ section 只在**旧分组名**上现算：已经是自身小节的项（如「主动接话」里的「私聊主动接话」「连续对话」）
+  //       必须原样保留 —— 覆盖它们会把 50 多个高级项全平铺出来。
+  const entries = allControls(kernel).map((e) => {
+    const merged = mergedGroupOf(e.group)
+    const mapped = sectionOf(merged, e.group)
+    const keepOwn = !GROUP_MERGE[e.group] && !OTHER_GROUPS.has(e.group) && e.section
+    return { ...e, group: merged, section: keepOwn ? e.section : (mapped || '') }
+  })
   // 「表情包」页顶部一行实时概况（数量/标签数随时变 → 插件现算后给，不塞进静态 schema 文字）。
   // 插件没加载 / 没提供统计时静默跳过，控制台照常可用。
   const stickerStats = (() => {
@@ -1114,6 +1187,8 @@ export function collectSchema(kernel, rawConfig) {
   return {
     controls,
     groups: [...groups].map(([name, plugins]) => ({ name, plugins: [...plugins] })),
+    // 页签顺序（合并后的页名；前端按它排，「其他」永远最后）
+    groupOrder: [...new Set([...GROUP_ORDER, ...[...groups.keys()]])],
     modules: collectModules(kernel, raw),
     actions: visibleActions(),
     // 跟随「人设」一起显示在「总览」页的组（不再单独成页）

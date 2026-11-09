@@ -15,14 +15,17 @@ async function schemaOf(t) {
   return collectSchema(h.kernel, h.raw)
 }
 
-test('分组命名：消息设置 / 主动接话；旧页名不再出现', async (t) => {
+test('分组命名：合并后的页名（2026-11-09 精简）；旧页名不再出现', async (t) => {
   const schema = await schemaOf(t)
   const groups = schema.groups.map((g) => g.name)
-  assert.ok(groups.includes('消息设置'), '应有「消息设置」页')
+  // 一页 = 用户心里的一件事：消息设置/唤醒/语气守卫/句池/人设版本 并进「人设与语气」
+  assert.ok(groups.includes('人设与语气'), '应有「人设与语气」页')
   assert.ok(groups.includes('主动接话'), '应有「主动接话」页')
-  for (const old of ['回话细节', '回话模式', '回话模式·高级']) {
-    assert.equal(groups.includes(old), false, `旧分组名不应再出现：${old}`)
+  for (const old of ['回话细节', '回话模式', '回话模式·高级', '消息设置', '唤醒', '语气守卫', '句池', '人设版本']) {
+    assert.equal(groups.includes(old), false, `旧分组名不应再单独成页：${old}`)
   }
+  // 合并后的页签顺序由后端给出（前端照它排）
+  assert.ok(Array.isArray(schema.groupOrder) && schema.groupOrder.includes('人设与语气'))
 })
 
 test('主动接话：基础项不带 advanced，进阶项全部带 advanced', async (t) => {
@@ -37,9 +40,9 @@ test('主动接话：基础项不带 advanced，进阶项全部带 advanced', as
   assert.ok(adv.every((c) => c.key.startsWith('pacing.reply.')))
 })
 
-test('消息设置：原回话细节 4 项 + 合批 6 项都在同一页', async (t) => {
+test('消息设置：原回话细节 4 项 + 合批 6 项都在「人设与语气」页的「消息设置」小节', async (t) => {
   const schema = await schemaOf(t)
-  const keys = schema.controls.filter((c) => c.group === '消息设置').map((c) => c.key)
+  const keys = schema.controls.filter((c) => c.group === '人设与语气' && c.section === '消息设置').map((c) => c.key)
   for (const k of [
     'outbound.replyMaxLength', 'outbound.longForwardThreshold', 'outbound.longForwardChunkSize', 'outbound.quoteAfterMsgs',
     'pacing.merge.enabled', 'pacing.merge.windowMs', 'pacing.merge.windowActiveMs', 'pacing.merge.activeGapMs',
@@ -68,11 +71,13 @@ test('「其他」页：权限 / 门禁 / 文件 / 发图 / 头像 五组的控�
   assert.ok(other.some((c) => c.type === 'info' && String(c.text).includes('门禁')), '其他页顶部应有分组说明')
 })
 
-test('句池 / 唤醒：各自成页（persona-voice / gate-wake 一对一）', async (t) => {
+test('句池 / 唤醒：并进「人设与语气」页，各自是一个小节', async (t) => {
   const schema = await schemaOf(t)
-  assert.deepEqual(schema.personaGroups, [], '不再折叠进总览：两者各自成页')
+  assert.deepEqual(schema.personaGroups, [], '不再折叠进总览')
   const names = schema.groups.map((g) => g.name)
-  assert.ok(names.includes('句池') && names.includes('唤醒'), '应有「句池」「唤醒」两页')
+  assert.equal(names.includes('句池'), false, '「句池」不再单独成页')
+  assert.equal(names.includes('唤醒'), false, '「唤醒」不再单独成页')
+  assert.ok(names.includes('人设与语气'), '应有「人设与语气」页')
   const want = {
     '句池': ['persona-voice.enabled', 'persona-voice.personaDir', 'persona-voice.activePersona', 'persona-voice.quoteEnforce'],
     '唤醒': ['gate-wake.enabled', 'gate-wake.pokeBack', 'gate-wake.keywords', 'gate-wake.callAck'],
@@ -81,13 +86,14 @@ test('句池 / 唤醒：各自成页（persona-voice / gate-wake 一对一）', 
     for (const k of want[g]) {
       const c = schema.controls.find((x) => x.key === k)
       assert.ok(c, k + " 应可见")
-      assert.equal(c.group, g, k + ' 应在「' + g + '」页')
+      assert.equal(c.group, '人设与语气', k + ' 应在「人设与语气」页')
+      assert.equal(c.section, g, k + ' 的小节应是「' + g + '」')
     }
   }
   const pv = schema.controls.filter((c) => c.plugin === 'persona-voice')
-  assert.ok(pv.every((c) => c.group === '句池'), pv.map((c) => c.key + ':' + c.group).join(','))
+  assert.ok(pv.every((c) => c.group === '人设与语气'), pv.map((c) => c.key + ':' + c.group).join(','))
   const gw = schema.controls.filter((c) => c.plugin === 'gate-wake')
-  assert.ok(gw.every((c) => c.group === '唤醒' || c.group === '其他'), gw.map((c) => c.key + ':' + c.group).join(','))
+  assert.ok(gw.every((c) => c.group === '人设与语气' || c.group === '其他'), gw.map((c) => c.key + ':' + c.group).join(','))
 })
 
 test('所有可见开关都带鼠标悬停解释（hint 非空）', async (t) => {
@@ -102,10 +108,11 @@ test('引用拦截开关在「句池」页（persona-voice 一对一），标签
   const schema = await schemaOf(t)
   const q = schema.controls.find((c) => c.key === 'persona-voice.quoteEnforce')
   assert.ok(q, 'quoteEnforce 应仍可见')
-  assert.equal(q.group, '句池', '应归到句池页（persona-voice 一对一）')
+  assert.equal(q.group, '人设与语气', '应归到「人设与语气」页')
+  assert.equal(q.section, '句池', '应落在「句池」小节')
   assert.match(String(q.label), /不引用/, '标签应说明「不引用刚触发回复的那条消息」')
   assert.ok(String(q.hint).includes('引用门槛'), '解释里应带「引用门槛」这个上下游关系')
-  assert.equal(schema.groups.some((g) => g.name === '回话'), false, '「回话」页应已并入消息设置')
+  assert.equal(schema.groups.some((g) => g.name === '回话'), false, '「回话」页应已并入「人设与语气」')
 })
 
 test('文件与图片页：行为类开关都在同一页；目录 / 白名单在「其他」页', async (t) => {
@@ -141,13 +148,14 @@ test('表情包「自动打标」不暴露（内核暂无看图能力，避免�
   assert.equal(schema.controls.some((c) => c.key === 'stickers.tagging'), false)
 })
 
-test('「能力」页已拆：gate-wake 归「唤醒」、commands 归「群聊」', async (t) => {
+test('「能力」页已拆：gate-wake 归「人设与语气·唤醒」、commands 归「群聊」', async (t) => {
   const schema = await schemaOf(t)
   assert.equal(schema.groups.some((g) => g.name === '能力'), false, '「能力」页不应再出现')
   const byKey = (k) => schema.controls.find((c) => c.key === k)
   assert.equal(byKey('commands.enabled').group, '群聊')
-  assert.equal(byKey('gate-wake.enabled').group, '唤醒')
-  assert.equal(byKey('gate-wake.pokeBack').group, '唤醒')
+  assert.equal(byKey('gate-wake.enabled').group, '人设与语气')
+  assert.equal(byKey('gate-wake.enabled').section, '唤醒')
+  assert.equal(byKey('gate-wake.pokeBack').group, '人设与语气')
   const keys = schema.controls.filter((c) => c.group === '群聊').map((c) => c.key)
   assert.ok(keys.includes('adminQq'), '群聊页原有核心项保留')
   assert.ok(keys.includes('outbound.groupContextCount'), '群聊页原有核心项保留')
@@ -196,10 +204,15 @@ test('群聊页「入站条数上限」：标签写明是上限、解释讲清"�
   assert.equal(c.max, 50)
 })
 
-test('控制台命名：协议端页签名是「OneBot 连接」，且不再残留旧实现名', async (t) => {
+test('控制台命名：OneBot 连接收进「运维」页的小节，且不再残留旧实现名', async (t) => {
   const schema = await schemaOf(t)
   const groups = schema.groups.map((g) => g.name)
-  assert.ok(groups.includes('OneBot 连接'), '应有「OneBot 连接」页')
+  assert.equal(groups.includes('OneBot 连接'), false, '「OneBot 连接」不再单独成页（2026-11-09 并进运维）')
+  assert.ok(groups.includes('运维'), '应有「运维」页')
+  const onebotCtrl = schema.controls.find((c) => c.plugin === 'sidecar-control' || /onebot/i.test(c.key))
+  if (onebotCtrl) assert.equal(onebotCtrl.group, '运维', 'OneBot 相关控件应在运维页')
+  const onebotSection = schema.controls.filter((c) => c.section === 'OneBot 连接')
+  assert.ok(onebotSection.length >= 3, `「OneBot 连接」小节应有连接地址/token 等控件，实际 ${onebotSection.length}`)
   // 全量 schema 里不该再出现旧实现名（守卫用例：正则里保留旧名正是为了检测它不再出现）
   const dump = JSON.stringify(schema)
   assert.equal(/NapCat|napcat/i.test(dump), false, '旧实现名不应再出现在 schema 里')
