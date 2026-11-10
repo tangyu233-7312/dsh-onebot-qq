@@ -52,6 +52,54 @@ export function nextVersionName(personaDir, role, date) {
 }
 
 
+/**
+ * 读「当前生效」的那份人设文件 —— 供 read_persona 工具用（导出给测试）。
+ *
+ * 为什么必须解析而不是让模型给路径：人设库里有好几套（蓝色大肥鱼 / 祀 / 带日期的版本），
+ * 模型随手写一个路径就可能读到**别人的人设**，白白浪费 token 还串戏。
+ * 这里只认三份：正主人设（.md）、固定句池（.lines.txt）、唤醒词（.wake.txt），都跟着指针走。
+ *
+ * @param {{personaDir:string, workspaceDir:string, activeName?:string, which?:string}} o
+ * @returns {{ok:boolean, name:string, which:'md'|'lines'|'wake', file:string, reason?:string}}
+ */
+export function personaFilesForRead({ personaDir = '', workspaceDir = '', activeName = '', which = 'md' } = {}) {
+  const want = which === 'lines' || which === 'wake' ? which : 'md'   // 其它一律当 md（不认路径）
+  const suffix = want === 'lines' ? '.lines.txt' : want === 'wake' ? '.wake.txt' : '.md'
+  let name = String(activeName || '').trim()
+  if (!name) {
+    try {
+      const p = JSON.parse(fs.readFileSync(path.join(String(workspaceDir || ''), '.persona.json'), 'utf8'))
+      name = String((p && p.name) || '').trim()
+    } catch { /* 没有指针就返回下面的失败 */ }
+  }
+  if (!name) return { ok: false, name: '', which: want, file: '', reason: '读不到当前生效的人设（.persona.json 与 activePersona 都是空）' }
+  const dir = String(personaDir || '')
+  const file = path.join(dir, name + suffix)
+  // 防穿越：解析后必须仍在人设库目录里（名字来自配置/指针，正常不会有 ..，但别假设）
+  const resolved = path.resolve(file)
+  if (!path.resolve(dir) || !resolved.startsWith(path.resolve(dir) + path.sep)) {
+    return { ok: false, name, which: want, file: '', reason: '人设名不合法（解析出了人设库目录）' }
+  }
+  return { ok: true, name, which: want, file: resolved }
+}
+
+/**
+ * 读一份人设文件的内容（只读；超预算截断并说明）。失败不抛，返回 { ok:false, reason }。
+ */
+export function readPersonaFile({ personaDir = '', workspaceDir = '', activeName = '', which = 'md', maxBytes = 24000 } = {}) {
+  const f = personaFilesForRead({ personaDir, workspaceDir, activeName, which })
+  if (!f.ok) return { ...f, text: '', bytes: 0, clipped: false }
+  try {
+    const buf = fs.readFileSync(f.file)
+    const budget = Math.max(1000, Number(maxBytes) || 24000)
+    const clipped = buf.length > budget
+    const text = buf.slice(0, budget).toString('utf8')
+    return { ok: true, name: f.name, which: f.which, file: f.file, text, bytes: buf.length, clipped }
+  } catch (e) {
+    return { ok: false, name: f.name, which: f.which, file: f.file, text: '', bytes: 0, clipped: false, reason: '读不到文件：' + (e && e.message ? e.message : String(e)) }
+  }
+}
+
 export default {
   id: 'persona-version',
   title: '人设版本',
@@ -78,10 +126,26 @@ export default {
       label: '单版人设最多多少字',
       hint: '防它一次写太长把上下文吃光。',
     },
+    // ── 系统提示词里的人设（2026-11-10）──
+    // 默认只放一小段「人格骨架」，全文靠 read_persona 按需读；打开下面的开关才把全文常驻。
+    promptFull: {
+      type: 'bool', default: false, group: '人设版本',
+      label: '人设全文常驻系统提示词',
+      hint: '开：把当前生效的整篇人设写进系统提示词 —— 每轮都带上，最稳，但每轮多约 2500 token（走缓存也贵）。\n'
+        + '关（默认）：系统提示词里只放一小段人格骨架（自称 / 语尾 / 句末不挂句号 / 禁忌），'
+        + '全文由它自己按需调 read_persona 来读 —— 省 token，但依赖它愿意读。\n'
+        + '改完**重启 DSH** 才生效（系统提示词是会话建立时定的）；已有会话不会重新读。',
+    },
+    promptFullMaxBytes: {
+      type: 'int', default: 12000, min: 1000, max: 40000, step: 1000, group: '人设版本',
+      label: '全文常驻时的字数上限',
+      hint: '超过这个字节数的部分会被截断（防一篇巨长人设把系统提示词吃光）。只在上面那个开关打开时有效。',
+    },
   },
 
   setup(bot) {
     const cfg = () => bot.cfg || {}
+    const log = (m) => bot.log?.info?.(m)
     const on = () => cfg().enabled !== false
     const dataDir = () => String(bot.core?.dataDir || '.')
 
@@ -92,6 +156,13 @@ export default {
     }
     /** 当前生效的名字（内核 personaLabel 已经做了「取最新版」解析） */
     const currentName = () => String(bot.personaLabel || '').trim()
+    /** QQ 工作区目录（.persona.json 在那儿）；内核没给就退回 <dataDir>/workspace。 */
+    const workspaceDirNow = () => {
+      const core = bot.core || {}
+      const raw = String(core.qqWorkspacePath || '').trim()
+      if (raw) return path.isAbsolute(raw) ? raw : path.join(String(core.dataDir || '.'), raw)
+      return path.join(String(core.dataDir || '.'), 'workspace')
+    }
     const readVersion = (name) => fs.readFileSync(path.join(personaDir(), String(name) + '.md'), 'utf8')
 
     /** 该角色的所有版本（名字排序 = 时间排序） */
@@ -239,6 +310,88 @@ export default {
       },
     })
 
+    // ── 工具 ⑤：read_persona（只读，按需读当前生效的人设）──────
+    // 为什么要有它：系统提示词里只放一小段人格骨架（省钱），全文让人设自己按需来读。
+    // 为什么只认名字不认路径：人设库里有好几套，模型随手写路径会读到别人的；
+    // 这里用「当前生效人设」解析，拿到的一定是正在用的那份。
+    bot.registerTool('read_persona', {
+      description: '读你自己**当前生效**的人设全文（默认读主文件 .md；也可以读固定句池 / 唤醒词）。'
+        + '不用每轮都读 —— 换话题的头一句、被夸/被凶/被叫外号之后、或觉得自己刚才回得太敷衍时读一次就够了。'
+        + '只会读到正在用的那一套人设（不会读到别的角色，也没有路径参数）。',
+      parameters: {
+        which: { type: 'string', description: 'md（默认，人设正文）/ lines（固定句池）/ wake（唤醒词）' },
+      },
+      async execute(args) {
+        const a = args || {}
+        const turn = bot.currentTurn ? bot.currentTurn() : null
+        // 同会话读一次就够：第二轮起直接告诉它「这轮已经读过了」，省 token
+        if (turn && turn.personaReadAt) {
+          return { ok: true, alreadyRead: true, note: '这一轮已经读过人设了，直接用就行，别重复读' }
+        }
+        const r = readPersonaFile({
+          personaDir: personaDir(),
+          workspaceDir: workspaceDirNow(),
+          activeName: currentName(),
+          which: String(a.which || 'md'),
+          maxBytes: Math.max(2000, Number(cfg().maxReadBytes) || 24000),
+        })
+        if (!r.ok) return { ok: false, reason: r.reason || '读不到人设' }
+        if (turn) turn.personaReadAt = Date.now()
+        const label = r.which === 'lines' ? '固定句池' : r.which === 'wake' ? '唤醒词' : '人设正文'
+        return {
+          ok: true,
+          persona: r.name,
+          which: r.which,
+          label: label + '（' + r.name + '）',
+          bytes: r.bytes,
+          ...(r.clipped ? { clipped: true, hint: '文件超过读取上限，已截断；够用了，不用再读' } : {}),
+          text: r.text,
+        }
+      },
+    })
+
+    /** 人设以什么方式进系统提示词：full = 全文常驻（promptFull），skeleton = 骨架 + 按需读。 */
+    const promptModeNow = () => (cfg().promptFull === true ? 'full' : 'skeleton')
+
+    /**
+     * 把「当前生效人设」按模式渲染进 cordis.patch.yml 的 persona.prefix（B 方案真正落地的地方）。
+     *
+     * 为什么必须改这个文件：系统提示词由 preset 的 persona.prefix 决定，config.json 里动不了它。
+     * 为什么由插件在启动时做：控制台开关在 config.json，重启时插件先跑，正好同步进 patch。
+     * 安全：**只往已存在的 generated 标记之间写**；标记不在就整段跳过，绝不凭空造 YAML 结构。
+     */
+    function syncPersonaPrompt() {
+      const mode = promptModeNow()
+      const candidates = [
+        path.join(dataDir(), '..', 'profiles', 'web', 'cordis.patch.yml'),
+        path.join(import.meta.dirname, '..', '..', 'cordis.patch.yml'),
+      ]
+      const target = candidates.find((f) => { try { return fs.existsSync(f) } catch { return false } })
+      if (!target) { log('[人设提示词] 找不到 cordis.patch.yml，跳过（不影响聊天）'); return }
+      const text = fs.readFileSync(target, 'utf8')
+      // 标记**在块标量内部**（16 空格内容行）：YAML 会把它当正文，不会当新键。
+      const re = /([ ]+)# >>> persona-body:begin >>>\r?\n([\s\S]*?)\r?\n([ ]+)# <<< persona-body:end <<</
+      const m = re.exec(text)
+      if (!m) { log('[人设提示词] patch 里没有 generated 标记，跳过（保持原样）'); return }
+      const endIndent = m[1]
+      const body = mode === 'full'
+        ? String(readPersonaFile({ personaDir: personaDir(), workspaceDir: workspaceDirNow(), activeName: currentName(), which: 'md', maxBytes: Number(cfg().promptFullMaxBytes) || 12000 }).text || '')
+        : ''
+      const rendered = body.trim()
+        ? body.split('\n').map((l) => (l.trim() ? endIndent + l : '')).join('\n')
+        : endIndent + '# （骨架模式：人设全文不常驻，由 read_persona 按需读）'
+      const next = text.replace(m[0], m[1] + '# >>> persona-body:begin >>>\n' + rendered + '\n' + m[1] + '# <<< persona-body:end <<<')
+      if (next === text) { log('[人设提示词] ' + mode + ' 模式，patch 无变化'); return }
+      try {
+        const backup = target + '.bak-' + stampOf()
+        fs.copyFileSync(target, backup)
+        fs.writeFileSync(target, next, 'utf8')
+        log('[人设提示词] 已按 ' + mode + ' 模式写入 ' + target + '（备份 ' + path.basename(backup) + '）→ 重启 DSH 后生效')
+      } catch (e) {
+        log('[人设提示词] 写入失败（保持原样）：' + (e && e.message ? e.message : String(e)))
+      }
+    }
+
     // ── 控制台状态 ──────────────────────────────────────────
     bot.shared.personaVersionStatus = () => {
       const cur = currentName()
@@ -254,9 +407,12 @@ export default {
         count: versions.length,
         latest: versions[versions.length - 1] || '',
         stale: versions.length > 1 && cur !== versions[versions.length - 1],
+        promptMode: promptModeNow(),
       }
     }
 
-    bot.log.info('[人设版本] 已装配：人设库 ' + personaDir() + '，当前 ' + (currentName() || '(未解析)'))
+    bot.log.info('[人设版本] 已装配：人设库 ' + personaDir() + '，当前 ' + (currentName() || '(未解析)') + '｜提示词模式 ' + promptModeNow())
+    // 2026-11-10：把「全文常驻 / 骨架」的选择同步进 cordis.patch.yml（控制台开关 → 系统提示词）
+    try { syncPersonaPrompt() } catch (e) { bot.log.warn('[人设提示词] 同步失败（不影响聊天）：' + (e && e.message ? e.message : String(e))) }
   },
 }

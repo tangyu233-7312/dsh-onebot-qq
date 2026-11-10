@@ -50,6 +50,7 @@ export function defaultConfig() {
       // 随包声明的内置 preset（cordis.patch.yml 里的 preset-qq-chat）：
       // 纯聊天 + 联网，裁掉 shell / 文件 / 任务 / 技能 / 插件管理类工具。
       agentPreset: 'qq-chat',
+      // 人设全文是否常驻系统提示词：见 pluginConfig['persona-version'].promptFull（控制台「人设版本」页，热应用）
       qqWorkspacePath: 'workspace',
       // 控制台「DSH 连接」页可改；插件启动时按它创建（或复用）QQ 聊天工作区。
       workspaceTitle: 'QQ 聊天',
@@ -65,6 +66,7 @@ export function defaultConfig() {
     archive: { enabled: true, dir: 'logs/qq_chat' },
     toolPrefix: 'mcp__qq__',
     plugins: {},
+    // 子插件配置：空对象起步，各字段默认值由插件自己的 configSchema 提供（withDefaults 补）。
     pluginConfig: {},
     pacing: {
       merge: {
