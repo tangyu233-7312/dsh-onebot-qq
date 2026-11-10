@@ -91,8 +91,8 @@ test('正文里的 B 站链接：被叫到时下载并塞帧', async () => {
   const s = setup()
   try {
     const ev = await s.run({ text: '看看 https://www.bilibili.com/video/BV1GJ411x7h7 这个', wake: { kind: 'at' }, mentionedSelf: true })
-    assert.equal(s.calls.length, 1)
-    assert.match(s.calls[0].body.url, /BV1GJ411x7h7/)
+    assert.equal(s.calls.filter((c) => String(c.url).endsWith('/read')).length, 1)
+    assert.match(s.calls.find((c) => String(c.url).endsWith('/read')).body.url, /BV1GJ411x7h7/)
     assert.equal(ev.imageParts.length, 1)
     assert.ok(ev.hint.some((h) => h.includes('测试视频')))
   } finally { s.restore() }
@@ -102,8 +102,8 @@ test('只发裸 BV 号（没有链接）：也能看', async () => {
   const s = setup()
   try {
     const ev = await s.run({ text: 'BV1GJ411x7h7 这个好康', wake: { kind: 'at' }, mentionedSelf: true })
-    assert.equal(s.calls.length, 1)
-    assert.equal(s.calls[0].body.url, 'https://www.bilibili.com/video/BV1GJ411x7h7')
+    assert.equal(s.calls.filter((c) => String(c.url).endsWith('/read')).length, 1)
+    assert.equal(s.calls.find((c) => String(c.url).endsWith('/read')).body.url, 'https://www.bilibili.com/video/BV1GJ411x7h7')
     assert.equal(ev.imageParts.length, 1)
   } finally { s.restore() }
 })
@@ -112,7 +112,7 @@ test('裸 BV 号：关掉 allowBvOnly 后不再命中', async () => {
   const s = setup({ cfg: { allowBvOnly: false } })
   try {
     await s.run({ text: 'BV1GJ411x7h7', wake: { kind: 'at' }, mentionedSelf: true })
-    assert.equal(s.calls.length, 0)
+    assert.equal(s.calls.filter((c) => String(c.url).endsWith('/read')).length, 0)
   } finally { s.restore() }
 })
 
@@ -120,7 +120,7 @@ test('裸 BV 号：前后粘着别的字母数字时不算（防误判）', asyn
   const s = setup()
   try {
     await s.run({ text: 'xBV1GJ411x7h7y 这是乱码不是视频', wake: { kind: 'at' }, mentionedSelf: true })
-    assert.equal(s.calls.length, 0)
+    assert.equal(s.calls.filter((c) => String(c.url).endsWith('/read')).length, 0)
   } finally { s.restore() }
 })
 
@@ -131,7 +131,7 @@ test('私聊里贴 B 站链接：也看（旧实现被 !ev.wake 挡住了）', a
       chatKey: 'private:10001', isGroup: false, groupId: null,
       text: 'https://www.bilibili.com/video/BV1GJ411x7h7', wake: { kind: 'private' },
     })
-    assert.equal(s.calls.length, 1)
+    assert.equal(s.calls.filter((c) => String(c.url).endsWith('/read')).length, 1)
     assert.equal(ev.imageParts.length, 1)
   } finally { s.restore() }
 })
@@ -140,7 +140,7 @@ test('分享卡片里的 B 站链接：命中', async () => {
   const s = setup()
   try {
     await s.run({ text: '这个', cards: ['https://www.bilibili.com/video/BV1GJ411x7h7'], wake: { kind: 'at' }, mentionedSelf: true })
-    assert.equal(s.calls.length, 1)
+    assert.equal(s.calls.filter((c) => String(c.url).endsWith('/read')).length, 1)
   } finally { s.restore() }
 })
 
@@ -148,7 +148,7 @@ test('主动接话轮（proactive）：不下载', async () => {
   const s = setup()
   try {
     await s.run({ text: 'BV1GJ411x7h7', wake: { kind: 'proactive' } })
-    assert.equal(s.calls.length, 0)
+    assert.equal(s.calls.filter((c) => String(c.url).endsWith('/read')).length, 0)
   } finally { s.restore() }
 })
 
@@ -156,7 +156,7 @@ test('没被叫的群消息：不下载', async () => {
   const s = setup()
   try {
     await s.run({ text: 'BV1GJ411x7h7 随手贴的', wake: null })
-    assert.equal(s.calls.length, 0)
+    assert.equal(s.calls.filter((c) => String(c.url).endsWith('/read')).length, 0)
   } finally { s.restore() }
 })
 
@@ -176,6 +176,6 @@ test('这一轮已经看过别的视频（imageParts 非空）：不重复下载
       text: 'BV1GJ411x7h7', wake: { kind: 'at' }, mentionedSelf: true,
       imageParts: [{ mediaType: 'image/jpeg', data: '', name: 'x' }],
     })
-    assert.equal(s.calls.length, 0)
+    assert.equal(s.calls.filter((c) => String(c.url).endsWith('/read')).length, 0)
   } finally { s.restore() }
 })

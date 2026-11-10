@@ -164,6 +164,27 @@ export default {
     continueWhenAddressed: { type: 'bool', default: true, group: '链接解析', label: '同时在跟我说话时继续交给模型', hint: '开：正在跟它说话时，消息里带链接也照常交给模型回答；关：带链接就只解析、不接话。' },
     modelTextThreshold: { type: 'int', default: 4, group: '链接解析', label: '剥链接后正文多少字算在跟我说话', hint: '剥掉链接后正文超过这么多字，才算「在跟它说话」（否则只发链接、不接话）。' },
     platforms: { type: 'group', default: ['bilibili'], group: '链接解析', label: '只解析这些平台', hint: '只解析这些平台的链接（逗号分隔，现支持 bilibili；抖音 2026-11-10 下线）；留空 = 支持的全部。' },
+    // ── 看视频用的侧车设置（2026-11-10）──
+    // 放在这里是因为控制台只有「链接解析」页和侧车有关；实际生效的是 sidecar 进程。
+    biliCookie: {
+      type: 'str', default: '', group: '链接解析', section: '看视频（侧车）', secret: true,
+      label: 'B 站 cookie（可选，用于读字幕）',
+      hint: '不填也能用：画面抽帧、简介、评论都不需要登录。填了才解锁 B 站字幕（字幕轨只对登录用户开放）。\n'
+        + '⚠️ 用自己账号的 cookie 有风控风险（机器人 7×24 跑），建议用小号；不填不影响任何现有功能。\n'
+        + '格式：浏览器里复制的 `SESSDATA=xxx; bili_jct=yyy; buvid3=zzz` 一整串即可，保存后写进侧车的 cookies.console.txt，只回显占位符。',
+    },
+    subtitle: {
+      type: 'bool', default: false, group: '链接解析', section: '看视频（侧车）', label: '读视频字幕',
+      hint: '默认关。开了并且填了 cookie，才会把 B 站字幕交给模型；没有字幕的视频自动跳过。',
+    },
+    extras: {
+      type: 'bool', default: true, group: '链接解析', section: '看视频（侧车）', label: '读简介和评论',
+      hint: '开（默认）：B 站视频的简介、分P章节、热门评论会和抽帧一起交给模型。**不需要登录**，开源用户开箱可用。',
+    },
+    extrasDanmaku: {
+      type: 'bool', default: false, group: '链接解析', section: '看视频（侧车）', label: '再加上弹幕样本',
+      hint: '默认关。弹幕多是「哈哈哈」这类反应，对「讲了什么」帮助有限，还可能带偏。',
+    },
   },
 
   setup(bot) {
@@ -179,6 +200,36 @@ export default {
      * 调 Python 侧车；返回 null 表示服务不可用（调用方**降级放行**，消息照旧交给模型）。
      * 用原生 fetch + AbortSignal.timeout，不引新依赖。
      */
+    // 把控制台的「看视频」设置同步给侧车（2026-11-10）。
+    // 为什么放这里：cookie 与字幕/评分开关真正生效的是 sidecar 进程，配置在它自己的 json 里；
+    // 控制台只负责收集。值没变就不同步（避免每次解析都写盘 + 刷侧车日志）。
+    let lastPushed = ''
+    async function pushSidecarSettings() {
+      const parserUrl = parserUrlOf()
+      if (!parserUrl) return
+      const payload = {
+        biliCookies: String(cfg.biliCookie || '').trim(),
+        subtitle: cfg.subtitle === true,
+        extras: cfg.extras !== false,
+        extrasDanmaku: cfg.extrasDanmaku === true,
+      }
+      const sig = JSON.stringify(payload)
+      if (sig === lastPushed) return
+      try {
+        const res = await fetch(`${parserUrl}/config`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: sig,
+          signal: AbortSignal.timeout(8000),
+        })
+        const r = res.ok ? await res.json() : null
+        if (r && r.ok) {
+          lastPushed = sig
+          log.info('[链接解析] 已同步看视频设置到侧车（cookie ' + (payload.biliCookies ? '已填' : '未填') + '，字幕 ' + (payload.subtitle ? '开' : '关') + '）')
+        }
+      } catch { /* 侧车没起就算了，下次再试 */ }
+    }
+
     async function callParse(url, session) {
       const parserUrl = parserUrlOf()
       if (!parserUrl) return null
@@ -193,6 +244,7 @@ export default {
           log.warn(`[链接解析] 侧车 HTTP ${res.status}, 本条按普通消息处理`)
           return null
         }
+        void pushSidecarSettings()
         return await res.json()
       } catch (e) {
         log.warn(`[链接解析] 服务不可用(${e.name === 'TimeoutError' || e.name === 'AbortError' ? '超时' : e.message}), 本条按普通消息处理`)

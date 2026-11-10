@@ -147,6 +147,18 @@ export default {
       hint: '开：群里只贴一串 BV 号（如 BV1GJ411x7h7）而不贴链接时，也当 B 站视频去下载抽帧。\n'
         + '关：只认完整链接。',
     },
+    extras: {
+      type: 'bool', default: true, group: '文件与图片',
+      label: '连简介和评论一起读',
+      hint: '开（推荐）：B 站视频的**简介、分P章节、热门评论前几条**会和抽帧一起交给模型 —— 都是公开信息，不需要登录。'
+        + '关：只看画面。',
+    },
+    extrasDanmaku: {
+      type: 'bool', default: false, group: '文件与图片',
+      label: '再加上弹幕样本',
+      hint: '默认关。弹幕多是「哈哈哈」「笑死」这类反应，对「视频讲了什么」帮助有限，还可能带偏；'
+        + '想要热闹感再打开（取前 40 条）。',
+    },
     subtitle: {
       type: 'bool', default: true, group: '文件与图片',
       label: '连字幕一起读',
@@ -365,6 +377,29 @@ export default {
       if (subText) {
         ev.hint.push('[视频字幕（自动生成，可能有错字；看不清的地方以抽帧画面为准）]\n' + subText)
       }
+      // 简介 / 章节 / 评论（2026-11-10）：公开信息，不需要登录；弹幕跟随控制台开关
+      try {
+        if (cfg().extras !== false) {
+          const exRes = await fetch(`${urlOf().replace(/\/+$/, '')}/extras`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ url: hit.url }),
+            signal: AbortSignal.timeout(20000),
+          })
+          const ex = exRes.ok ? await exRes.json() : null
+          if (ex && ex.ok) {
+            const bits = []
+            if (ex.desc) bits.push('[简介] ' + String(ex.desc).slice(0, 800))
+            if (Array.isArray(ex.chapters) && ex.chapters.length) bits.push('[分P/章节] ' + ex.chapters.join(' / ').slice(0, 600))
+            const cs = (ex.comments || []).slice(0, 5)
+            if (cs.length) bits.push('[热门评论] ' + cs.map((c) => (c.likes ? `(${c.likes}赞)` : '') + c.text).join(' ｜ ').slice(0, 800))
+            if (cfg().extrasDanmaku === true && (ex.danmaku || []).length) bits.push('[弹幕样本] ' + ex.danmaku.join(' / ').slice(0, 600))
+            if (bits.length) {
+              ev.hint.push('[B站视频的文字线索（简介/评论来自作者与观众，不是画面内容；画面以抽帧为准）]\n' + bits.join('\n'))
+            }
+          }
+        }
+      } catch { /* 拿不到就算了，不影响抽帧 */ }
       // 把"这次看了哪条视频"记下来，供出站装饰/控制台排障（不参与回复内容）
       ev._scratch['video-link-read:last'] = {
         url: hit.url, platform: data.platform || hit.platform, title: title.slice(0, 80),

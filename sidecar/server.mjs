@@ -19,6 +19,7 @@
  */
 import http from 'node:http'
 import fs from 'node:fs'
+import zlib from 'node:zlib'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -43,7 +44,10 @@ const DEFAULTS = {
   maxSeconds: 600,                // 单视频时长上限
   maxFrames: 12,
   subtitle: true,            // 下载时顺带取字幕（B 站有 AI 自动字幕；失败不影响主流程）
-  subtitleMaxChars: 6000,    // 字幕交给模型的字数上限（超了按时间均匀截段）                  // 单次最多抽几帧
+  subtitleMaxChars: 6000,    // 字幕交给模型的字数上限（超了按时间均匀截段）
+  extras: true,              // /extras：简介+章节+热门评论（不需要登录）
+  extrasComments: 5,         // 评论条数上限
+  extrasDanmaku: false,      // 弹幕样本（默认关：多是「哈哈哈」，容易带偏）                  // 单次最多抽几帧
   concurrency: 2,                 // 同时最多几个任务（多了直接 busy）
   taskTimeoutMs: 300000,          // 单个任务总超时（5 分钟）
   frameTtlMs: 600000,             // 帧目录保留多久（10 分钟）
@@ -127,6 +131,23 @@ function cookieArgs() {
   }
   const f = String(CFG.cookiesFile || '').trim()
   if (f && fs.existsSync(f)) out.push('--cookies', f)
+  // 控制台「链接解析」页填的 cookie（Netscape 格式或 'k=v; k=v' 都接受；后者落成临时文件给 yt-dlp）
+  const raw = String(CFG.biliCookies || '').trim()
+  if (raw) {
+    try {
+      const jar = path.join(HERE, 'cookies.console.txt')
+      const lines = raw.startsWith('# Netscape') || raw.includes('\t')
+        ? raw
+        : '# Netscape HTTP Cookie File\n' + raw.split(/;\s*/).filter(Boolean).map((kv) => {
+          const i2 = kv.indexOf('=')
+          const name = i2 > 0 ? kv.slice(0, i2).trim() : kv.trim()
+          const val = i2 > 0 ? kv.slice(i2 + 1).trim() : ''
+          return ['.bilibili.com', 'TRUE', '/', 'TRUE', '0', name, val].join('\t')
+        }).join('\n') + '\n'
+      fs.writeFileSync(jar, lines, 'utf8')
+      out.push('--cookies', jar)
+    } catch { /* 写不了就忽略 */ }
+  }
   return out
 }
 
@@ -530,6 +551,84 @@ async function handleRead(body) {
 }
 
 // ── /parse：给 plugins/link-parser 用（下载媒体 → 返回本地路径）────────
+/**
+ * B 站「不登录也能拿到的文字线索」：简介 / 章节 / 热门评论（2026-11-10 实测都可用）。
+ * 为什么要有它：抽帧只有 8~11 张图，模型经常只知道「有画面」不知道「在讲什么」；
+ * 简介和评论是免费的信息源。字幕要登录（B 站限制），所以不在这里做。
+ */
+const BILI_HDR = {
+  'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  referer: 'https://www.bilibili.com/',
+}
+
+function bvidOf(url) {
+  const m = /BV[0-9A-Za-z]{10}/.exec(String(url || ''));
+  return m ? m[0] : ''
+}
+
+async function biliJson(url, timeout = 15000) {
+  const r = await fetch(url, { headers: BILI_HDR, signal: AbortSignal.timeout(timeout) });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return await r.json();
+}
+
+/** 写回 sidecar.config.json（原子写：先写临时文件再改名）。cookie 就存在这个文件里。 */
+function writeConfig(next) {
+  const target = path.join(HERE, 'sidecar.config.json')
+  const tmp = target + '.tmp-' + process.pid
+  fs.writeFileSync(tmp, JSON.stringify(next, null, 4) + '\\n', 'utf8')
+  fs.renameSync(tmp, target)
+}
+
+async function handleExtras(body) {
+  const bv = bvidOf(body?.url);
+  if (!bv) return { ok: false, code: 'not_bilibili', error: '只支持 B 站链接（BV 号）' }
+  try {
+    const view = await biliJson('https://api.bilibili.com/x/web-interface/view?bvid=' + bv);
+    if (view.code !== 0) return { ok: false, code: 'api_error', error: String(view.message || view.code) };
+    const d = view.data || {};
+    const pages = (d.pages || []).map((p) => String(p.part || '').trim()).filter(Boolean);
+    const out = {
+      ok: true,
+      platform: 'bilibili',
+      title: String(d.title || ''),
+      desc: String(d.desc || '').trim(),
+      chapters: pages.length > 1 ? pages.slice(0, 30) : [],
+      parts: pages.length,
+      durationSec: Number(d.duration) || 0,
+      comments: [],
+      danmaku: [],
+    };
+    // 热门评论（前 N 条，按热度）
+    const want = Math.max(0, Math.min(20, Number(CFG.extrasComments) || 5));
+    if (want > 0 && d.aid) {
+      try {
+        const rep = await biliJson('https://api.bilibili.com/x/v2/reply?type=1&oid=' + d.aid + '&sort=1&ps=' + want);
+        const rows = ((rep.data || {}).replies || []).slice(0, want);
+        out.comments = rows.map((r) => ({
+          user: String((r.member && r.member.uname) || ''),
+          text: String((r.content && r.content.message) || '').replace(/\s+/g, ' ').trim().slice(0, 200),
+          likes: Number(r.like) || 0,
+        })).filter((r) => r.text);
+      } catch { /* 评论拿不到就算了 */ }
+    }
+    // 弹幕样本（默认关；开了才取，取前 40 条）
+    if (CFG.extrasDanmaku === true && d.pages && d.pages[0]) {
+      try {
+        const r = await fetch('https://api.bilibili.com/x/v1/dm/list.so?oid=' + d.pages[0].cid, { headers: BILI_HDR, signal: AbortSignal.timeout(15000) });
+        let buf = Buffer.from(await r.arrayBuffer());
+        try { buf = zlib.gunzipSync(buf) } catch { /* 没压缩 */ }
+        const xml = buf.toString('utf8');
+        out.danmaku = [...xml.matchAll(/<d p="[^"]*">([^<]+)<\/d>/g)].map((m) => m[1].trim()).filter(Boolean).slice(0, 40);
+      } catch { /* 弹幕拿不到就算了 */ }
+    }
+    log(`/extras ${bv} → 简介 ${out.desc.length} 字 / 评论 ${out.comments.length} 条` + (out.chapters.length ? ` / 章节 ${out.chapters.length}` : ''));
+    return out;
+  } catch (e) {
+    return { ok: false, code: 'internal', error: String(e?.message || e).slice(0, 200) }
+  }
+}
+
 async function handleParse(body) {
   const t0Parse = nowMs()
   const url = String(body.url || '').trim()
@@ -637,6 +736,26 @@ const server = http.createServer(async (req, res) => {
       const out = await handleRead(body)
       log(`/read ${body.platform || 'file'} → ${out.ok ? 'ok' : out.code} (${nowMs() - t0}ms)`)
       return json(res, 200, out)
+    }
+    if (req.method === 'POST' && url.pathname === '/extras') {
+      const body = await readBody(req)
+      const out = await handleExtras(body)
+      return json(res, 200, out)
+    }
+    if (req.method === 'POST' && url.pathname === '/config') {
+      // 控制台「链接解析」页 → 侧车配置（只允许改这几项；cookie 落盘到 sidecar 目录，不进实例配置）
+      const body = await readBody(req)
+      const allowed = ['biliCookies', 'subtitle', 'subtitleMaxChars', 'extras', 'extrasComments', 'extrasDanmaku']
+      const next = { ...CFG }
+      for (const k of allowed) if (body && Object.prototype.hasOwnProperty.call(body, k)) next[k] = body[k]
+      try {
+        writeConfig(next)
+        Object.assign(CFG, next)
+        log('/config 已更新: ' + allowed.filter((k) => body && k in body).join(','))
+        return json(res, 200, { ok: true, saved: allowed.filter((k) => body && k in body), restartNeeded: true })
+      } catch (e) {
+        return json(res, 200, { ok: false, code: 'write_failed', error: String(e?.message || e) })
+      }
     }
     if (req.method === 'POST' && url.pathname === '/parse') {
       const body = await readBody(req)
