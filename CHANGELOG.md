@@ -59,6 +59,14 @@
 
 「人设终于进系统提示词了」：以前 QQ 线的会话里**一个人设字都没有**，性格全靠对话惯性撑着，一压缩就掉。
 
+### 修复（2026-11-10，长期记忆上线后三连）
+
+- **接口配置存进插件读不到的位置**：五项接口配置没写 `configPath`，控制台按默认路径存、插件读拍平键 → 状态灯永远「未配置」。
+  现在显式 `configPath: ['pluginConfig','long-memory',…]`，并统一用 `llmConfigOf()` 取配置。
+- **「记忆」页状态卡与真实状态脱节**：改成「整理接口已配置（模型）」+「地址 ✅ 模型 ✅ Key ✅」+ 真实的上次整理时间；0 条不再标红。
+- **页面动作不刷新 / 记忆库显示 `undefined 条`**：宿主 RPC 返回信封 `{ok:true, value:{…}}`，页面直接读字段就是 `undefined`。
+  现在取数统一 unwrap，失败与空返回都写进界面（不再静默）。
+- 新增回归测试：`test/long-memory-admin.test.js` 的「控制台 set 三项后插件必须读到」、`test/client-render.test.js` 的前端渲染冒烟。
 ### 新增
 
 - **preset 加「人格骨架」**（`cordis.patch.yml` → `preset-qq-chat` → `persona.prefix`）：自称「本鱼」、语尾限量、
