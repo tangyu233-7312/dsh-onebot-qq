@@ -1325,18 +1325,33 @@ window.__ModuleLoader__.load({
 
 		  const say = (t) => setLocal(String(t || ''))
 
+		  // 取数的两道保险（2026-11-10：卡片显示「一条记忆 / 未配置 / 还没跑过」但「测试接口 ✓」，
+		  // 说明这一页的 call 没真正拿到返回值 —— 要么宿主包了一层 {ok:true,value}，要么根本没调成）。
+		  //  ① 兼容两种形状：{ok, ...} 直接当数据；{ok, value:{...}} 取 value。
+		  //  ② 每次调用都记一句结果并显示在卡片上，不再静默。
+		  const unwrap = (r) => {
+		    if (!r || typeof r !== 'object') return r
+		    if (r.ok === false) return r
+		    if (r.value && typeof r.value === 'object' && !('entries' in r) && !('items' in r)) return r.value
+		    return r
+		  }
 		  const loadStatus = useCallback(async () => {
 		    try {
-		      const r = await call({ op: 'status' })
-		      if (r && r.ok === false) throw new Error(r.error)
+		      if (!ctx || !ctx.connection || !ctx.connection.rpc) throw new Error('拿不到控制台连接（ctx.connection.rpc 为空）')
+		      const raw = await call({ op: 'status' })
+		      const r = unwrap(raw)
+		      if (!r || typeof r !== 'object') throw new Error('返回为空：' + JSON.stringify(raw || null).slice(0, 120))
+		      if (r.ok === false) throw new Error(r.error || '接口返回失败')
 		      setData(r)
+		      say(`状态已刷新：${r.entries ?? '?'} 条记忆`)
 		    } catch (e) { say(`读取状态失败：${e.message}`) }
-		  }, [call])
+		  }, [call, ctx])
 
 		  const loadList = useCallback(async (kw = q, scope = scopeFilter, forgotten = showForgotten) => {
 		    try {
-		      const r = await call({ op: 'list', q: kw, scope, forgotten, limit: 200 })
-		      if (r && r.ok === false) throw new Error(r.error)
+		      const r = unwrap(await call({ op: 'list', q: kw, scope, forgotten, limit: 200 }))
+		      if (!r || typeof r !== 'object') throw new Error('返回为空')
+		      if (r.ok === false) throw new Error(r.error || '接口返回失败')
 		      setList(r)
 		    } catch (e) { say(`读取记忆库失败：${e.message}`) }
 		  }, [call, q, scopeFilter, showForgotten])
@@ -1430,7 +1445,7 @@ window.__ModuleLoader__.load({
 		  const items = (list && list.items) || []
 		  const scopes = (st.scopes || []).map((s) => s.scope)
 		  const lib = h('div', { style: S.card, key: 'lib' }, [
-		    h('div', { style: S.title, key: 't' }, `记忆库${list ? `（${list.total} 条${list.filtered ? `，筛出 ${items.length}` : ''}）` : ''}`),
+		    h('div', { style: S.title, key: 't' }, `记忆库${list ? `（${list.total ?? items.length ?? 0} 条${list.filtered ? `，筛出 ${items.length}` : ''}）` : ''}`),
 		    h('div', { style: S.row, key: 'q' }, [
 		      h('input', {
 		        key: 'i', style: Object.assign({}, S.input, { width: 220 }), placeholder: '搜索正文/标签', defaultValue: q,
