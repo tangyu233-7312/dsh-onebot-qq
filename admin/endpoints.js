@@ -913,7 +913,9 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
     const api = safe(() => kernel?.shared?.longMemory, null)
     if (!api) return { ok: false, error: '长期记忆插件没加载（到「子插件」页看看有没有加载失败）' }
     const id = toStr(payload.id)
-    if (op === 'status') return { ok: true, ...safe(() => api.status(), {}) }
+    // ⚠️ 展开顺序不能反：`{ ok:true, ...status }` 会被 status 里的同名键覆盖成 undefined 之外的值吗？
+    // 不会覆盖 ok（status 没有 ok 键），但会让 ok 出现在对象中间；更稳妥的写法是「先展开、后置 ok」。
+    if (op === 'status') return { ...safe(() => api.status(), {}), ok: true }
     if (op === 'list') {
       const kw = toStr(payload.q).toLowerCase()
       const scope = toStr(payload.scope)

@@ -37,6 +37,31 @@ const num = (v, d, min, max) => {
   return Math.max(min, Math.min(max, base))
 }
 
+/**
+ * 整理接口的配置从哪取（**唯一入口**，别处不要再自己拼）。
+ *
+ * 历史坑（2026-11-10）：同一个插件的接口字段曾经两处各读各的 ——
+ * `status()` 读拍平的 `cfg.llmBaseUrl`（对），`testLlm()` / `/memory status` 读嵌套的 `cfg.llm`（错，永远是空），
+ * 结果状态灯说「未配置」、而用户明明填了。现在统一走这里：**扁平键优先**，老配置里的嵌套 `llm` 兜底。
+ */
+function llmConfigOf(cfg = {}) {
+  const nested = (cfg && typeof cfg.llm === 'object' && cfg.llm) || {}
+  const pick = (k) => {
+    const flat = cfg ? cfg[k] : undefined
+    return String(flat !== undefined && flat !== null && flat !== '' ? flat : (nested[k] || ''))
+  }
+  return {
+    protocol: pick('llmProtocol') || 'openai-chat',
+    baseUrl: pick('llmBaseUrl'),
+    model: pick('llmModel'),
+    apiKey: pick('llmApiKey'),
+    reasoningEffort: pick('llmReasoningEffort'),
+  }
+}
+
+// 控制台状态灯也会调这里（测试与「记忆」页顶部都要用），所以导出。
+export { llmConfigOf }
+
 export default {
   id: 'long-memory',
   title: '长期记忆',
@@ -52,16 +77,24 @@ export default {
         try {
           const s = fn()
           const n = s.llm || {}
-          const parts = [
+          // 状态灯不再只看一个布尔：把「地址 / 模型 / Key」三项**各自读到的值**说清楚，
+          // 这样「填了但没读到」和「根本没填」一眼能分开（2026-11-10 就是栽在分不清这两者）。
+          const filled = n.filled || {}
+          const lamp = (ok) => (ok ? '✅' : '❌')
+          const detail = `地址 ${lamp(filled.baseUrl)} 模型 ${lamp(filled.model)} Key ${lamp(filled.apiKey)}`
+          const org = s.organize || {}
+          const orgText = org.at
+            ? `${new Date(org.at).toLocaleString()}${org.ok === false ? '（失败）' : ''}`
+            : '还没跑过'
+          return [
             `已记 ${s.entries} 条（已遗忘 ${s.forgotten} 条，可找回）｜范围：${s.scopeSummary || '—'}`,
             n.configured
-              ? `整理接口：${n.model || '（未填模型）'} 已配置`
-              : `整理接口：❌ 未配置（缺 ${(n.missing || []).join(' / ')}）—— 现在只支持手动记 / 自己调 remember，自动整理不跑`,
-            `上次整理：${s.organize?.at ? new Date(s.organize.at).toLocaleString() : '还没跑过'}`
-              + (s.organize?.error ? `｜上次失败：${String(s.organize.error).slice(0, 80)}` : ''),
+              ? `整理接口：✅ 已配置（${n.model || '未填模型'}）｜${detail}`
+              : `整理接口：❌ 未配置（${detail}${(n.missing || []).length ? `，缺 ${n.missing.join(' / ')}` : ''}）`
+                + ' —— 现在只支持手动记 / 它自己调 remember，自动整理不跑',
+            `上次整理：${orgText}` + (org.error ? `｜原因：${String(org.error).slice(0, 90)}` : ''),
             `目录：${s.dir}`,
-          ]
-          return parts.join('\n')
+          ].join('\n')
         } catch (e) {
           return `读取状态失败：${e?.message || e}`
         }
@@ -96,8 +129,13 @@ export default {
     },
 
     // ── ③ 整理模型（照生图那套：接口 + 模型 + Key，可测）──────────────
+    // ⚠️ 这五项必须显式写 `configPath`（2026-11-10 踩过）：
+    //    控制台存子插件字段的默认路径是 `pluginConfig.<插件id>.<字段>`，而**读**的时候插件这里是
+    //    `bot.cfg.llmBaseUrl`（内核 buildPluginCfg 拍平的）。不写 configPath 就会出现
+    //    「控制台显示填了、插件里全是空」——状态灯一路报「未配置」，实际是存了个插件读不到的位置。
     llmProtocol: {
       type: 'enum', default: 'openai-chat', group: '记忆', section: '整理模型',
+      configPath: ['pluginConfig', 'long-memory', 'llmProtocol'],
       label: '接口协议',
       options: [
         { value: 'openai-chat', label: 'OpenAI 兼容（chat/completions）' },
@@ -107,21 +145,25 @@ export default {
     },
     llmBaseUrl: {
       type: 'str', default: '', group: '记忆', section: '整理模型',
+      configPath: ['pluginConfig', 'long-memory', 'llmBaseUrl'],
       label: 'API 地址（填到 /v1）',
       hint: '例：https://api.example.com/v1 。和生图用的是同一套填写口径。',
     },
     llmModel: {
       type: 'str', default: '', group: '记忆', section: '整理模型',
+      configPath: ['pluginConfig', 'long-memory', 'llmModel'],
       label: '模型',
       hint: '建议用便宜的小模型（如 glm-5.3-flash / deepseek-flash），整理是后台高频任务，不值得用主模型。',
     },
     llmApiKey: {
       type: 'str', default: '', secret: true, group: '记忆', section: '整理模型',
+      configPath: ['pluginConfig', 'long-memory', 'llmApiKey'],
       label: 'API Key',
       hint: '只存在实例配置里，控制台只回显掩码。留空 = 不自动整理（照样能手动记、能查、能注入）。',
     },
     llmReasoningEffort: {
       type: 'enum', default: '', group: '记忆', section: '整理模型',
+      configPath: ['pluginConfig', 'long-memory', 'llmReasoningEffort'],
       label: '思考强度',
       options: [
         { value: '', label: '不指定（跟随接口默认）' },
@@ -468,7 +510,7 @@ export default {
             const all = store.all()
             const alive = all.filter((m) => !Number(m.forgottenAt)).length
             const st = store.statsOrganize()
-            const n = normalizeLlmConfig(cfgOf())
+            const n = normalizeLlmConfig(llmConfigOf(cfgOf())) // 与状态灯同一个取值入口，别再各读各的
             const llm = n.missing.length ? `未配（缺 ${n.missing.join('/')}）` : `${n.cfg.model}`
             await send(`长期记忆：${alive} 条（已忘 ${all.length - alive} 条）｜整理接口 ${llm}｜上次整理 ${
               st.lastOrganizeAt ? agoText(st.lastOrganizeAt) : '还没跑过'}${st.lastError ? `｜上次失败：${st.lastError.slice(0, 60)}` : ''}`)
@@ -517,7 +559,7 @@ export default {
         for (const m of alive) byScope.set(m.scope, (byScope.get(m.scope) || 0) + 1)
         const times = alive.map((m) => Number(m.createdAt) || 0).filter(Boolean)
         const st = store.statsOrganize()
-        const n = normalizeLlmConfig(cfg.llm || {})
+        const n = llmConfigOf(cfg)
         const now = Date.now()
         return {
           dir: store.dir,
@@ -526,8 +568,29 @@ export default {
           scopes: [...byScope].map(([scope, count]) => ({ scope, count })).sort((a, b) => b.count - a.count),
           oldest: times.length ? Math.min(...times) : 0,
           newest: times.length ? Math.max(...times) : 0,
-          llm: { configured: !n.missing.length, missing: n.missing, model: n.cfg.model, baseUrl: n.cfg.baseUrl, protocol: n.cfg.protocol },
-          organize: { at: st.lastOrganizeAt, result: st.lastResult, error: st.lastError },
+          // llm 的三项：configured / missing 由 normalizeLlmConfig 现算（与 testLlm 同一套口径）；
+          // model / baseUrl 回显**插件实际读到**的值（不吃控制台表单），filled 只回布尔、不回明文。
+          llm: (() => {
+            const norm = normalizeLlmConfig(n)
+            return {
+              configured: norm.missing.length === 0,
+              missing: norm.missing,
+              protocol: norm.cfg.protocol,
+              model: norm.cfg.model,
+              baseUrl: norm.cfg.baseUrl,
+              filled: {
+                baseUrl: Boolean(String(norm.cfg.baseUrl || '').trim()),
+                model: Boolean(String(norm.cfg.model || '').trim()),
+                apiKey: Boolean(String(norm.cfg.apiKey || '').trim()),
+              },
+            }
+          })(),
+          organize: {
+            at: st.lastOrganizeAt,
+            ok: st.lastError ? false : undefined,
+            result: st.lastResult,
+            error: st.lastError,
+          },
           running: organizer.isRunning(),
           autoOrganize: cfg.autoOrganize !== false,
           injectEnabled: cfg.injectEnabled !== false,

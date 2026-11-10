@@ -124,3 +124,44 @@ test('schema 的 set 能热写存储范围（改完下一轮注入就按新范�
   assert.equal(lm.scopeAllowed('group:20001'), true)
   assert.equal(lm.scopeAllowed('group:99999'), false)
 })
+
+test('接口配置：控制台 set 的三项，插件里必须真的读到（状态灯必须变已配置）', async (t) => {
+  // 2026-11-10 的事故：字段没写 configPath → 控制台存到插件读不到的位置，
+  // 页面上看着填好了，插件里 llmBaseUrl/llmModel/llmApiKey 全是空，状态灯一路报「未配置」。
+  const { h, api } = await boot(t)
+  const set = async (key, value) => {
+    const r = await api.handle('set', { key, value })
+    assert.equal(r.ok, true, `${key}: ${r.error || ''}`)
+  }
+  // 先看基线：没填之前必须如实说未配置
+  const s0 = await api.handle('mem', { op: 'status' })
+  assert.equal(s0.llm.configured, false, '没填接口时如实说未配置')
+
+  await set('long-memory.llmBaseUrl', 'https://relay.example/v1')
+  await set('long-memory.llmModel', 'some-cheap-model')
+  await set('long-memory.llmApiKey', 'FAKE-KEY-FOR-TEST')
+  await new Promise((res) => setTimeout(res, 60))
+
+  const plug = h.kernel.plugins.find((p) => (p.id || p.plugin?.id) === 'long-memory')
+  assert.equal(String(plug.cfg.llmBaseUrl), 'https://relay.example/v1', '插件应读到 API 地址')
+  assert.equal(String(plug.cfg.llmModel), 'some-cheap-model', '插件应读到模型')
+  assert.equal(String(plug.cfg.llmApiKey), 'FAKE-KEY-FOR-TEST', '插件应读到 Key')
+
+  const st = await api.handle('mem', { op: 'status' })
+  assert.equal(st.ok, true)
+  assert.equal(st.llm.configured, true, '三项都填了，状态灯必须是已配置')
+  assert.deepEqual(st.llm.missing, [])
+  assert.deepEqual(st.llm.filled, { baseUrl: true, model: true, apiKey: true })
+  // 状态灯文案里要能看出三项各自有没有（只回布尔/掩码，不回明文）
+  // 状态灯的文案由插件的 llmConfigOf 现算（与 bot.cfg 同源），这里直接用它验证文案口径
+  const llmConfigOf = (await import('../plugins/long-memory/index.js')).llmConfigOf
+  const info = h.kernel.pluginDefs.find((p) => p.id === 'long-memory').configSchema.statusInfo
+  const text = info.text(h.kernel)
+  const cfgSeen = llmConfigOf(plug.cfg)
+  assert.equal(cfgSeen.baseUrl, 'https://relay.example/v1', 'llmConfigOf 读到地址')
+  assert.equal(cfgSeen.model, 'some-cheap-model', 'llmConfigOf 读到模型')
+  assert.equal(cfgSeen.apiKey, 'FAKE-KEY-FOR-TEST', 'llmConfigOf 读到 Key')
+  assert.match(text, /已配置/)
+  assert.match(text, /地址 ✅ 模型 ✅ Key ✅/)
+  assert.equal(text.includes('FAKE-KEY-FOR-TEST'), false, '状态文案不许回显 Key')
+})
