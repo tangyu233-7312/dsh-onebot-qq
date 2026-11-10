@@ -4,7 +4,7 @@
  * 现状：内核把视频段压成一个字符串 `[视频]`（`kernel/format.js:395`），模型只知道"有人发了个视频"，
  * 画面、时长、说了什么一概不知。本插件补的就是这一段：
  *
- *   入站视频段 / B 站·抖音链接 → 交给**侧车** → 侧车下载/定位 + ffprobe 探时长 + ffmpeg 抽 N 帧
+ *   入站视频段 / B 站链接 → 交给**侧车** → 侧车下载/定位 + ffprobe 探时长 + ffmpeg 抽 N 帧
  *   → 返回帧的本地路径 → 本插件读成 base64 → 塞进 `ev.imageParts`
  *
  * 四条纪律（改之前先读）：
@@ -155,7 +155,7 @@ export default {
     enabled: {
       type: 'bool', default: true, group: '文件与图片',
       label: '让模型看视频内容',
-      hint: '开：群友发视频 / 贴 B 站·抖音链接时抽几帧交给模型，它能描述画面、说出讲了什么；'
+      hint: '开：群友发视频 / 贴 B 站链接时抽几帧交给模型，它能描述画面、说出讲了什么；'
         + '关：视频只显示成「[视频]」，链接按普通网页处理。'
         + '**需要侧车在跑**（控制台「链接解析」页底部有「启动侧车」按钮）；侧车不在时自动降级，不影响聊天。',
     },
@@ -419,6 +419,12 @@ export default {
       ev.hint.push(`[视频${title ? `「${title.slice(0, 40)}」` : ''}: 时长 ${mmss}，已抽 ${pushed} 帧（`
         + `${(data.frames || []).map((f) => `${f.sec}s`).join('/')}）。`
         + `这些图就是视频画面（按时间顺序），直接据此回话即可；没看清的地方如实说看不清]`)
+
+      // 字幕（2026-11-10）：B 站有 AI 自动字幕/UP 字幕时把它当文字线索；没有就跳过。
+      const subText = String(data.subtitle && data.subtitle.text || '').trim()
+      if (subText) {
+        ev.hint.push('[视频字幕（自动生成，可能有错字；看不清的地方以抽帧画面为准）]\n' + subText.slice(0, 6000))
+      }
       bot.log.info(`[看视频] ${ev.chatKey} ${data.platform || req.platform} ${mmss} → ${pushed} 帧 (${Date.now() - started}ms)`)
 
       /** 失败时如实说一句（别让模型瞎猜画面） */

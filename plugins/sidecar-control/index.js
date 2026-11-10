@@ -6,7 +6,7 @@
  *      之后每 5 分钟复查一次（挂了自动重启）。用户不需要去数据目录里找 start.bat 双击。
  *   ② **补配置**：侧车第一次跑时如果 `sidecar.config.json` 里 `pythonPath` 空着，
  *      这里会填上「DSH 宿主用的 node」旁边能找到的 python（找不到就不填，侧车照样能跑 B 站，
- *      只是抖音会失败）——免得用户手上还得改 JSON。
+ *      缺的只是少数站点能用）——免得用户手上还得改 JSON。
  *   ③ **`/sidecar` 命令**（仅主人）：`status` / `start` / `stop` / `restart` / `log`。
  *
  * ⚠️ **这是唯一一处故意破包内红线的代码**：`plugins/` 里禁 `child_process`，
@@ -143,7 +143,7 @@ export default {
         }
         const found = findPython()
         if (!found) {
-          logInfo('没探测到 python：B 站照常能用，抖音链接会失败（可在配置里手动填 pythonPath）')
+          logInfo('没探测到 python：B 站照常能用（可在配置里手动填 pythonPath）')
           return
         }
         raw.pythonPath = found

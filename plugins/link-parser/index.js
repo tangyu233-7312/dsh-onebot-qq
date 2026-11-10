@@ -1,7 +1,7 @@
 /**
  * link-parser — 链接解析子插件（id: link-parser，order: 70）
  *
- * 干什么：群里/私聊出现受支持的分享链接（B站、抖音…）时，插件**自己**调一个**外部解析侧车**
+ * 干什么：群里/私聊出现受支持的分享链接（B 站）时，插件**自己**调一个**外部解析侧车**
  * （默认 `http://127.0.0.1:3972/parse`，用户自备；本包不附带）把视频/图集直接发出去，
  * 不占模型一步、不烧 token。**默认关闭**：没起侧车时开了只会白等超时后降级。
  *
@@ -163,7 +163,7 @@ export default {
     maxBytes: { type: 'int', default: 100 * 1024 * 1024, group: '链接解析', label: '单条媒体上限（字节）', hint: '单个文件/图片的下载上限；超过就跳过不下载（防大文件卡住）。' },
     continueWhenAddressed: { type: 'bool', default: true, group: '链接解析', label: '同时在跟我说话时继续交给模型', hint: '开：正在跟它说话时，消息里带链接也照常交给模型回答；关：带链接就只解析、不接话。' },
     modelTextThreshold: { type: 'int', default: 4, group: '链接解析', label: '剥链接后正文多少字算在跟我说话', hint: '剥掉链接后正文超过这么多字，才算「在跟它说话」（否则只发链接、不接话）。' },
-    platforms: { type: 'group', default: ['bilibili', 'douyin'], group: '链接解析', label: '只解析这些平台', hint: '只解析这些平台的链接（逗号分隔，如 bilibili,douyin）；留空 = 支持的全部。' },
+    platforms: { type: 'group', default: ['bilibili'], group: '链接解析', label: '只解析这些平台', hint: '只解析这些平台的链接（逗号分隔，现支持 bilibili；抖音 2026-11-10 下线）；留空 = 支持的全部。' },
   },
 
   setup(bot) {

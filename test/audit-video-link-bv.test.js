@@ -33,7 +33,7 @@ function setup(over = {}) {
     sidecarUrl: 'http://127.0.0.1:3972',
     onlyWhenAddressed: true,
     allowBvOnly: true,
-    platforms: ['bilibili', 'douyin'],
+    platforms: ['bilibili'],
     frames: 3,
     maxSide: 512,
     maxSeconds: 600,

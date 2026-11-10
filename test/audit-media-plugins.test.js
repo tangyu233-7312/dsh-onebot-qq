@@ -74,11 +74,11 @@ function fakeLlm(impl) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('link-parser extractUrls：最多取 2 条、去掉中文标点/尾部半角符号、平台识别', () => {
-  const text = '看这个 https://www.bilibili.com/video/BV1xx411c7mD，还有 https://v.douyin.com/abc123/。第三个 https://example.invalid/x'
+  const text = '看这个 https://www.bilibili.com/video/BV1xx411c7mD，还有 https://v.example.com/abc123/。第三个 https://example.invalid/x'
   const urls = extractUrls(text, 2)
   assert.equal(urls.length, 2, '最多 2 条')
   assert.ok(urls[0].includes('bilibili.com'), '中文逗号不进链接')
-  assert.ok(urls[1].includes('douyin.com'))
+  assert.ok(urls[1].includes('v.example.com'))
   assert.equal(urls[1].endsWith('。'), false, '尾部中文标点削掉')
   const again = extractUrls('同一条 https://b23.tv/abc https://b23.tv/abc', 5)
   assert.equal(again.length, 1, '去重')
@@ -134,7 +134,7 @@ async function bootLinkParser(t, parsed) {
       pluginConfig: {
         'gate-wake': { adminQq: ADMIN_QQ },
         'persona-voice': { splitReplyEnabled: false },
-        'link-parser': { enabled: true, parserUrl: 'http://sidecar.invalid', platforms: ['bilibili', 'douyin'] },
+        'link-parser': { enabled: true, parserUrl: 'http://sidecar.invalid', platforms: ['bilibili'] },
       },
     },
   })

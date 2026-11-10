@@ -2,7 +2,7 @@
  * video-link-read — 链接级"点开看看"（id: 'video-link-read', order: 45）
  *
  * 2026-10-29 起支持两种情况：
- *   ① 消息里贴了 B 站 / 抖音链接（正文或分享卡片）；
+ *   ① 消息里贴了 B 站链接（正文或分享卡片）；
  *   ② 消息里**只给了 BV 号**（`BV1GJ411x7h7` 这种），自动补成 `https://www.bilibili.com/video/<BV号>`。
  * 命中后走侧车 `/read` → 下载 → ffprobe → ffmpeg 抽 N 帧 → 塞进 `ev.imageParts`，模型于是"真的看过"。
  *
@@ -13,7 +13,7 @@
  *     晚了 `kernel:context`(50) 就不认（它只在 imageParts 为空时自己填）。
  *   两个 order 互相咬死，只能拆。
  *
- * 这个插件干的事：消息里有 B 站 / 抖音链接、**并且这条消息是在叫它** →
+ * 这个插件干的事：消息里有 B 站链接、**并且这条消息是在叫它** →
  *   先问侧车 `/read`，抽几帧塞进 `ev.imageParts`（模型于是"真的看过"这条视频）。
  *   搬不搬视频由 `link-parser`（intercept 阶段，早于本插件）决定 —— 本插件只负责"让模型看见"，
  *   不在这一层 stop（before-turn 拦不住已经在 intercept 发出的媒体，stop 只会把模型回话也吞掉）。
@@ -58,7 +58,6 @@ function bvLinksOf(text) {
 function platformOf(url) {
   const u = String(url || '').toLowerCase()
   if (/bilibili\.com|b23\.tv|bili2233\.cn/.test(u)) return 'bilibili'
-  if (/douyin\.com|iesdouyin\.com/.test(u)) return 'douyin'
   return ''
 }
 
@@ -127,8 +126,8 @@ export default {
   configSchema: {
     enabled: {
       type: 'bool', default: true, group: '文件与图片',
-      label: '点开 B 站 / 抖音链接看视频',
-      hint: '开：群里有人**叫它**并贴了 B 站/抖音链接时，它会把视频下下来抽帧真看一眼再回话；'
+      label: '点开 B 站链接看视频',
+      hint: '开：群里有人**叫它**并贴了 B 站链接时，它会把视频下下来抽帧真看一眼再回话；'
         + '关：链接按普通网页处理（模型只拿得到标题和简介）。需要侧车在跑。',
     },
     sidecarUrl: {
@@ -148,10 +147,21 @@ export default {
       hint: '开：群里只贴一串 BV 号（如 BV1GJ411x7h7）而不贴链接时，也当 B 站视频去下载抽帧。\n'
         + '关：只认完整链接。',
     },
+    subtitle: {
+      type: 'bool', default: true, group: '文件与图片',
+      label: '连字幕一起读',
+      hint: '开（推荐）：B 站视频有 UP 上传字幕或 AI 自动字幕时，把字幕也交给模型 —— 比只抽 8~11 帧准得多。'
+        + '关：只抽帧。没有字幕的视频（大部分短视频）自动跳过，不影响原来的行为。',
+    },
+    subtitleMaxChars: {
+      type: 'int', default: 6000, min: 500, max: 20000, step: 500, group: '文件与图片',
+      label: '字幕最多带多少字',
+      hint: '超长字幕会按时间均匀抽段（保开头—中段—结尾），不会整段塞满上下文。默认 6000 字约 3~4k token。',
+    },
     platforms: {
-      type: 'group', default: ['bilibili', 'douyin'], group: '文件与图片',
+      type: 'group', default: ['bilibili'], group: '文件与图片',
       label: '只点开这些平台',
-      hint: '默认 bilibili,douyin。抖音要求侧车配了 cookie（见侧车 sidecar.config.json）。',
+      hint: '默认 bilibili（2026-11-10 起抖音已下线：它现在强制要 cookie，拿不到画面）。',
     },
     frames: {
       type: 'int', default: 8, min: 1, max: 24, step: 1, group: '文件与图片',
@@ -265,7 +275,7 @@ export default {
       ]
       // ③ 裸 BV 号：群里经常只贴一串 BV1xxxxxxxxx，不给链接 —— 补成完整地址再走同一条路
       if (cfg().allowBvOnly !== false) candidates.push(...bvLinksOf(text))
-      const allowed = Array.isArray(cfg().platforms) ? cfg().platforms.map(String) : ['bilibili', 'douyin']
+      const allowed = Array.isArray(cfg().platforms) ? cfg().platforms.map(String) : ['bilibili']
       const hit = candidates.map((u) => ({ url: u, platform: platformOf(u) }))
         .find((x) => x.platform && allowed.includes(x.platform))
       if (!hit) return                                   // 不是支持的平台 → 完全不碰
@@ -298,6 +308,7 @@ export default {
             // 动态抽帧：超过 framesSplitSec 就用 framesLong 帧（侧车按实际时长选）
             framesLong: Number(cfg().framesLong) || 11,
             framesSplitSec: Number(cfg().framesSplitSec) || 600,
+
             maxSide: Number(cfg().maxSide) || 1024,
             maxSeconds: Number(cfg().maxSeconds) || 600,
           }),
@@ -345,10 +356,15 @@ export default {
       const dur = Number(data.durationSec) || 0
       const mmss = `${Math.floor(dur / 60)}:${String(dur % 60).padStart(2, '0')}`
       const title = String(data.title || '').trim()
-      const plat = data.platform === 'bilibili' ? 'B 站' : data.platform === 'douyin' ? '抖音' : '视频'
+      const plat = data.platform === 'bilibili' ? 'B 站' : '视频'
       ev.hint.push(`[${plat}视频${title ? `「${title.slice(0, 40)}」` : ''}: 时长 ${mmss}，已抽 ${pushed} 帧（`
         + `${(data.frames || []).map((f) => `${f.sec}s`).join('/')}）。`
         + `这些图就是视频画面（按时间顺序），直接据此回话即可；没看清的地方如实说看不清]`)
+      // 字幕（2026-11-10）：B 站有 UP 字幕 / AI 自动字幕就当文字线索；没有就跳过
+      const subText = String((data && data.subtitle && data.subtitle.text) || '').trim()
+      if (subText) {
+        ev.hint.push('[视频字幕（自动生成，可能有错字；看不清的地方以抽帧画面为准）]\n' + subText)
+      }
       // 把"这次看了哪条视频"记下来，供出站装饰/控制台排障（不参与回复内容）
       ev._scratch['video-link-read:last'] = {
         url: hit.url, platform: data.platform || hit.platform, title: title.slice(0, 80),
@@ -357,6 +373,8 @@ export default {
       // 不 stop：视频是否搬进群由 link-parser（intercept 阶段，早于本插件）决定；
       // 本插件只负责给模型塞画面，stop 在这里拦不住已经发出的媒体，只会把模型回话也吞掉。
       bot.log.info(`[看链接] ${ev.chatKey} ${data.platform} ${mmss} ${pushed} 帧 (${Date.now() - started}ms)`)
+      return
+
 
       function failText(d) {
         switch (String(d?.code || '')) {

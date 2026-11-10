@@ -25,6 +25,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { srtToLines, subtitleText } from './subtitle.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const VERSION = '1.0.0'
@@ -40,7 +41,9 @@ const DEFAULTS = {
   ytdlpPath: '',                  // 空 = 依次试 python -m yt_dlp / yt-dlp
   maxMb: 250,                     // 单文件上限
   maxSeconds: 600,                // 单视频时长上限
-  maxFrames: 12,                  // 单次最多抽几帧
+  maxFrames: 12,
+  subtitle: true,            // 下载时顺带取字幕（B 站有 AI 自动字幕；失败不影响主流程）
+  subtitleMaxChars: 6000,    // 字幕交给模型的字数上限（超了按时间均匀截段）                  // 单次最多抽几帧
   concurrency: 2,                 // 同时最多几个任务（多了直接 busy）
   taskTimeoutMs: 300000,          // 单个任务总超时（5 分钟）
   frameTtlMs: 600000,             // 帧目录保留多久（10 分钟）
@@ -49,8 +52,7 @@ const DEFAULTS = {
   allowLocalDirs: [],             // 允许读取的本地目录前缀（空 = 只允许 tmpDir 与 NapCat 目录）
   allowedHosts: [
     'bilibili.com', 'b23.tv', 'bili2233.cn',
-    'douyin.com', 'iesdouyin.com', 'v.douyin.com',
-  ],
+    ],
 }
 
 function loadConfig() {
@@ -111,11 +113,11 @@ function ytdlpCmd() {
 }
 
 /**
- * cookie 参数：抖音现在**必须**带 cookie（yt-dlp 会报 "Fresh cookies ... are needed"）。
+ * cookie 参数（2026-11-10 起：抖音已下线，B 站不需要 cookie；这两项留着给将来别的站点用）。
  * 两种给法，配一个就行：
  *   · cookiesFromBrowser: "edge" / "chrome" / "firefox" —— 直接借浏览器里已登录的 cookie
  *   · cookiesFile: "C:\\path\\cookies.txt" —— 事先导出的 Netscape 格式 cookie 文件
- * 都不配 = 只靠公开接口，B 站通常够用，抖音大概率失败。
+ * 都不配 = 只靠公开接口（B 站够用）。
  */
 function cookieArgs() {
   const out = []
@@ -269,6 +271,9 @@ async function sweep() {
 }
 setInterval(sweep, 60_000).unref?.()
 
+/** 源文件 → 字幕文件列表（下载时登记；抽帧时按 source 取） */
+const lastSubs = new Map()
+
 // ── /read：看视频 ────────────────────────────────────────────────────
 async function probeDuration(file) {
   if (!FFPROBE) return 0
@@ -287,7 +292,7 @@ async function ytdlpMeta(url) {
     return {
       title: String(j.title || '').slice(0, 120),
       durationSec: Number(j.duration) || 0,
-      platform: /bilibili|b23/i.test(url) ? 'bilibili' : /douyin/i.test(url) ? 'douyin' : 'unknown',
+      platform: /bilibili|b23|bili2233/i.test(url) ? 'bilibili' : 'unknown',
       extractor: String(j.extractor_key || j.extractor || ''),
     }
   } catch { return null }
@@ -305,6 +310,10 @@ async function ytdlpDownload(url, outDir, { maxHeight = 720 } = {}) {
   const r = await run(cmd, [
     ...pre, '-f', 'bv*+ba/b/best', '-S', `res:${maxHeight}`,
     '--merge-output-format', 'mp4', '--no-playlist', '--no-warnings',
+    // 2026-11-10：顺手把字幕也下下来（B 站有 UP 上传字幕 + AI 自动字幕）。
+    // --convert-subs srt 让 YouTube/B 站的 vtt/json 统一成 srt；加 --ignore-errors 免得没字幕时整条失败。
+    ...(CFG.subtitle === false ? [] : ['--write-subs', '--write-auto-subs', '--convert-subs', 'srt',
+      '--sub-langs', 'zh-Hans,zh-CN,zh,ai-zh,zh-Hant,en', '--ignore-errors']),
     ...cookieArgs(),
     '-o', tpl, url,
   ], { timeout: CFG.taskTimeoutMs })
@@ -317,7 +326,11 @@ async function ytdlpDownload(url, outDir, { maxHeight = 720 } = {}) {
   const mp4 = files.find((f) => /\.mp4$/i.test(f)) || files[0]
   if (!mp4) return { ok: false, error: 'yt-dlp 没产出文件' }
   const st = await fsp.stat(mp4)
-  return { ok: true, file: mp4, size: st.size }
+  // 字幕文件（有就带上；没有就是没有，不影响抽帧）
+  const subs = (await fsp.readdir(outDir).catch(() => []))
+    .filter((f) => /\.(srt|vtt)$/i.test(f))
+    .map((f) => path.join(outDir, f))
+  return { ok: true, file: mp4, size: st.size, subs }
 }
 
 /**
@@ -444,15 +457,16 @@ async function handleRead(body) {
         meta = hit.meta || { title: '', durationSec: 0, platform }
         source = hit.file
         log(`/read 复用 ${Math.round((nowMs() - hit.at) / 1000)} 秒前下载的文件（跳过重复下载）`)
+        if (Array.isArray(hit.subs) && hit.subs.length) lastSubs.set(hit.file, hit.subs)
         // 复用也不能跳过时长检查：上一次可能是在别的 maxSeconds 下下过的
         if (meta.durationSec > LIM.seconds) {
           return { ok: false, code: 'too_long', error: `视频 ${Math.round(meta.durationSec)} 秒，超过上限 ${LIM.seconds} 秒` }
         }
       } else {
-        // 分流：B站/抖音 → yt-dlp（它认识这些平台）；其它直链（QQ CDN 等）→ 直接 fetch。
+        // 分流：B 站 → yt-dlp（2026-11-10 抖音已下线）；其它直链（QQ CDN 等）→ 直接 fetch。
         // 之前一律走 yt-dlp，"multimedia.nt.qq.com.cn/download?appid=..." 会被当成文件名，
         // Windows 上 ? 非法 → Errno 22。（踩过）
-        const isKnownPlatform = /bilibili\.com|b23\.tv|bili2233\.cn|douyin\.com|iesdouyin\.com/i.test(url)
+        const isKnownPlatform = /bilibili\.com|b23\.tv|bili2233\.cn/i.test(url)
         let dl
         if (isKnownPlatform) {
           const m = await ytdlpMeta(url)
@@ -472,6 +486,7 @@ async function handleRead(body) {
           return { ok: false, code: 'too_big', error: `文件 ${mb(dl.size)}MB 超过上限 ${CFG.maxMb}MB` }
         }
         source = dl.file
+        if (Array.isArray(dl.subs) && dl.subs.length) lastSubs.set(dl.file, dl.subs)
         rememberDownload(url, { file: dl.file, size: dl.size, meta })
         // 下下来的视频**不立刻删**：插件很可能紧接着要把它搬进群（"先搬视频、再发感想"那条链路），
         // 删早了那边就读到不存在的文件。改为登记进待删清单，交给 sweep() 按 TTL / 总量清理。
@@ -489,7 +504,9 @@ async function handleRead(body) {
       outDir: jobDir,
     })
     if (!ext.ok) return ext
-    log(`/read ok ${platform} ${meta.durationSec || ext.durationSec}s → ${ext.frames.length} 帧`)
+    // 字幕（2026-11-10）：有就交给模型当文字线索，没有就算了（抖音已下线、群内文件没有字幕）
+    const sub = CFG.subtitle === false ? { text: '', chars: 0, lines: 0 } : subtitleText(lastSubs.get(source) || [], Number(CFG.subtitleMaxChars) || 6000)
+    log(`/read ok ${platform} ${meta.durationSec || ext.durationSec}s → ${ext.frames.length} 帧` + (sub.chars ? ` + 字幕 ${sub.chars} 字` : '（无字幕）'))
     return {
       ok: true,
       platform: meta.platform || platform,
@@ -500,6 +517,8 @@ async function handleRead(body) {
       mediaPath: source,
       mediaBytes: await fsp.stat(source).then((s) => s.size).catch(() => 0),
       note: `共 ${Math.floor(ext.durationSec / 60)} 分 ${ext.durationSec % 60} 秒，抽 ${ext.frames.length} 帧`,
+      // 字幕：text 给模型，chars/lines 给排查用
+      subtitle: sub.text ? { text: sub.text, chars: sub.chars, lines: sub.lines, truncated: sub.truncated === true } : null,
     }
   } catch (e) {
     return { ok: false, code: 'internal', error: String(e?.message || e).slice(0, 300) }
@@ -529,7 +548,7 @@ async function handleParse(body) {
       return {
         ok: true,
         platform: meta.platform || 'unknown',
-        platformName: meta.platform === 'bilibili' ? '哔哩哔哩' : meta.platform === 'douyin' ? '抖音' : (meta.platform || ''),
+        platformName: meta.platform === 'bilibili' ? '哔哩哔哩' : (meta.platform || ''),
         title: meta.title || '',
         resourceId: path.basename(hit.file).replace(/\.[^.]+$/, ''),
         durationSec: meta.durationSec || 0,
@@ -551,7 +570,7 @@ async function handleParse(body) {
     return {
       ok: true,
       platform: meta?.platform || 'unknown',
-      platformName: meta?.platform === 'bilibili' ? '哔哩哔哩' : meta?.platform === 'douyin' ? '抖音' : (meta?.platform || ''),
+      platformName: meta?.platform === 'bilibili' ? '哔哩哔哩' : (meta?.platform || ''),
       title: meta?.title || '',
       resourceId: path.basename(dl.file).replace(/\.[^.]+$/, ''),
       durationSec: meta?.durationSec || 0,
