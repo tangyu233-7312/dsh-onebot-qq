@@ -43,36 +43,36 @@ export default {
     //    控制台的「运维」页跟着消失，连手动按钮和 /sidecar 命令都没了。
     //    改名 autoStart 后：插件常驻，自动运维默认关（PC 上原本就是这个意图）。
     autoStart: {
-      type: 'bool', default: false, group: '运维',
+      type: 'bool', default: false, group: '侧车运维',
       label: '自动拉起侧车',
       hint: '开：插件启动时 ping 一次侧车，连不上就自己把它拉起来（每 5 分钟复查，挂了自动重启）；'
         + '关（默认）：**插件不碰侧车** —— 不 ping、不定时检测、不自动重启，全部靠你自己'
         + '（控制台「运维」页的按钮，或 QQ 里发 /sidecar start）。',
     },
     sidecarUrl: {
-      type: 'str', default: 'http://127.0.0.1:3972', group: '运维',
+      type: 'str', default: 'http://127.0.0.1:3972', group: '侧车运维',
       label: '侧车地址',
       hint: '要跟 sidecar.config.json 的 port 一致。',
     },
     sidecarDir: {
-      type: 'str', default: 'sidecar', group: '运维',
+      type: 'str', default: 'sidecar', group: '侧车运维',
       label: '侧车目录',
       hint: '数据目录下的子目录名（默认 sidecar，里面应有 server.mjs）。',
     },
     prepareConfig: {
-      type: 'bool', default: true, group: '运维',
+      type: 'bool', default: true, group: '侧车运维',
       label: '首次自动补配置',
       hint: '开：发现 sidecar.config.json 的 pythonPath 为空时，自动探测本机 python 并填进去'
         + '（只填一次，之后你自己改了不会被覆盖）。找不到就不填。',
     },
     nodePath: {
-      type: 'str', default: '', group: '运维',
+      type: 'str', default: '', group: '侧车运维',
       label: 'node 路径（留空 = 自动探测）',
       hint: '跑侧车用的 node。留空时依次找：DSH 自带 runtime → 宿主同级 → PATH。'
         + '插件跑在 Electron 宿主里，process.execPath 是 GUI 程序不能拿来跑脚本，所以必须解析出真正的 node。',
     },
     pythonPath: {
-      type: 'str', default: '', group: '运维',
+      type: 'str', default: '', group: '侧车运维',
       label: 'python 路径（留空 = 自动探测）',
       hint: '侧车跑 yt-dlp 用。留空时按「DSH 自带 node 同级 → PATH → 常见安装位置」顺序找。',
     },

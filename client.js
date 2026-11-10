@@ -257,7 +257,9 @@ window.__ModuleLoader__.load({
 		}
 
 		function SwitchGroup(props) {
-			const { schema, group, onlySection = '', skipSections = [], ...api } = props
+			// sectionExtras：{ 小节名: (api) => 表格/块 }。同一个折叠块里，控件之后**接着**画这段自定义内容
+			// （入群欢迎的文案/图片池/测试就是这样接进去的 —— 之前另起一个 Fold，结果页面出现两个同名块）。
+			const { schema, group, onlySection = '', skipSections = [], sectionExtras = null, ...api } = props
 			const skipSec = new Set([].concat(skipSections || []))
 			const list = (schema.controls || []).filter((c) => c.group === group
 				&& (!onlySection || c.section === onlySection)
@@ -278,7 +280,10 @@ window.__ModuleLoader__.load({
 							onClick: () => setOpenSec({ ...openSec, [name]: !open }),
 						}, (open ? '▾ ' : '▸ ') + name + (open ? '（收起）' : '（展开）')),
 					]),
-					open ? h('div', { key: 'body' }, list.filter((c) => c.section === name).map((c) => ctrlRow(c, api))) : null,
+					open ? h('div', { key: 'body' }, [
+						...list.filter((c) => c.section === name).map((c) => ctrlRow(c, api)),
+						sectionExtras && typeof sectionExtras[name] === 'function' ? sectionExtras[name](api) : null,
+					]) : null,
 				])
 			}
 			return h('div', null, [
@@ -399,7 +404,12 @@ window.__ModuleLoader__.load({
 				extraHead,
 				// 「群聊」页：群卡片（自定义交互）放在控件前面；「空间日记（看自己）」页：看自己那块放最后
 				group === '群聊' ? h(GroupCardsBody, { key: 'cards', ...api, group }) : null,
-				h(SwitchGroup, Object.assign({}, api, { key: 'sw', group, skipSections })),
+				h(SwitchGroup, Object.assign({}, api, {
+					key: 'sw', group, skipSections,
+					...(group === '群聊'
+						? { sectionExtras: { 入群欢迎: (a) => h(WelcomeBody, Object.assign({}, a, { key: 'wl' })) } }
+						: {}),
+				})),
 				acts.length ? h('div', { key: 'acts' }, [
 					h('div', { style: S.group, key: 'gt' }, '操作'),
 					...acts.map((a) => h('div', { style: S.row, key: a.id }, [
@@ -429,13 +439,8 @@ window.__ModuleLoader__.load({
 						}, a.label),
 					])),
 				]) : null,
-				// 入群欢迎（2026-11-09 并进群聊页）：默认收起，点开才渲染文案/图片池/测试，避免每次进群聊页都拉图片池
-				group === '群聊' ? h(Fold, {
-					key: 'wl', title: '入群欢迎', api, defaultOpen: false,
-					children: () => [
-						h(WelcomeBody, Object.assign({}, api, { key: 'wbody' })),
-					],
-				}) : null,
+				// 入群欢迎（2026-11-09 并进群聊页）：文案/图片池/测试接在「入群欢迎」小节下面（见上面 sectionExtras），
+				// 不再另起一个折叠块 —— 否则页面上会出现两个「入群欢迎」。
 				// 看自己（并进空间日记页）：两个只读工具（browse_groups / self_log）没有控件，只有说明，
 				// 所以这里写清楚「它是干什么的、怎么让它用」，而不是摆一个空折叠块。
 				// 看自己（并进空间日记页）：只有 4 个配置项，父页的 SwitchGroup 已经把它当「看自己」小节渲染了，
