@@ -433,14 +433,18 @@ window.__ModuleLoader__.load({
 				group === '群聊' ? h(Fold, {
 					key: 'wl', title: '入群欢迎', api, defaultOpen: false,
 					children: () => [
-						h(SwitchGroup, Object.assign({}, api, { key: 'wsw', group: '群聊', onlySection: '入群欢迎' })),
 						h(WelcomeBody, Object.assign({}, api, { key: 'wbody' })),
 					],
 				}) : null,
-				// 看自己（并进空间日记页）：只读，翻群摘要 / 读自己的流水账
+				// 看自己（并进空间日记页）：两个只读工具（browse_groups / self_log）没有控件，只有说明，
+				// 所以这里写清楚「它是干什么的、怎么让它用」，而不是摆一个空折叠块。
 				group === '空间日记（看自己）' ? h(Fold, {
-					key: 'sv', title: '看自己（只读：翻群摘要 / 读自己的流水账）', api, defaultOpen: false,
-					children: () => h(SwitchGroup, Object.assign({}, api, { key: 'svsw', group: '空间日记（看自己）', onlySection: '看自己' })),
+					key: 'sv', title: '看自己（只读工具，没有开关）', api, defaultOpen: false,
+					children: () => h('div', { style: S.msg },
+						'这两个是**只读工具**，没有配置项：\n'
+						+ '· 翻群摘要 browse_groups：看最近几小时群里在聊什么（只给摘要，不读原文、不发消息）\n'
+						+ '· 流水账 self_log：看它今天做过什么（看视频 / 写说说 / 翻群），以及剩多少额度\n'
+						+ '想让它多用，就在聊天里直接叫它「翻翻那几个群」或「看看你今天都干了啥」。'),
 				}) : null,
 				dialog,
 			])
