@@ -362,15 +362,22 @@ export default {
      */
     function syncPersonaPrompt() {
       const mode = promptModeNow()
+      // 两个候选：profile 自己的 patch（可能没有 preset 声明）+ 插件包自带的那份（含 preset 声明）。
+      // **有 generated 标记的那个才是我们要改的** —— 找不到标记就换下一个，别乱写。
+      const re = /([ ]+)# >>> persona-body:begin >>>\n([\s\S]*?)\n([ ]+)# <<< persona-body:end <<</
       const candidates = [
         path.join(dataDir(), '..', 'profiles', 'web', 'cordis.patch.yml'),
         path.join(import.meta.dirname, '..', '..', 'cordis.patch.yml'),
       ]
-      const target = candidates.find((f) => { try { return fs.existsSync(f) } catch { return false } })
-      if (!target) { log('[人设提示词] 找不到 cordis.patch.yml，跳过（不影响聊天）'); return }
-      const text = fs.readFileSync(target, 'utf8')
-      // 标记**在块标量内部**（16 空格内容行）：YAML 会把它当正文，不会当新键。
-      const re = /([ ]+)# >>> persona-body:begin >>>\n([\s\S]*?)\n([ ]+)# <<< persona-body:end <<</
+      let target = ''
+      let text = ''
+      for (const f of candidates) {
+        try {
+          const t = fs.readFileSync(f, 'utf8')
+          if (re.test(t)) { target = f; text = t; break }
+        } catch { /* 读不到就看下一个 */ }
+      }
+      if (!target) { log('[人设提示词] 两份 cordis.patch.yml 里都没有 generated 标记，跳过（不影响聊天）'); return }
       const m = re.exec(text)
       if (!m) { log('[人设提示词] patch 里没有 generated 标记，跳过（保持原样）'); return }
       const endIndent = m[1]
