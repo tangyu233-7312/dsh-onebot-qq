@@ -1364,20 +1364,30 @@ window.__ModuleLoader__.load({
 		  const st = data || {}
 		  const llm = st.llm || {}
 		  const org = st.organize || {}
+		  // 状态灯里的三项（2026-11-10）：只显示「插件真正读到的」；filled 缺失时按 configured 兜底。
+		  const filled = llm.filled || {}
+		  const yc = (ok) => (ok ? '✅' : '❌')
+		  // when() 在本组件上方已经定义（“今天是第几天”），这里只补一个完整时间格式化
+		  const fmtTime = (ts) => { try { return new Date(ts).toLocaleString() } catch { return String(ts) } }
 		  const top = h('div', { style: S.card, key: 'top' }, [
 		    h('div', { style: S.title, key: 't' }, '长期记忆 · 存盘的，不靠压缩'),
 		    h('div', { style: S.row, key: 'r1' }, [
-		      h('span', { key: 'a', style: S.badge(st.entries > 0) }, `${st.entries ?? '—'} 条记忆`),
-		      h('span', { key: 'b', style: S.badge(!(st.forgotten > 0)) }, `已遗忘 ${st.forgotten ?? 0}`),
-		      h('span', { key: 'c', style: S.badge(st.llm && st.llm.configured) }, st.llm && st.llm.configured ? `整理接口 ${llm.model || ''}` : '整理接口未配置'),
+		      // 0 条不再标红：那是「还没开始记」，不是错误
+		      h('span', { key: 'a', style: S.badge(true) }, `${st.entries ?? '—'} 条记忆`),
+		      h('span', { key: 'b', style: S.badge(true) }, `已遗忘 ${st.forgotten ?? 0}`),
+		      h('span', { key: 'c', style: S.badge(Boolean(llm.configured)) },
+		        llm.configured ? `整理接口已配置（${llm.model || '未填模型'}）` : '整理接口未配置'),
+		      h('span', { key: 'c2', style: { fontSize: 12, opacity: .8, marginLeft: 2 } },
+		        `地址 ${yc(filled.baseUrl)} 模型 ${yc(filled.model)} Key ${yc(filled.apiKey)}`),
 		      h('span', { key: 'd', style: S.badge(st.autoOrganize) }, st.autoOrganize ? '自动整理开' : '自动整理关'),
 		      h('span', { key: 'e', style: S.badge(st.injectEnabled) }, st.injectEnabled ? '每轮注入开' : '每轮注入关'),
 		      st.running ? h('span', { key: 'f', style: S.badge(true) }, '正在整理…') : null,
 		    ]),
 		    h('div', { style: Object.assign({}, S.msg, { whiteSpace: 'pre-wrap' }), key: 'r2' },
 		      `范围：${st.scopeSummary || '—'}｜最早 ${when(st.oldest)}，最新 ${when(st.newest)}\n`
-		      + `上次整理：${org.at ? new Date(org.at).toLocaleString() : '还没跑过'}` + (org.error ? `｜上次失败：${org.error}` : '') + '\n'
-		      + `目录：${st.dir || ''}`),
+		      + `上次整理：${org.at ? fmtTime(org.at) : '还没跑过'}` + (org.error ? `｜原因：${org.error}` : '') + '\n'
+		      + `目录：${st.dir || ''}`
+		      + (llm.configured ? '' : `\n整理模型没配好的话：展开下面的「整理模型」填地址/模型/Key，再点「🔌 测试整理接口」`)),
 		    h('div', { style: S.row, key: 'r3' }, [
 		      h('button', { key: 'o', style: S.btn, disabled: busy2, onClick: () => act('整理一轮', { op: 'organize', force: true }, async () => { await loadStatus(); await loadList() }) }, '⚙ 立刻整理一轮'),
 		      h('button', { key: 't', style: S.btn, disabled: busy2, onClick: () => act('测试接口', { op: 'testLlm' }) }, '🔌 测试整理接口'),
