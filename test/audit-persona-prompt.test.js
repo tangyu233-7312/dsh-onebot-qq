@@ -75,3 +75,12 @@ test('PERSONA-PROMPT read_persona 只认三份、跟着生效人设走、不认�
   fs.writeFileSync(path.join(ws, '.persona.json'), JSON.stringify({ name: '祀', mode: 'copy' }), 'utf8')
   assert.match(readPersonaFile({ personaDir: dir, workspaceDir: ws }).text, /自称本座/)
 })
+
+test('PERSONA-PROMPT generated 标记能被插件的正则匹配到（写错会让控制台开关失灵）', () => {
+  const text = fs.readFileSync(path.join(root, 'cordis.patch.yml'), 'utf8')
+  const re = /([ ]+)# >>> persona-body:begin >>>([\s\S]*?)([ ]+)# <<< persona-body:end <<</
+  const m = re.exec(text)
+  assert.ok(m, 'patch 里应有可被解析的 persona-body 标记')
+  assert.ok(m[1].length >= 14, '标记缩进应在块标量内（至少 14 空格）')
+  assert.equal(m[1].length, m[3].length, '首尾标记缩进要一致')
+})

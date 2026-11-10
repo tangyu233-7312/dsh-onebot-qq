@@ -370,7 +370,7 @@ export default {
       if (!target) { log('[人设提示词] 找不到 cordis.patch.yml，跳过（不影响聊天）'); return }
       const text = fs.readFileSync(target, 'utf8')
       // 标记**在块标量内部**（16 空格内容行）：YAML 会把它当正文，不会当新键。
-      const re = /([ ]+)# >>> persona-body:begin >>>\r?\n([\s\S]*?)\r?\n([ ]+)# <<< persona-body:end <<</
+      const re = /([ ]+)# >>> persona-body:begin >>>\n([\s\S]*?)\n([ ]+)# <<< persona-body:end <<</
       const m = re.exec(text)
       if (!m) { log('[人设提示词] patch 里没有 generated 标记，跳过（保持原样）'); return }
       const endIndent = m[1]
