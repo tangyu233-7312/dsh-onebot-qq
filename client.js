@@ -282,7 +282,10 @@ window.__ModuleLoader__.load({
 					]),
 					open ? h('div', { key: 'body' }, [
 						...list.filter((c) => c.section === name).map((c) => ctrlRow(c, api)),
-						sectionExtras && typeof sectionExtras[name] === 'function' ? sectionExtras[name](api) : null,
+						// 追加内容**必须**走组件（h(WelcomeBody, ...)），不能直接调函数：直接调等于把它当成普通函数执行，
+						// 里面的 useState/useEffect 会落到父组件（SwitchGroup）的 hook 顺序里 —— 展开时 hook 数量突变，
+						// 整块控制台白屏（2026-11-10 踩过，点「入群欢迎」立刻白）。
+						sectionExtras && typeof sectionExtras[name] === 'function' ? sectionExtras[name]() : null,
 					]) : null,
 				])
 			}
@@ -407,7 +410,7 @@ window.__ModuleLoader__.load({
 				h(SwitchGroup, Object.assign({}, api, {
 					key: 'sw', group, skipSections,
 					...(group === '群聊'
-						? { sectionExtras: { 入群欢迎: (a) => h(WelcomeBody, Object.assign({}, a, { key: 'wl' })) } }
+						? { sectionExtras: { 入群欢迎: () => h(WelcomeBody, Object.assign({}, api, { key: 'wl' })) } }
 						: {}),
 				})),
 				acts.length ? h('div', { key: 'acts' }, [
