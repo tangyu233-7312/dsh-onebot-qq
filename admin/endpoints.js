@@ -899,10 +899,10 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
     }
   }
 
-  // ── memory（旧·群记忆端点）2026-11-09 删除：控制台固定页「记忆」已换成 `mem`（long-memory 插件）。
-  //     旧端点连同 group-memory 插件一起下线；老数据在 <数据目录>/qq-memory/ 下原样保留（不删、不迁）。
+  // ── memory（旧·群记忆端点）2026-11-09 下线：控制台「记忆」页已换成 `mem`（long-memory 插件）。
+  //     端点名保留在 ENDPOINTS 里只是为了老前端调用时能收到一句人话，而不是「未知端点」。
   async function memory() {
-    throw new Error('「群记忆」已下线：请用「记忆」页（long-memory）。老数据在 <数据目录>/qq-memory/ 下原样保留。')
+    throw new Error('「群记忆」已下线：请用「记忆」页（long-memory）。')
   }
 
   // ── mem（长期记忆 long-memory 专用；与旧的「群记忆」端点 memory 完全分开）────────

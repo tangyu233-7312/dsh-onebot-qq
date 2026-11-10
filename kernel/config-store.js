@@ -231,9 +231,7 @@ export function migrateLegacyConfig(old = {}) {
     if (Object.keys(st).length) pluginConfig.stickers = { ...(pluginConfig.stickers || {}), ...st }
   }
 
-  // 群记忆（旧 group-memory 的迁移桥）—— 2026-11-09 整体移除：
-  //   group-memory 插件已下线（目录都不在了），再写回 pluginConfig['group-memory'] 只会留下一个没人读的孤儿配置段，
-  //   而控制台「子插件」页还会据此多出一行「群记忆」。老的 bridge.groupMemory 直接忽略，不报错。
+  // （旧 group-memory 的迁移桥 2026-11-09 删除：插件已下线，写回只会留下没人读的孤儿配置段。）
 
   // 头像
   if (bridge.avatarDir || bridge.avatarCacheHours) {
