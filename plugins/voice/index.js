@@ -383,6 +383,19 @@ export default {
       label: 'MiMo API Key',
       hint: '只在语音输出时需要。也可写在实例 config 的 credentials.mimoTts。',
     },
+    remoteUrl: {
+      type: 'str', default: '', group: '语音与唱歌', section: 'PC 算力网关',
+      label: 'PC 算力网关地址',
+      hint: '例 http://<PC 的局域网 IP>:9000 。留空 = 只用本机进程（老行为）。\n'
+        + '填了之后：语音和唱歌优先走 PC 计算，**连不上就回落本机**。\n'
+        + '⚠️ NAS 没 GPU，本机没有 RVC 时留空等于唱歌不可用。\n'
+        + '网关是独立程序，不在本仓库内（见 PC算力网关-20261112/README.md）。',
+    },
+    remoteToken: {
+      type: 'str', default: '', group: '语音与唱歌', section: 'PC 算力网关',
+      label: 'PC 算力网关 Token',
+      hint: '和网关 config.json 里的 token 一致。填了地址不填 token 会被网关 401 拒绝。',
+    },
     autoSpeak: {
       type: 'bool', default: false, group: '语音与唱歌', section: '运维',
       label: '自动朗读每条回复',
@@ -438,6 +451,60 @@ export default {
     }
     const tmp = () => path.join(os.tmpdir(), 'dsh-qq-voice')
 
+    // ── PC 算力网关（NAS 专用） ─────────────────────────────────────────────
+    // NAS 没有 GPU，语音/唱歌的本机进程跑不动。这里给一条「发到 PC 算」的路：
+    //   · remoteUrl 留空   → 完全不碰这段，行为与老版本一致；
+    //   · 填了但连不上     → 回落本机进程，并在结果里带上「PC 连不上」的原因；
+    //   · 填了且连得上     → 走 PC。
+    const remoteCfg = () => String(cfg().remoteUrl || '').trim().replace(/\/+$/, '')
+    const remoteTok = () => String(cfg().remoteToken || '').trim()
+
+    /** 调网关。返回 { ok, ... } 或 { ok:false, unreachable:true, reason }。永不抛。 */
+    async function remoteCall(pathname, body, { timeoutMs = 180_000 } = {}) {
+      const base = remoteCfg()
+      if (!base) return { ok: false, unreachable: true, reason: '没配 PC 算力网关地址' }
+      try {
+        const r = await fetch(base + pathname, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(remoteTok() ? { Authorization: 'Bearer ' + remoteTok() } : {}),
+          },
+          body: typeof body === 'string' ? body : JSON.stringify(body),
+          signal: AbortSignal.timeout(timeoutMs),
+        })
+        const text = await r.text()
+        if (!r.ok) {
+          return { ok: false, unreachable: r.status === 401 || r.status === 403, reason: `网关 HTTP ${r.status}：${text.slice(0, 160)}` }
+        }
+        return JSON.parse(text)
+      } catch (e) {
+        const why = e?.name === 'TimeoutError' ? '超时' : (e?.cause?.code || e?.code || e?.message || '未知错误')
+        return { ok: false, unreachable: true, reason: `连不上 PC 算力网关（${base}）：${why}` }
+      }
+    }
+
+    /** 网关是否在线 —— 结果缓 30 秒，避免每条语音都先探一次。 */
+    let remoteHealthAt = 0
+    let remoteHealthOk = false
+    async function remoteAlive() {
+      const base = remoteCfg()
+      if (!base) return false
+      if (Date.now() - remoteHealthAt < 30_000) return remoteHealthOk
+      remoteHealthAt = Date.now()
+      try {
+        const r = await fetch(base + '/health', {
+          headers: remoteTok() ? { Authorization: 'Bearer ' + remoteTok() } : {},
+          signal: AbortSignal.timeout(3_000),
+        })
+        remoteHealthOk = r.ok
+        return r.ok
+      } catch {
+        remoteHealthOk = false
+        return false
+      }
+    }
+
     /**
      * 音色模型文件名。**不要写死具体名字**（2026-10-30 改）：
      *   · 功能上：写死意味着换一个音色就得改代码；
@@ -492,6 +559,39 @@ export default {
       const dir = tmp()
       await fsp.mkdir(dir, { recursive: true })
       const tag = `sp-${Date.now()}`
+
+      // ① 配了 PC 算力网关就先问 PC（NAS 算不动，RVC 还带 GPU 依赖）
+      if (remoteCfg() && await remoteAlive()) {
+        const rr = await remoteCall('/tts', {
+          text: tts, voice: String(cfg().ttsVoice || '冰糖'),
+          instruct: String(cfg().ttsInstruct || DEFAULT_INSTRUCT),
+          backend: 'mimo-builtin', apiKey: keyOf(),
+        }, { timeoutMs: 180_000 })
+        if (rr.ok && rr.wav) {
+          // PC 只负责 TTS（NAS 上没 MiMo/edge 依赖），音色转换仍走本机 RVC。
+          // 本机连音色模型都没有（典型 NAS 情况）→ 直接用 PC 的 wav 转 silk 发出去。
+          const pcWav = path.join(dir, `${tag}_pc.wav`)
+          await fsp.writeFile(pcWav, Buffer.from(rr.wav, 'base64'))
+          // 本机没有音色模型（NAS 典型情况）→ 直接把 PC 的 wav 转 silk 发出去
+          if (!modelOf().model) {
+            return await sendAsVoice(target, pcWav, caption)
+          }
+          // 有音色模型：PC 出的 wav 再走本机 RVC，与老流程一致
+          const r2 = await runPy(pyRvc(), [
+            'python/rvc-infer.py', 'infer', '-m', modelOf().model,
+            ...(modelOf().index ? ['--index', modelOf().index] : []),
+            '-i', pcWav, '-o', path.join(dir, `${tag}_pc.mp3`),
+            '--pitch', String(cfg().ttsPitch || '2'), '--device', 'cuda:0',
+          ], { timeoutMs: 300_000, cwd: rvcDir() })
+          fsp.unlink(pcWav).catch(() => {})
+          if (!r2.ok) return { ok: false, reason: `RVC 失败：${r2.error || r2.reason}` }
+          return { ok: true, audio: path.join(dir, `${tag}_pc.mp3`), via: 'pc-tts+rvc', ms: r2.elapsedMs }
+        }
+        log.warn?.(`[语音] PC 网关没给出 wav：${rr.reason || '未知'}，回落本机`)
+      } else if (remoteCfg()) {
+        log.warn('[语音] PC 算力网关连不上，回落本机 TTS')
+      }
+
       const t = await runPy(pyTts(), [SCRIPT_TTS, '--json', JSON.stringify({
         text: tts, backend: 'mimo-builtin', voice: String(cfg().ttsVoice || '冰糖'),
         instruct: String(cfg().ttsInstruct || DEFAULT_INSTRUCT),
@@ -607,7 +707,33 @@ export default {
       await fsp.mkdir(dir, { recursive: true })
       const out = path.join(dir, `sing-${Date.now()}.mp3`)
       const mdl = modelOf()
-      if (!mdl.model) return { ok: false, reason: '没配音色模型：把 <你的音色>.pth（同名 .index 可选）放进 ' + path.join(rvcDir(), 'voice-models') + '，或在控制台「语音与唱歌 → 运维」填「音色模型文件名」' }
+
+      // 配了 PC 算力网关就先让 PC 算（NAS 上没有 RVC / 没有 GPU）
+      if (remoteCfg() && await remoteAlive()) {
+        try {
+          const buf = await fsp.readFile(hit.file)
+          const fd = new FormData()
+          fd.append('file', new Blob([buf]), path.basename(hit.file))
+          fd.append('pitch', String(cfg().singPitch || '4'))
+          if (mdl.model) fd.append('model', path.basename(mdl.model))
+          const resp = await fetch(remoteCfg() + '/sing', {
+            method: 'POST', body: fd, signal: AbortSignal.timeout(600_000),
+            headers: remoteTok() ? { Authorization: 'Bearer ' + remoteTok() } : {},
+          })
+          const js = await resp.json()
+          if (js.ok && js.audio) {
+            await fsp.writeFile(out, Buffer.from(js.audio, 'base64'))
+            return { ok: true, audio: out, name: path.parse(hit.name).name, via: 'pc', ms: js.ms, fromBili: !!hit.fromBili }
+          }
+          log.warn?.(`[唱歌] PC 网关转换失败：${js.reason || js.error || '未知'}，回落本机`)
+        } catch (e) {
+          log.warn?.(`[唱歌] 连不上 PC 算力网关（${remoteCfg()}）：${e?.cause?.code || e.message}，回落本机`)
+        }
+      } else if (remoteCfg()) {
+        log.warn('[唱歌] PC 算力网关连不上，回落本机 RVC')
+      }
+
+      if (!mdl.model) return { ok: false, reason: '没配音色模型，且 PC 算力网关不可用：把 <你的音色>.pth 放进 ' + path.join(rvcDir(), 'voice-models') + '，或在控制台「语音与唱歌 → PC 算力网关」填好地址' }
       const r = await runPy(pyRvc(), [
         'python/rvc-infer.py', 'infer',
         ...(mdl.model ? ['-m', mdl.model, ...(mdl.index ? ['--index', mdl.index] : [])] : []),
