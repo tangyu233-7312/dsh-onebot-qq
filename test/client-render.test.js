@@ -46,9 +46,8 @@ function makeReact() {
   return mk
 }
 
-function loadClient(react, srcPatch = null) {
-  let src = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8')
-  if (srcPatch) src = srcPatch(src)
+function loadClient(react) {
+  const src = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8')
   let entry = null
   const win = { __ModuleLoader__: { load: (m) => { entry = m } }, addEventListener() {}, removeEventListener() {} }
   const fn = new Function('window', 'document', 'navigator', 'localStorage', 'setTimeout', 'clearTimeout', 'fetch', src)
@@ -203,10 +202,10 @@ const findComponent = (node) => {
 }
 
 /** 渲染某一页：外壳给页面组件的那份 props 一并拿走（group / call / run … 都在里面）。 */
-function renderClientPage({ tab, schema, page = [], click = null, tip = null, openSections = false }) {
+function renderClientPage({ tab, schema, page = [], click = null }) {
   const ctx = { connection: { rpc: { call: async () => ({ ok: true, value: {} }) } } }
   const react = makeShellReact({ shell: [schema, { reply: { enabled: true } }, '', false, null, null, tab, '', '', undefined], page })
-  const client = loadClient(react, openSections ? (s) => s.replace('const [openSec, setOpenSec] = useState({})', "const [openSec, setOpenSec] = useState(Object.fromEntries((schema.controls || []).filter((c) => c.section).map((c) => [c.section, true])))") : null)
+  const client = loadClient(react)
   let Shell = null
   client.apply({ slots: { inject: (n, f) => f(), register: (o, c) => { Shell = c; return () => {} } }, connection: ctx.connection })
   assert.ok(Shell, '控制台组件没注册上')
@@ -216,14 +215,8 @@ function renderClientPage({ tab, schema, page = [], click = null, tip = null, op
   react.__other()
   const pageEl = findComponent(shellOut)
   assert.ok(pageEl, 'tab=' + tab + ' 没渲染出页面')
-  // tip：模拟「鼠标停在行尾 ⓘ 上」——外壳的悬停说明状态
-  if (tip) pageEl.props = { ...(pageEl.props || {}), tip }
   react.__page()
-  let tree = renderPageWithOptions()
-  function renderPageWithOptions() {
-    if (!openSections) return pageEl.type(pageEl.props || {})
-    return pageEl.type(pageEl.props || {})
-  }
+  let tree = pageEl.type(pageEl.props || {})
   react.__other()
   if (click) {
     const btn = findElement(tree, (n) => n.type === 'button' && typeof n.props.onClick === 'function' && click.test(textOfNode(n)))
