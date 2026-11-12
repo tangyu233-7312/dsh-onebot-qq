@@ -46,8 +46,9 @@ function makeReact() {
   return mk
 }
 
-function loadClient(react) {
-  const src = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8')
+function loadClient(react, srcPatch = null) {
+  let src = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8')
+  if (srcPatch) src = srcPatch(src)
   let entry = null
   const win = { __ModuleLoader__: { load: (m) => { entry = m } }, addEventListener() {}, removeEventListener() {} }
   const fn = new Function('window', 'document', 'navigator', 'localStorage', 'setTimeout', 'clearTimeout', 'fetch', src)
@@ -202,10 +203,10 @@ const findComponent = (node) => {
 }
 
 /** 渲染某一页：外壳给页面组件的那份 props 一并拿走（group / call / run … 都在里面）。 */
-function renderClientPage({ tab, schema, page = [], click = null }) {
+function renderClientPage({ tab, schema, page = [], click = null, tip = null, openSections = false }) {
   const ctx = { connection: { rpc: { call: async () => ({ ok: true, value: {} }) } } }
   const react = makeShellReact({ shell: [schema, { reply: { enabled: true } }, '', false, null, null, tab, '', '', undefined], page })
-  const client = loadClient(react)
+  const client = loadClient(react, openSections ? (s) => s.replace('const [openSec, setOpenSec] = useState({})', "const [openSec, setOpenSec] = useState(Object.fromEntries((schema.controls || []).filter((c) => c.section).map((c) => [c.section, true])))") : null)
   let Shell = null
   client.apply({ slots: { inject: (n, f) => f(), register: (o, c) => { Shell = c; return () => {} } }, connection: ctx.connection })
   assert.ok(Shell, '控制台组件没注册上')
@@ -215,8 +216,14 @@ function renderClientPage({ tab, schema, page = [], click = null }) {
   react.__other()
   const pageEl = findComponent(shellOut)
   assert.ok(pageEl, 'tab=' + tab + ' 没渲染出页面')
+  // tip：模拟「鼠标停在行尾 ⓘ 上」——外壳的悬停说明状态
+  if (tip) pageEl.props = { ...(pageEl.props || {}), tip }
   react.__page()
-  let tree = pageEl.type(pageEl.props || {})
+  let tree = renderPageWithOptions()
+  function renderPageWithOptions() {
+    if (!openSections) return pageEl.type(pageEl.props || {})
+    return pageEl.type(pageEl.props || {})
+  }
   react.__other()
   if (click) {
     const btn = findElement(tree, (n) => n.type === 'button' && typeof n.props.onClick === 'function' && click.test(textOfNode(n)))
@@ -294,4 +301,18 @@ test('回归 2026-11-12：主动接话页点「高级」后必须真的渲染出
     '点开「高级」后只渲染出 ' + countInputs(opened) + ' 个控件（应有 ≥ ' + advKeys.length + ' 个进阶项）')
   const shown = advKeys.filter((c) => textOfNode(opened).includes(c.label)).length
   assert.ok(shown >= advKeys.length * 0.9, '点开「高级」后进阶项标签只出现 ' + shown + '/' + advKeys.length + ' 个')
+})
+
+
+
+
+test('回归 2026-11-12：行尾 ⓘ 的说明是自绘气泡（深色卡片），不再用原生 title', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8')
+  // 原生 title 会弹出系统浅色提示（深色面板里一块白）；整行挂 title 更糟：鼠标一进这一行就弹。
+  const row = src.match(/style: c\.hint && TIP/)
+  assert.ok(row, '控件行应当按 tip 状态渲染，而不是把 title 挂整行')
+  assert.ok(/setTip/.test(src), 'ⓘ 悬停要走 setTip 自绘气泡')
+  assert.ok(/background: 'rgba\(24,34,46,\.97\)'/.test(src), '气泡应当是深色卡片')
+  const rowTitle = src.match(/h\('div', \{ style: S\.row, key: c\.key,?[^}]*title:/)
+  assert.equal(rowTitle, null, '控件行不许再挂整行 title')
 })

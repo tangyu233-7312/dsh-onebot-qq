@@ -106,7 +106,7 @@ window.__ModuleLoader__.load({
 
 		/** 开关行（支持 bool / enum / str / group / int / float / text；info = 整行说明块） */
 		function ctrlRow(c, api) {
-			const { busy, run, call, setMsg } = api
+			const { busy, run, call, setMsg, setTip, tip } = api
 			// 提示里的 ** 是文档粗体标记，tooltip 会原样露出星号 → 渲染前统一去掉
 			const plainHint = String(c.hint || '').replace(/\*\*/g, '')
 			// 纯说明块（新手引导的分步骤图文）：不渲染输入框、不参与读写
@@ -227,12 +227,33 @@ window.__ModuleLoader__.load({
 					c.unit ? h('span', { key: 'u', style: S.msg }, c.unit) : null,
 				])
 			}
-			return h('div', { style: S.row, key: c.key }, [
+			// 悬停说明：挂在行尾 ⓘ 上，用**自绘气泡**（深色、跟界面同色、能换行）——2026-11-12。
+			// 原生 title 是系统浅色配色，盖在行上就是一块"白板"；整行挂 title 更糟（鼠标一进这一行就弹）。
+			const TIP = tip && tip.key === c.key ? tip.text : ''
+			return h('div', {
+				style: c.hint && TIP ? Object.assign({}, S.row, { position: 'relative' }) : S.row,
+				key: c.key,
+			}, [
 				h('span', { style: S.label, key: 'l' }, [
 					c.label,
-					c.hint ? h('span', { key: 'i', style: { marginLeft: 6, opacity: .5, cursor: 'help' }, title: plainHint }, 'ⓘ') : null,
+					c.hint ? h('span', {
+						key: 'i', style: { marginLeft: 6, opacity: .5, cursor: 'help' },
+						onMouseEnter: () => setTip && setTip({ key: c.key, text: plainHint }),
+						onMouseLeave: () => setTip && setTip(null),
+						onClick: () => setTip && setTip(tip && tip.key === c.key ? null : { key: c.key, text: plainHint }),
+					}, 'ⓘ') : null,
 				]),
 				renderInput(),
+				c.hint && TIP ? h('div', {
+					key: 'tip',
+					style: {
+						position: 'absolute', left: 0, top: '100%', zIndex: 50, marginTop: 4,
+						maxWidth: 520, padding: '7px 11px', borderRadius: 8, fontSize: 12.5, lineHeight: 1.6,
+						whiteSpace: 'pre-wrap', wordBreak: 'break-word', pointerEvents: 'none',
+						background: 'rgba(24,34,46,.97)', color: '#e8f0f8',
+						border: '1px solid rgba(140,180,230,.35)', boxShadow: '0 8px 24px rgba(0,0,0,.45)',
+					},
+				}, TIP) : null,
 			])
 		}
 
@@ -1154,6 +1175,8 @@ window.__ModuleLoader__.load({
 			const [confirmBox, setConfirmBox] = useState(null)   // 危险操作二次确认弹窗（跨标签页共用）
 			const [reportBox, setReportBox] = useState(null)     // 一键诊断结果弹窗（报告 + 复制按钮）
 			const [tab, setTab] = useState('overview')
+			// 自绘悬停说明（ctrlRow 的 ⓘ）：{ key, text } 或 null。跨页共享，切页/点别处自动收起。
+			const [tip, setTip] = useState(null)
 
 			// DSH 的 connection.rpc 返回的是 RPC 信封 {ok:true,value} / {ok:false,error}，
 			// 这里统一拆到「内核自己的返回值」；下面所有面板逻辑都按内核的 {ok,...} 形状写。
@@ -1242,7 +1265,7 @@ window.__ModuleLoader__.load({
 
 			const TABS = tabDefs(schema)
 			const curTab = TABS.find((t) => t.id === tab) || TABS[0]
-			const api = { ctx, call, refresh, run, busy, setBusy, schema, status, msg, setMsg, setConfirmBox, setReportBox }
+			const api = { ctx, call, refresh, run, busy, setBusy, schema, status, msg, setMsg, setConfirmBox, setReportBox, tip, setTip }
 
 			const body = (!schema || !status)
 				? h('div', { style: S.msg, key: 'loading' }, msg || '读取中…')
