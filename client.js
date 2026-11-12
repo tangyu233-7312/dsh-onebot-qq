@@ -234,6 +234,21 @@ window.__ModuleLoader__.load({
 			])
 		}
 
+		/**
+		 * 某一页底部的动作按钮（如「空间日记」的立刻回顾 / 重置额度）。
+		 *
+		 * 2026-11-12：抽成公共函数。原来 GroupTab 里手写了一张 `MERGED = { 入群欢迎, 看自己 }` 换算表，
+		 * 没列「空间日记 → 空间日记（看自己）」—— 空间日记并页后两个按钮在页面上直接消失（用户报"按钮不见了"）。
+		 * 现在两张表都写全：ACTION_MERGED 管按钮落哪一页，NOTE_MERGED 管顶部注记落哪一页。
+		 */
+		const ACTION_MERGED = { 入群欢迎: '群聊', 空间日记: '空间日记（看自己）', 看自己: '空间日记（看自己）' }
+		const NOTE_MERGED = { 入群欢迎: '群聊' }
+		function actsForPage(schema, group) {
+			return ((schema && schema.actions) || []).filter((a) => a.onGroup
+				&& (a.group === group || ACTION_MERGED[a.group] === group
+					|| (NOTE_MERGED[a.group] === group && Boolean(GROUP_NOTES[a.group]))))
+		}
+
 		/** 某一组开关（后端 group 相同的一行行开关；群聊 / 回话 / 生图… 各功能页共用） */
 		/**
 		 * 通用折叠块（2026-11-09）：一个标题按钮 + 点开才渲染的内容。
@@ -254,6 +269,18 @@ window.__ModuleLoader__.load({
 				]),
 				open ? h('div', { key: 'body' }, typeof children === 'function' ? children() : children) : null,
 			])
+		}
+
+		/** 这个折叠块里的项是否**整块都是**进阶项（后端 advanced: true）—— 是就排到页面最后、紧挨「高级」。 */
+		const sectionIsAdvanced = (list, name) => {
+			const rows = list.filter((c) => c.section === name)
+			return rows.length > 0 && rows.every((c) => c.advanced)
+		}
+
+		/** 折叠块标题：<名字>（展开/收起）。名字本身带括号（如「提示词（可改）」）时会拼出两层括号，换成 · —— 2026-11-12。 */
+		const sectionLabel = (name, open) => {
+			const head = /[（(]/.test(name) ? `${name} · ${open ? '收起' : '展开'}` : `${name}${open ? '（收起）' : '（展开）'}`
+			return (open ? '▾ ' : '▸ ') + head
 		}
 
 		function SwitchGroup(props) {
@@ -278,7 +305,7 @@ window.__ModuleLoader__.load({
 							key: 'b', style: S.btn, disabled: api.busy,
 							title: `共 ${list.filter((c) => c.section === name).length} 项 —— 默认收起，点开调整`,
 							onClick: () => setOpenSec({ ...openSec, [name]: !open }),
-						}, (open ? '▾ ' : '▸ ') + name + (open ? '（收起）' : '（展开）')),
+						}, sectionLabel(name, open)),
 					]),
 					open ? h('div', { key: 'body' }, [
 						...list.filter((c) => c.section === name).map((c) => ctrlRow(c, api)),
@@ -293,11 +320,15 @@ window.__ModuleLoader__.load({
 				onlySection ? null : h('div', { style: S.group, key: 'gt' }, group),
 				// 无 section 的项照常平铺；section 项收进折叠块（顺序按后端声明）
 				list.filter((c) => !c.section).map((c) => ctrlRow(c, api)),
-				...list.filter((c) => c.section).map((c) => {
-					if (secOrder.includes(c.section)) return null
-					secOrder.push(c.section)
-					return showSection(c.section)
-				}).filter(Boolean),
+				// 顺序：没有进阶项的折叠块（如「连续对话」）在前，整块都是进阶项的（如「提示词（可改）」）一律排到最后，
+				// 挨着「高级」—— 2026-11-12 之前按后端声明顺序渲染，它们会插在基础项中间，把常用开关挤下去。
+				...list.filter((c) => c.section).map((c) => c.section)
+					.filter((name, i, arr) => arr.indexOf(name) === i)
+					.sort((a, b) => {
+						const A = sectionIsAdvanced(list, a)
+						const B = sectionIsAdvanced(list, b)
+						return Number(A) - Number(B)
+					}).map((name) => showSection(name)),
 			])
 		}
 
@@ -319,8 +350,7 @@ window.__ModuleLoader__.load({
 			// 这一组自己的动作按钮（如「空间日记」的立刻回顾 / 重置额度）：长在本页底部，不去「运维」页挤。
 			// 2026-11-09 合并后，旧分组名（群聊/入群欢迎/空间日记/看自己）的动作都挂在母页名下：
 			// 所以按「后端 actions 里的 group」再到归并表里换算，找属于本页的。
-			const MERGED = { 入群欢迎: '群聊', 看自己: '空间日记（看自己）' }
-			const acts = (props.schema.actions || []).filter((a) => a.onGroup && (a.group === group || MERGED[a.group] === group))
+			const acts = actsForPage(props.schema, group)
 			// 「要填几个字段再跑」的动作（如生图的 🧪 试优化）：按 action.prompt 描述自动渲染弹窗，不用为此抄一遍 UI
 			const { useState } = react
 			const [promptBox, setPromptBox] = useState(null)
@@ -921,18 +951,42 @@ window.__ModuleLoader__.load({
 			// 「连续对话」这类具名折叠块：每个 section 一个开合状态，默认收起
 			const [openSec, setOpenSec] = useState({})
 			const all = ((schema && schema.controls) || []).filter((c) => c.group === '主动接话')
-			// 三类：普通项 / 具名折叠块（如「连续对话」）/ 高级项
-			const sections = []
-			const controls = []
-			const advanced = []
+			// 三类：普通项 / 具名折叠块（如「连续对话」）/ 进阶项（收进「高级」）
+			//
+			// ⚠️ 2026-11-12「点高级什么都没出来」：后端把**全部**进阶项都挂在了具名小节下
+			// （16 项在「提示词（可改）」，语境权重/机会窗口等也各自带 section），而这里以前**先判 section、后判 advanced**，
+			// 于是 advanced 数组永远是空的 —— 按钮能点、下面什么都不渲染，看着像坏了。
+			// 现在的判法：**先进阶项优先**。
+			//   · 进阶项（无论有没有 section）→ 一律进「高级」；带 section 的按小节归拢，在「高级」里各自成块；
+			//   · 其余按 section 收进页面上的具名折叠块（连续对话 / 私聊主动接话 / 静默时段 / 主动接话）。
+			const sections = []       // 留在页面上的具名折叠块
+			const controls = []       // 平铺的基础项
+			const advanced = []       // 「高级」里平铺的进阶项
+			const advSections = []    // 「高级」里的具名折叠块
 			for (const c of all) {
-				if (c.section) {
-					let s = sections.find((x) => x.name === c.section)
-					if (!s) { s = { name: c.section, rows: [] }; sections.push(s) }
+				if (c.advanced) {
+					if (!c.section) { advanced.push(c); continue }
+					let s = advSections.find((x) => x.name === c.section)
+					if (!s) { s = { name: c.section, rows: [] }; advSections.push(s) }
 					s.rows.push(c)
-				} else if (c.advanced) advanced.push(c)
-				else controls.push(c)
+					continue
+				}
+				if (!c.section) { controls.push(c); continue }
+				let s = sections.find((x) => x.name === c.section)
+				if (!s) { s = { name: c.section, rows: [] }; sections.push(s) }
+				s.rows.push(c)
 			}
+			// 「高级」里的内容：平铺无小节的进阶项，再给每个「整块进阶」的小节一块（标题 + 自己的开合）。
+			// 全部**一次性铺满**，外面只有「高级」这一个开合 —— 2026-11-12 之前是「小节再套一层开合」，
+			// 用户点开高级看到一堆标题按钮、底下什么都没有，以为坏了。15~20 项一次铺开不算多。
+			const advancedRows = () => [
+				...advanced.map((c) => ctrlRow(c, props)),
+				...advSections.map((sec) => h('div', { key: 'advsec:' + sec.name, style: { marginTop: 8 } }, [
+					h('div', { key: 'hd', style: S.group }, `${sec.name} · 共 ${sec.rows.length} 项`),
+					...sec.rows.map((c) => ctrlRow(c, props)),
+				])),
+			]
+			const advBox = showAdv ? h('div', { key: 'advbox' }, advancedRows()) : null
 			const reply = (status && status.reply) || null
 			const fmtTime = (ts) => { try { return new Date(ts).toLocaleTimeString('zh-CN', { hour12: false }) } catch { return '?' } }
 			const groups = (reply && Array.isArray(reply.groups)) ? reply.groups : []
@@ -959,7 +1013,7 @@ window.__ModuleLoader__.load({
 								key: 'b', style: S.btn, disabled: busy,
 								title: `共 ${sec.rows.length} 项 —— 默认收起，点开调整`,
 								onClick: () => setOpenSec({ ...openSec, [sec.name]: !open }),
-							}, (open ? '▾ ' : '▸ ') + sec.name + (open ? '（收起）' : '（展开）')),
+							}, sectionLabel(sec.name, open)),
 						]),
 						open ? h('div', { key: 'body' }, sec.rows.map((c) => ctrlRow(c, props))) : null,
 					])
@@ -968,11 +1022,13 @@ window.__ModuleLoader__.load({
 				h('div', { style: S.row, key: 'adv' }, [
 					h('button', {
 						key: 'b', style: S.btn, disabled: busy,
-						title: '语境权重、机会窗口、拆条间隔等进阶项 —— 一般不用动',
+						title: `语境权重、机会窗口、拆条间隔、提示词等进阶项（共 ${advanced.length + advSections.reduce((n, s) => n + s.rows.length, 0)} 项）—— 一般不用动`,
 						onClick: () => setShowAdv(!showAdv),
-					}, showAdv ? '▾ 高级（收起）' : '▸ 高级（展开）'),
+					}, showAdv ? '▾ 高级（收起）' : `▸ 高级（展开）`),
 				]),
-				showAdv ? h('div', { key: 'advbox' }, advanced.map((c) => ctrlRow(c, props))) : null,
+				// 不用三元：`cond ? h(key, ...) : null` 这种写法在渲染里只是「位置 0」的占位，
+				// 拆成变量更容易在调试器里看清到底哪一步是空的。
+				advBox,
 				// ═══ 本页自己的动作按钮（如「重置私聊接话额度」）：与 GroupTab 底部同款，带二次确认 ═══
 				...((schema.actions || []).filter((a) => a.onGroup && a.group === '主动接话')).map((a) =>
 					h('div', { style: S.row, key: 'act:' + a.id }, [
