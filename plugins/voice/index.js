@@ -517,7 +517,7 @@ export default {
     }
 
     /** 轮询任务直到完成。PC 那边下载+RVC 要几十秒，所以这里等。 */
-    async function remoteWait(jobId, { timeoutMs = 600_000, intervalMs = 2_000 } = {}) {
+    async function remoteWait(jobId, { timeoutMs = 180_000, intervalMs = 2_000 } = {}) {
       const base = remoteCfg()
       const deadline = Date.now() + timeoutMs
       let last = { ok: false }
@@ -701,9 +701,11 @@ export default {
           pitch: String(cfg().singPitch || 4),
           model: String(cfg().singModel || ''),
           proxy: (proxyArg(cfg()) || []).join(' '),
-        }, { timeoutMs: 60_000 })
+        }, { timeoutMs: 20_000 })
         if (rr.ok && rr.job) {
-          const done = await remoteWait(rr.job, { timeoutMs: 900_000 })
+          // 超时给足单首歌的处理时间（下载+RVC 实测约 90 秒），但**必须有上限**——
+          // 不设上限会让群会话一直卡在「深度求索中」。超时后回落本机，不要悬着。
+          const done = await remoteWait(rr.job, { timeoutMs: 240_000 })
           if (done.ok && done.mp3) {
             const dir2 = tmp()
             await fsp.mkdir(dir2, { recursive: true })
@@ -713,7 +715,8 @@ export default {
             return { ok: true, audio: outMp3, name: meta.title || String(query || ''),
                      via: 'pc', ms: meta.ms, fromBili: true }
           }
-          return { ok: false, reason: `PC 没唱出来：${(done.result && done.result.reason) || done.reason || '未知'}` }
+          log.warn?.(`[曲库] PC 没唱出来：${(done.result && done.result.reason) || done.reason || '未知'}，回落本机`)
+          // 落到下面的本机逻辑（曲库/B站），不让会话悬着
         }
         log.warn?.(`[曲库] PC 网关没接下这单：${rr.reason || '未知'}，回落本机`)
       } else if (remoteCfg()) {
