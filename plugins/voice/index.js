@@ -190,9 +190,35 @@ const BILI_BAD = /翻唱|鬼畜|MAD|mad|合集|全集|直播|reaction|钢琴|伴
  * 不带 cookie 直接返回 HTML 页面（实测），yt-dlp 的 `bilisearchN:` 已经把风控处理掉了。
  * 代价：每个结果要解析详情（5 条约 7 秒），只在「本地没有 + 要下载」时调用。
  */
+/**
+ * yt-dlp 的调用方式：优先用系统里的可执行文件 `yt-dlp`，没有才退回 `<py> -m yt_dlp`。
+ *
+ * 为什么要两条路：两种安装形态在不同机器上都常见 ——
+ *   · pip 装 → 可以用 `python -m yt_dlp`（本包原来只支持这种）；
+ *   · 官方单文件 / 发行版包 → `yt-dlp` 直接可执行，但**不是** python 模块。
+ * 2026-11-12 踩过：NAS 上是后者，报 `No module named yt_dlp`，点歌就卡死在这一步。
+ * 探测结果缓存在模块级，避免每次点歌都 spawn 一次。
+ */
+let ytdlpExeCache  // undefined=未探测; null=没有; string=可执行文件路径
+export function ytdlpCmd(py) {
+  if (ytdlpExeCache !== undefined) return ytdlpExeCache ? { cmd: ytdlpExeCache, prefix: [] } : { cmd: py, prefix: ['-m', 'yt_dlp'] }
+  const candidates = process.platform === 'win32'
+    ? ['yt-dlp.exe', 'yt-dlp']
+    : ['yt-dlp', '/usr/local/bin/yt-dlp', '/usr/bin/yt-dlp', path.join(os.homedir(), '.local', 'bin', 'yt-dlp')]
+  for (const c of candidates) {
+    try {
+      const r = execFileSync(c, ['--version'], { timeout: 10_000, windowsHide: true, stdio: 'pipe' })
+      if (String(r || '').trim()) { ytdlpExeCache = c; return { cmd: c, prefix: [] } }
+    } catch { /* 试下一个 */ }
+  }
+  ytdlpExeCache = null
+  return { cmd: py, prefix: ['-m', 'yt_dlp'] }
+}
+
 export async function searchBili(py, keyword, limit = 5, proxy = []) {
-  const { stdout } = await pexec(py, [
-    '-m', 'yt_dlp', '--dump-json', '--no-warnings', '--no-playlist',
+  const yt = ytdlpCmd(py)
+  const { stdout } = await pexec(yt.cmd, [
+    ...yt.prefix, '--dump-json', '--no-warnings', '--no-playlist',
     ...proxy,
     '--playlist-items', `1-${limit}`,
     `bilisearch${limit}:${keyword}`,
@@ -239,8 +265,9 @@ export async function downloadBili(py, bvid, dir, proxy = []) {
   await fsp.mkdir(dir, { recursive: true })
   const before = new Set(fs.readdirSync(dir))
   const outTpl = path.join(dir, '%(title)s.%(ext)s')
-  const { stderr } = await pexec(py, [
-    '-m', 'yt_dlp', '-f', 'bestaudio/best', '-x', '--audio-format', 'mp3',
+  const yt = ytdlpCmd(py)
+  const { stderr } = await pexec(yt.cmd, [
+    ...yt.prefix, '-f', 'bestaudio/best', '-x', '--audio-format', 'mp3',
     '--audio-quality', '0', '--no-playlist', '--no-progress',
     ...proxy,
     '-o', outTpl, `https://www.bilibili.com/video/${bvid}`,
@@ -440,8 +467,13 @@ export default {
     const singOn = () => cfg().singEnabled === true
     // 路径全部可配；留空时回落「PATH 里的 python」与「<dataDir>/singing-pack」，
     // 不再写死任何一台机器的绝对路径（原版这里硬编码了开发机的 E:/ D:/ 路径）
-    const pyTts = () => String(cfg().ttsPython || 'python')
-    const pyRvc = () => String(cfg().rvcPython || 'python')
+    //
+    // ⚠️ 默认解释器按平台取：Linux/macOS 通行的是 python3，没有 python
+    // （2026-11-12 踩过：NAS 上点歌去 B 站搜时报 spawn python ENOENT，脚本里写死 python 就成了死路）。
+    // Windows 上 python3 往往不存在，仍用 python。
+    const pyDefault = process.platform === 'win32' ? 'python' : 'python3'
+    const pyTts = () => String(cfg().ttsPython || pyDefault)
+    const pyRvc = () => String(cfg().rvcPython || pyDefault)
     const rvcDir = () => {
       const custom = String(cfg().rvcDir || '').trim()
       if (custom) return custom
@@ -482,6 +514,28 @@ export default {
         const why = e?.name === 'TimeoutError' ? '超时' : (e?.cause?.code || e?.code || e?.message || '未知错误')
         return { ok: false, unreachable: true, reason: `连不上 PC 算力网关（${base}）：${why}` }
       }
+    }
+
+    /** 轮询任务直到完成。PC 那边下载+RVC 要几十秒，所以这里等。 */
+    async function remoteWait(jobId, { timeoutMs = 600_000, intervalMs = 2_000 } = {}) {
+      const base = remoteCfg()
+      const deadline = Date.now() + timeoutMs
+      let last = { ok: false }
+      while (Date.now() < deadline) {
+        try {
+          const r = await fetch(`${base}/job/${jobId}`, {
+            headers: remoteTok() ? { Authorization: 'Bearer ' + remoteTok() } : {},
+            signal: AbortSignal.timeout(15_000),
+          })
+          last = await r.json()
+          if (last && last.state === 'done') return last
+          if (last && last.ok === false && !last.state) return last   // 明确失败
+        } catch (e) {
+          last = { ok: false, reason: `轮询失败：${e?.message || e}` }
+        }
+        await new Promise(res => setTimeout(res, intervalMs))
+      }
+      return { ...last, ok: false, reason: '等 PC 出结果超时' }
     }
 
     /** 网关是否在线 —— 结果缓 30 秒，避免每条语音都先探一次。 */
@@ -637,6 +691,34 @@ export default {
     /** 唱歌：曲库找歌 → ft 分离 + RVC → mp3。 */
     async function makeSong(query) {
       const libDir = musicDirOf(cfg(), bot.core)
+
+      // ① 配了 PC 算力网关：搜索 + 下载 + RVC 全交给 PC，NAS 只要成品。
+      //    为什么要这样：NAS 只是转发，没必要为点歌在 NAS 上装 yt-dlp、维护曲库、
+      //    还要把 10MB 的 mp3 传过去再传回来。PC 本来就要跑 RVC，顺手把下载做了。
+      if (remoteCfg() && await remoteAlive()) {
+        const rr = await remoteCall('/sing-by-name', {
+          query: String(query || ''),
+          pitch: String(cfg().singPitch || 4),
+          model: String(cfg().singModel || ''),
+          proxy: (proxyArg(cfg()) || []).join(' '),
+        }, { timeoutMs: 60_000 })
+        if (rr.ok && rr.job) {
+          const done = await remoteWait(rr.job, { timeoutMs: 900_000 })
+          if (done.ok && done.mp3) {
+            const dir2 = tmp()
+            await fsp.mkdir(dir2, { recursive: true })
+            const outMp3 = path.join(dir2, `sing-${Date.now()}.mp3`)
+            await fsp.writeFile(outMp3, Buffer.from(done.mp3, 'base64'))
+            const meta = done.result || {}
+            return { ok: true, audio: outMp3, name: meta.title || String(query || ''),
+                     via: 'pc', ms: meta.ms, fromBili: true }
+          }
+          return { ok: false, reason: `PC 没唱出来：${(done.result && done.result.reason) || done.reason || '未知'}` }
+        }
+        log.warn?.(`[曲库] PC 网关没接下这单：${rr.reason || '未知'}，回落本机`)
+      } else if (remoteCfg()) {
+        log.warn('[曲库] PC 算力网关连不上，回落本机搜索')
+      }
 
       // ★ BV 号 / B站链接直接下，不走搜索。
       //   真机踩过：群友发「去唱这个歌：BV1qq6ZYNEj3」，模型提炼成歌名「何者」，
