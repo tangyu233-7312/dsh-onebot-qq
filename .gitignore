@@ -32,3 +32,4 @@ tools/singing-pack/.venv/
 sidecar/run.json
 sidecar/trace.log
 sidecar/*.bak-*
+CON
