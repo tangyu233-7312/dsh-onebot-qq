@@ -121,7 +121,9 @@ window.__ModuleLoader__.load({
 			}
 			// 群唤醒词：老款「填空 + 添加」交互（存储仍是 config 的文本行格式；不用多行文本框）
 			if (c.key === 'gate-wake.keywords') return h(WakeWordsEditor, { key: c.key, ...api })
-			// 悬停解释（2026-10-11）：整行 title + 行尾 ⓘ
+			// 悬停解释（2026-10-11）：标题旁一个 ⓘ，悬停时由浏览器弹原生提示。
+			// ⚠️ 2026-11-12：**整行**也挂 title 会让提示框出现在鼠标位置（把开关/输入框整个盖住，看着像"白板"），
+			//    原生提示是系统配色、在这个深色面板里就是一块白底 —— 所以只在 ⓘ 上挂。改之前先想清楚这两点。
 			const renderInput = () => {
 				if (c.type === 'bool') {
 					return h('input', {
@@ -225,7 +227,7 @@ window.__ModuleLoader__.load({
 					c.unit ? h('span', { key: 'u', style: S.msg }, c.unit) : null,
 				])
 			}
-			return h('div', { style: S.row, key: c.key, title: plainHint }, [
+			return h('div', { style: S.row, key: c.key }, [
 				h('span', { style: S.label, key: 'l' }, [
 					c.label,
 					c.hint ? h('span', { key: 'i', style: { marginLeft: 6, opacity: .5, cursor: 'help' }, title: plainHint }, 'ⓘ') : null,
