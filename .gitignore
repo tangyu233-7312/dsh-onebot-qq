@@ -33,3 +33,6 @@ sidecar/run.json
 sidecar/trace.log
 sidecar/*.bak-*
 CON
+
+# 环境变量未展开产生的系统缓存目录（2026-11-13 清理）
+%SystemDrive%/

@@ -653,27 +653,14 @@ export default {
         // /tts 是排队接口：先回 job id，要轮询到 done 才有 wav。
         // 之前直接把 job 响应当成 wav 判断，所以永远「没给出 wav」。
         const rr = enq.ok && enq.job ? await remoteWait(enq.job, { timeoutMs: 90_000 }) : enq
-        if (rr.ok && rr.wav) {
-          // PC 只负责 TTS（NAS 上没 MiMo/edge 依赖），音色转换仍走本机 RVC。
-          // 本机连音色模型都没有（典型 NAS 情况）→ 直接用 PC 的 wav 转 silk 发出去。
-          const pcWav = path.join(dir, `${tag}_pc.wav`)
-          await fsp.writeFile(pcWav, Buffer.from(rr.wav, 'base64'))
-          // 本机没有音色模型（NAS 典型情况）→ 直接把 PC 的 wav 转 silk 发出去
-          if (!modelOf().model) {
-            return await sendAsVoice(target, pcWav, caption)
-          }
-          // 有音色模型：PC 出的 wav 再走本机 RVC，与老流程一致
-          const r2 = await runPy(pyRvc(), [
-            'python/rvc-infer.py', 'infer', '-m', modelOf().model,
-            ...(modelOf().index ? ['--index', modelOf().index] : []),
-            '-i', pcWav, '-o', path.join(dir, `${tag}_pc.mp3`),
-            '--pitch', String(cfg().ttsPitch || '2'), '--device', 'cuda:0',
-          ], { timeoutMs: 300_000, cwd: rvcDir() })
-          fsp.unlink(pcWav).catch(() => {})
-          if (!r2.ok) return { ok: false, reason: `RVC 失败：${r2.error || r2.reason}` }
-          return { ok: true, audio: path.join(dir, `${tag}_pc.mp3`), via: 'pc-tts+rvc', ms: r2.elapsedMs }
+        if (rr.ok && (rr.wav || rr.mp3)) {
+          // PC 全包：TTS 合成 + RVC 音色转换都在那边做完（模型也在那边）。
+          // 这里只落盘，然后交给 sendAsVoice 转 silk 发出去。
+          const audioPath = path.join(dir, rr.mp3 ? `${tag}_pc.mp3` : `${tag}_pc.wav`)
+          await fsp.writeFile(audioPath, Buffer.from(rr.mp3 || rr.wav, 'base64'))
+          return { ok: true, audio: audioPath, via: 'pc' }
         }
-        log.warn?.(`[语音] PC 网关没给出 wav：${rr.reason || '未知'}，回落本机`)
+        log.warn?.(`[语音] PC 网关没给出音频：${rr.reason || '未知'}，回落本机`)
       } else if (remoteCfg()) {
         log.warn('[语音] PC 算力网关连不上，回落本机 TTS')
       }
@@ -1043,3 +1030,4 @@ export default {
     })
   },
 }
+
