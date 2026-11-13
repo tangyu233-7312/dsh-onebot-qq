@@ -645,11 +645,14 @@ export default {
       // ① 配了 PC 算力网关就先问 PC（NAS 算不动，RVC 还带 GPU 依赖）
       if (remoteCfg() && await remoteAlive()) {
         // 不传 apiKey：Key 只存在 PC 的网关配置里，NAS 这边什么都不用配
-        const rr = await remoteCall('/tts', {
+        const enq = await remoteCall('/tts', {
           text: tts, voice: String(cfg().ttsVoice || '冰糖'),
           instruct: String(cfg().ttsInstruct || DEFAULT_INSTRUCT),
           backend: 'mimo-builtin',
-        }, { timeoutMs: 120_000 })
+        }, { timeoutMs: 20_000 })
+        // /tts 是排队接口：先回 job id，要轮询到 done 才有 wav。
+        // 之前直接把 job 响应当成 wav 判断，所以永远「没给出 wav」。
+        const rr = enq.ok && enq.job ? await remoteWait(enq.job, { timeoutMs: 90_000 }) : enq
         if (rr.ok && rr.wav) {
           // PC 只负责 TTS（NAS 上没 MiMo/edge 依赖），音色转换仍走本机 RVC。
           // 本机连音色模型都没有（典型 NAS 情况）→ 直接用 PC 的 wav 转 silk 发出去。
