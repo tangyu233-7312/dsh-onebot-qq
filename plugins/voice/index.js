@@ -590,7 +590,35 @@ export default {
     /** 音频 → silk → 发出去。 */
     async function sendAsVoice(target, audioPath, caption = '') {
       const dir = tmp()
-      const r = await runPy(pyTts(), [SCRIPT_SILK, audioPath, dir], { timeoutMs: 300_000 })
+
+      // ① 配了 PC 算力网关就先让 PC 转 silk。
+      //    为什么：转 silk 要 pysilk，而 NAS 上没有 pip（装不了）。
+      //    「凡是需要 Python 依赖的活都放 PC」——这是整套设计的一致原则。
+      let r = null
+      if (remoteCfg() && await remoteAlive()) {
+        try {
+          const buf = await fsp.readFile(audioPath)
+          const resp = await fetch(remoteCfg() + '/to-silk', {
+            method: 'POST', body: buf, signal: AbortSignal.timeout(120_000),
+            headers: {
+              'Content-Type': 'application/octet-stream',
+              ...(remoteTok() ? { Authorization: 'Bearer ' + remoteTok() } : {}),
+            },
+          })
+          const js = await resp.json()
+          if (js.ok && js.silk) {
+            const silkPath = path.join(dir, `pc-${Date.now()}.silk`)
+            await fsp.mkdir(dir, { recursive: true })
+            await fsp.writeFile(silkPath, Buffer.from(js.silk, 'base64'))
+            r = { ok: true, silk: silkPath, seconds: js.seconds, bytes: js.bytes }
+          } else {
+            log.warn?.(`[语音] PC 转 silk 失败：${js.reason || '未知'}，回落本机`)
+          }
+        } catch (e) {
+          log.warn?.(`[语音] 连不上 PC 网关转 silk：${e?.message || e}，回落本机`)
+        }
+      }
+      if (!r) r = await runPy(pyTts(), [SCRIPT_SILK, audioPath, dir], { timeoutMs: 300_000 })
       if (!r.ok) return { ok: false, reason: `转语音失败：${r.reason}` }
       try {
         await bot.sendMedia(target, cqMedia('record', r.silk), caption || '')
