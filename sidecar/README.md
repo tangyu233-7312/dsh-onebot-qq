@@ -1,143 +1,93 @@
-﻿# 侧车：QQ 插件的「解析 / 看视频」外部服务
+# 视频解析侧车
 
-> **这不是子插件，不要拷进 `plugins/`。** 它是要在**另一个进程**里跑的小 HTTP 服务：
-> `node server.mjs`（零 npm 依赖，Node 22+ 即可）。
+这是独立运行的 HTTP 服务，负责下载视频、抽帧和获取 B 站文字线索。**不要放进 plugins 目录。** 机器人通过 HTTP 调用它，内置的 sidecar-control 子插件负责可选的启动与状态管理。
 
-## 配合哪个插件用
+源码随 Git 仓库提供，当前 npm 插件包不含此目录。功能与依赖总览见 [语音唱歌与解析侧车](../docs/定制-语音唱歌与侧车.md)。
 
-| 插件 | 在本仓库对应 | 说明 |
-|---|---|---|
-| `plugins/link-parser` | `POST /parse` | 主仓库已内置。装了侧车它才有用（不装就一直走"链接交给模型"的降级路径） |
-| `plugins/video-read` | `POST /read` | 主仓库 PR #1。群里直接发的视频文件 → 抽帧给模型看 |
-| `plugins/video-link-read` | `POST /read` | 主仓库 PR #1。B 站/抖音链接 → 下载抽帧给模型看 |
+## 依赖与使用者
 
-**装了侧车不代表插件就有**：上面三个插件是插件，本仓库是它们的"外部执行器"。
+- Node.js 22+；脚本没有额外 npm 依赖。
+- ffmpeg + ffprobe：抽帧、探时长、媒体处理。
+- yt-dlp：下载 B 站媒体，可用独立可执行文件或 Python 模块。
 
-## 快速验证
+| 子插件 | 用途 |
+|---|---|
+| video-read | QQ 视频附件 → 画面帧 |
+| video-link-read | B 站链接 / BV 号 → 下载与抽帧 |
+| video-wander | 当前对话、后台或定时观看 |
+| link-parser | 下载链接里的媒体并发送到 QQ |
+| sidecar-control | 查看状态、手动启动、可选自动拉起 |
 
-```bash
-node server.mjs
-# 另开一个窗口
-curl http://127.0.0.1:3972/health
-```
-
-看到 `{"ok":true,"ffmpeg":true,"ytdlp":true,...}` 就是好了。
-`ffmpeg:false` 说明没找到 ffmpeg —— 启动日志里会说要怎么办。
-
-## 它是干什么的
-
-`dsh-onebot-qq` 的子插件跑在 DSH 宿主进程内，包内红线禁止 `child_process`。
-但"把一段视频拆成几张图"必须调 `ffmpeg` / `yt-dlp` —— 所以把这件事挪到进程外，
-插件只发 HTTP，两个服务之间只传**文件路径**和几行 JSON。
-
-目前有两个消费者：
-
-| 消费者 | 端点 | 用途 |
-|---|---|---|
-| `plugins/link-parser`（内置） | `POST /parse` | 把分享链接的媒体下载到本地，交给插件搬进群 |
-| `plugins/video-read` / `plugins/video-link-read`（本 PR 新增） | `POST /read` | 下载/定位视频 → 探时长 → 抽 N 帧 → 返回帧路径，让模型"看得见"视频 |
+当前链接平台以 B 站为主，**抖音支持已下线**。实际可访问域名、直链和本地路径仍受配置与校验限制。
 
 ## 启动
 
-```bash
-# 前台（看日志最方便）
+在仓库目录中手动运行：
+
+~~~sh
 node sidecar/server.mjs
+~~~
 
-# Windows 便捷脚本
-sidecar\start.bat          # 启动
-sidecar\stop.bat           # 停止（按端口找进程）
-powershell -ExecutionPolicy Bypass -File sidecar\install-autostart.ps1   # 登录自启（可选）
-```
+Windows 也可使用 sidecar/start.bat。登录自启脚本为 sidecar/install-autostart.ps1；Linux 可由自己的服务管理器托管。
 
-默认监听 `http://127.0.0.1:3972`。改端口/路径/限额改 `sidecar/sidecar.config.json`，重启生效。
+也可以将源码部署到实例数据目录中的 sidecar，或在控制台设置 sidecarDir。之后通过「侧车运维」相关按钮或主人命令 `/sidecar start` 启动。`autoStart` 默认关闭，开启后由插件检查并尝试拉起；已经交给外部服务管理器时不必重复启用。
 
-**依赖**：
-- `ffmpeg` + `ffprobe`（抽帧、探时长）—— 没找到会在启动日志里直接说
-- `yt-dlp`（下载 B 站/抖音）—— 可以用 `python -m yt_dlp`，也可以是可执行文件
+默认监听 `http://127.0.0.1:3972`。端口、路径和限额配置在 sidecar.config.json；重启后按配置运行。侧车向机器人返回本地路径，同机或共享文件系统部署最直接；跨机器使用要保证这些路径对机器人同样可读。
 
-启动日志会打印它找到了什么：
+## 只读自检
 
-```
-[sidecar 18:12:49] 监听 http://127.0.0.1:3972
-[sidecar 18:12:49] ffmpeg: ffmpeg.exe
-[sidecar 18:12:49] ffprobe: ffprobe.exe
-[sidecar 18:12:49] yt-dlp: python -m yt_dlp
-```
+~~~sh
+curl http://127.0.0.1:3972/health
+~~~
 
-## 接口
+关注 `ok`、`ffmpeg`、`ffprobe`、`ytdlp` 等字段。HTTP 可达不代表下载、模型看图等完整功能都已验证。健康检查会探测工具可用性，不调用聊天模型或发 QQ 消息。配置 token 后，自检也要带对应的 x-token 请求头。
 
-三个端点，全部 `bind 127.0.0.1`。**失败一律 `200 + { ok: false, code }`**，
-不返回 5xx —— 插件据此降级，不会因为侧车坏了把消息吞掉。
+## HTTP 接口
 
-### `GET /health`
+| 接口 | 作用 | 是否写入 / 执行任务 |
+|---|---|---|
+| `GET /health` | 进程与依赖状态 | 只读探测 |
+| `POST /read` | 下载或定位视频、探时长、抽帧，可附字幕 | 执行媒体任务 |
+| `POST /parse` | 下载链接中的媒体 | 执行媒体任务 |
+| `POST /extras` | 获取 B 站简介、章节、评论等文字线索 | 访问外部内容 |
+| `POST /config` | 保存允许修改的字幕、cookie 和文字线索配置 | 写配置，不是只读检查 |
 
-```jsonc
-{ "ok": true, "version": "1.0.0",
-  "ffmpeg": true, "ffprobe": true, "ytdlp": true, "ytdlpVersion": "2026.08.19",
-  "queue": { "running": 0, "max": 2 }, "reuseMinutes": 10 }
-```
+### /read 示例
 
-### `POST /read` — 看视频
+~~~json
+{
+  "url": "https://b23.tv/EXAMPLE",
+  "platform": "bilibili",
+  "frames": 8,
+  "maxSide": 1024,
+  "maxSeconds": 600
+}
+~~~
 
-```jsonc
-// 请求
-{ "url": "C:\\...\\abc.mp4" 或 "https://b23.tv/xxxx",
-  "platform": "file" | "bilibili" | "douyin",
-  "frames": 8, "maxSide": 1024, "maxSeconds": 600 }
+成功返回 `ok:true`、标题、时长和 `frames` 数组；每帧包含 `path`、`sec`、`bytes`。机器人读取这些文件后交给模型。帧数与时长同时受请求和侧车配置限制。
 
-// 成功
-{ "ok": true, "platform": "bilibili", "title": "…", "durationSec": 312,
-  "frames": [{ "path": "C:\\tmp\\…\\00.jpg", "sec": 0, "bytes": 53859 }],
-  "mediaPath": "C:\\tmp\\…\\x.mp4", "mediaBytes": 13232645,
-  "note": "共 5 分 12 秒，抽 8 帧" }
+### /parse 示例
 
-// 失败
-{ "ok": false, "code": "too_long|too_big|busy|nomatch|download_failed|denied|no_frames", "error": "…" }
-```
+~~~json
+{
+  "url": "https://b23.tv/EXAMPLE",
+  "session": "group:10001",
+  "limit": 3
+}
+~~~
 
-### `POST /parse` — 解析分享链接（`link-parser` 在用）
+成功返回 `media` 数组，每项包含 kind、path、size；跳过的媒体可见 skipped。它返回媒体路径，实际发 QQ 由插件完成。
 
-```jsonc
-// 请求
-{ "url": "https://b23.tv/xxxx", "session": "group:123456", "limit": 3 }
+### 错误与鉴权
 
-// 成功
-{ "ok": true, "platform": "bilibili", "platformName": "哔哩哔哩",
-  "title": "…", "resourceId": "BV1…", "elapsedMs": 4200,
-  "media": [{ "kind": "video", "path": "C:\\tmp\\…\\x.mp4", "size": 8423211 }],
-  "skipped": [{ "kind": "image", "reason": "超过大小上限", "cover": "C:\\tmp\\…\\cover.jpg" }] }
-```
+业务失败通常返回 HTTP 200 与 `ok:false, code, error`，例如 too_long、too_big、busy、download_failed。配置 token 后，鉴权失败返回 401；不存在的接口返回 404。调用方应同时检查 HTTP 状态和响应内容。
 
-## 设计上踩过的坑（改之前看一眼）
+## 配置与排查
 
-**安全** —— 群友能间接触发这个服务（发视频、贴链接），所以：
+- ffmpegPath、ffprobePath、ytdlpPath 可显式指定程序路径；pythonPath 用于调用 Python 版 yt-dlp。
+- 默认绑定本机回环地址；下载地址与本地文件受白名单和路径检查限制。
+- 下载与抽帧结果通过缓存复用，按 TTL 和总量限制清理；不能在响应后立即删除文件，机器人还需要读取。
+- B 站下载失败时区分网络、账号权限、视频可用格式和工具版本；不要把某次无需登录的成功当成所有视频都不需要 cookie。
+- cookie、token、真实路径和下载结果属于实例数据，不提交到仓库。
 
-- **host 白名单 + 显式拒绝私网段**（防 SSRF：免得有人贴 `http://127.0.0.1:8080/admin` 让侧车去拉）
-- **本地路径白名单**：`realpath` 之后必须落在系统临时目录 / 数据目录里，凭据文件读不到
-- **命令永远用数组参数**（`execFile(cmd, [args])`），不拼命令行字符串
-- **并发闸门**：同时最多 N 个任务，超了直接 `busy`，不排队（避免 QQ 线堆积）
-
-**下载复用** —— `video-link-read` 抽帧和 `link-parser` 搬媒体会对**同一个 URL**各发一次请求。
-所以 `/read` 和 `/parse` 共用一份 10 分钟下载缓存：实测第二次请求从 **8.8 秒降到 0.3 秒**。
-下载下来的文件**不能立刻删**（紧接着要被搬进群），交给 TTL + 总量清理。
-
-**额度在上游查** —— 侧车只管干活，限流/配额在插件侧（`perUserHour` / `perGroupHour`）。
-插件是"先查额度、再发请求"，不会出现"先下 250MB 再说超限"。
-
-**抖音要 cookie** —— yt-dlp 会报 `Fresh cookies ... are needed`。在 `sidecar.config.json` 里配
-`cookiesFromBrowser`（借用浏览器已登录的 cookie）或 `cookiesFile`（导出的 cookies.txt）。
-B 站不需要。
-
-**画质取舍** —— `/read` 下 480p 就够（帧长边 1024），`/parse` 下 720p（群里看着要清楚）。
-
-## 如果要把它做进包里
-
-它现在是按「站点私有工具」写的。要进包需要改造：
-
-1. **把"起进程 / 找 ffmpeg / 找 yt-dlp"的职责挪到部署侧**（包内红线禁止 `child_process`，
-   而现在这里是靠 `execFile` 调 ffmpeg 的）；
-2. 路径探测里有 Windows 便利逻辑（winget 安装位置），Linux/macOS 要补；
-3. 端口、白名单、限额从 `sidecar.config.json` 收进正式配置项。
-
-改动量不大，但要不要进包、以什么形态进（`bin/` 下的可执行？`ops` provider？独立仓库？）是设计取舍，
-所以先以参考实现的形式提出来。
+具体接口行为以 [server.mjs](server.mjs) 为准；机器人侧的功能开关与调用参数见 [定制功能说明](../docs/定制-语音唱歌与侧车.md)。
