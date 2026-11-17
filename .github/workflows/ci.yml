@@ -42,5 +42,11 @@ jobs:
       - name: Secret & private-data guard（零私有值）
         run: npm run check:secrets
 
+      - name: Git tracked-file privacy guard（含脚本与 Python）
+        run: node scripts/check-no-secrets.mjs --tracked
+
+      - name: Local documentation links
+        run: node scripts/check-doc-links.mjs
+
       - name: Package manifest guard（npm pack 清单）
         run: npm run check:pack

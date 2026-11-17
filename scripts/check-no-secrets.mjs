@@ -3,7 +3,8 @@
  * scripts/check-no-secrets.mjs — 打包前隐私/凭据守卫。
  *
  * 扫描范围 = `package.json` 的 `files` 白名单展开（运行文件 + docs + README + examples + locale…）
- *            + `test/`（不发布但会进 git，同样不能带真实号）。
+ *            + test/（--with-tests）；--tracked 检查所有 Git 已跟踪文件的工作区内容。
+ * 新文件须先暂存；本脚本不扫描历史提交，推送前还要审查整个待推送区间。
  * 规则：
  *   1. 私有绝对路径：`/opt/…`、`/root/…`、`/var/log/…`、`C:\Users\<真名>`；
  *   2. QQ 号：QQ 字段上下文里的 5–12 位数字 + 裸 10/11 位号码；占位值放过。
@@ -15,13 +16,16 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { execFileSync } from 'node:child_process'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 /** --with-tests：把 test/ 也纳入扫描（测试会进 git，同样不能带真实号）。 */
 const WITH_TESTS = process.argv.includes('--with-tests')
+// 发布到 Git 时还要覆盖 scripts/、sidecar/、Python 与非标准扩展名的文件。
+const TRACKED = process.argv.includes('--tracked')
 const TEXT_EXTS = new Set([
   '.js', '.mjs', '.cjs', '.json', '.md', '.yml', '.yaml', '.txt', '.svg',
-  '.ps1', '.sh', '.example', '.html', '.css',
+  '.ps1', '.sh', '.py', '.example', '.html', '.css',
 ])
 const SKIP_DIRS = new Set(['node_modules', '.git', '_reference', 'coverage', 'data', 'dist'])
 
@@ -72,6 +76,12 @@ function isPlaceholder(value) {
 
 /** 从 package.json 的 files 白名单展开待扫描文件（文件不存在则忽略）。 */
 function collectFiles() {
+  if (TRACKED) {
+    const names = execFileSync('git', ['ls-files', '-z', '--cached'], { cwd: ROOT, encoding: 'utf8' })
+    return [...new Set(names.split('\0').filter(Boolean))]
+      .map((name) => path.join(ROOT, name))
+      .filter((abs) => fs.existsSync(abs) && fs.statSync(abs).isFile()).sort()
+  }
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
   const entries = Array.isArray(pkg.files) ? pkg.files : []
   const out = new Set()
@@ -164,7 +174,7 @@ const LINE_RULES = [
   },
   {
     name: 'credential:assignment',
-    re: /\b(?:api[_-]?key|apikey|token|secret|password|passwd|credential)s?\b["']?\s*[:=]\s*["']([^"'\n]{16,})["']/gi,
+    re: /(?<![\w:-])(?:api[_-]?key|apikey|token|secret|password|passwd|credential)s?\b["']?\s*[:=]\s*["']([^"'\n]{16,})["']/gi,
     message: '疑似凭据字面量（请用空串、环境变量或 YOUR_*_TOKEN 占位）',
   },
 ]
@@ -234,7 +244,8 @@ if (hits.length) {
   }
   for (const [file, list] of byFile) {
     console.error(`\n${file}`)
-    for (const h of list) console.error(`  ${h.lineNo}: [${h.rule}] ${h.message}\n      ${h.detail}`)
+    // 检查日志也可能进入 CI / 工单，不回显命中的凭据或源代码。
+    for (const h of list) console.error(`  ${h.lineNo}: [${h.rule}] ${h.rule === 'private-name' ? '命中本地配置的私有名词' : h.message}`)
   }
   process.exit(1)
 }
