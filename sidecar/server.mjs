@@ -1,4 +1,4 @@
-﻿/**
+/**
  * qq-sidecar — QQ 机器人的「解析 / 看视频」侧车（站点私有，不进 dsh-onebot-qq 包）
  *
  * 为什么有这个进程：`dsh-onebot-qq` 的子插件跑在 DSH 宿主进程内，包内红线**禁止 child_process**，
@@ -56,6 +56,11 @@ const DEFAULTS = {
   allowLocalDirs: [],             // 允许读取的本地目录前缀（空 = 只允许 tmpDir 与 NapCat 目录）
   allowedHosts: [
     'bilibili.com', 'b23.tv', 'bili2233.cn',
+    // QQ 直发视频 / 图片的 CDN：`multimedia.nt.qq.com.cn` 命中 'nt.qq.com.cn'。
+    // 为什么必须进默认值：sidecar.config.json 一旦解析失败，整份配置退回这里；
+    // 而"群里直接发视频"走的就是这些域名 —— 少了它们，退化后的表现是
+    // 「机器人看不了直发的视频，但 B 站链接照常能看」，极难一眼定位。（2026-11-18 踩过）
+    'qq.com', 'gtimg.com', 'qianp.com', 'myqcloud.com', 'nt.qq.com.cn',
     ],
 }
 
@@ -576,7 +581,14 @@ async function biliJson(url, timeout = 15000) {
 function writeConfig(next) {
   const target = path.join(HERE, 'sidecar.config.json')
   const tmp = target + '.tmp-' + process.pid
-  fs.writeFileSync(tmp, JSON.stringify(next, null, 4) + '\\n', 'utf8')
+  // ⚠️ 结尾必须是**真的换行** `'\n'`。这里原来写成 `'\\n'`（字面反斜杠 + 字母 n），
+  //    于是控制台每保存一次「链接解析」设置，配置文件就多两个字符、变成**非法 JSON**；
+  //    侧车下次启动解析失败 → 整份退回 DEFAULTS（allowedHosts 只剩 B 站）→
+  //    群友**直接发的视频**全部被判「域名不在白名单 multimedia.nt.qq.com.cn」，
+  //    机器人只会说"没看到视频内容"，而 B 站链接照常能看 —— 2026-11-18 就是这么坏的。
+  const text = JSON.stringify(next, null, 4) + '\n'
+  JSON.parse(text)   // 自检：写下去的东西必须能被读回来，别再让坏文件出关
+  fs.writeFileSync(tmp, text, 'utf8')
   fs.renameSync(tmp, target)
 }
 
@@ -781,6 +793,8 @@ server.listen(CFG.port, CFG.host, () => {
   const { cmd, pre } = ytdlpCmd()
   log(`yt-dlp: ${cmd} ${pre.join(' ')}（链接解析要用）`)
   log(`临时目录: ${TMP}`)
+  // 把实际生效的白名单打出来：排「直发视频看不了」时，第一眼要看的是这里有没有 QQ CDN
+  log(`允许域名: ${(CFG.allowedHosts || []).join(',')}`)
   if (!FFMPEG) log('⚠️ 没找到 ffmpeg：把 sidecar.config.json 的 ffmpegPath 指到 ffmpeg.exe 上')
 })
 
