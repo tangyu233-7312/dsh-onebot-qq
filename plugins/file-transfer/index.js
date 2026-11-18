@@ -48,21 +48,35 @@ function destName(name) {
 }
 
 /**
- * 取入站文件字节。`ev.files` 给 `{ name, url, size, fileId }`：
- *   · url 是服务器本地缓存路径（协议端常直接给）→ 直接读；
+ * 取入站文件字节。`ev.files` 给 `{ name, url, path, size, fileId }`：
+ *   · url/path 是**这台机器上真实存在**的本地文件 → 直接读；
  *   · url 是 http 直链 → 下载；
- *   · 只有 fileId 时回协议端溯源（url 会过期，fileId 才是把手）；
- *   · 都拿不到 → 抛错（如实把失败写进 hint，比静默吞掉强：模型能看出文件没到）。
+ *   · 只有 fileId（或容器路径读不到）时 → 回协议端要 http 直链（getFileUrl）→ 下载；
+ *   · 最后才回 getFile 的本地路径（PC 直装、非容器部署时它是有效的）；
+ *   · 都拿不到 → 抛错（如实写进 hint，比静默吞掉强：模型能看出文件没到）。
+ *
+ * 为什么顺序是这样：容器部署下 `get_file` 回的 `/app/...` 在宿主机**根本不存在**，
+ * 以前先信它 → existsSync false → 报「文件段没有可取的地址（缺 url）」，
+ * 用户看到的就是"文件发了三遍都收不到"。（2026-11-18 踩过）
  */
-async function fetchFileBytes(bot, f) {
+async function fetchFileBytes(bot, f, ctx = {}) {
   const src = String(f?.url || f?.path || '')
-  if (src && fs.existsSync(src)) return fs.readFileSync(src)
+  if (src && fs.existsSync(src) && fs.statSync(src).isFile()) return fs.readFileSync(src)
   if (/^https?:\/\//.test(src)) {
     const res = await fetch(src, { signal: AbortSignal.timeout(FILE_TIMEOUT_MS) })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     return Buffer.from(await res.arrayBuffer())
   }
-  // 溯源协议端本地缓存；适配器把这个能力叫 getFile（只读视图已暴露）
+  // ① 容器部署的关键一步：拿 file_id 换 http 直链（宿主机能下，协议端自己回源）
+  if (f?.fileId && typeof bot.onebot?.getFileUrl === 'function') {
+    const url = await bot.onebot.getFileUrl(f.fileId, ctx)
+    if (url) {
+      const res = await fetch(url, { signal: AbortSignal.timeout(FILE_TIMEOUT_MS) })
+      if (res.ok) return Buffer.from(await res.arrayBuffer())
+      throw new Error(`直链下载 HTTP ${res.status}（签名链接可能已过期，重发一次文件即可）`)
+    }
+  }
+  // ② 退回本地缓存路径（PC 直装部署有效；容器部署拿到的是容器内路径，必然读不到）
   if (f?.fileId && typeof bot.onebot?.getFile === 'function') {
     const info = await bot.onebot.getFile(f.fileId)
     const local = info?.file
@@ -73,7 +87,8 @@ async function fetchFileBytes(bot, f) {
       return Buffer.from(await res.arrayBuffer())
     }
   }
-  throw new Error(src ? `无法识别的文件地址: ${src.slice(0, 80)}` : '文件段没有可取的地址（缺 url）')
+  if (src) throw new Error(`文件不在这台机器上: ${src.slice(0, 80)}`)
+  throw new Error(f?.fileId ? `协议端没给可下载地址（file_id 有，直链取不到）` : '文件段没有可取的地址（缺 url 且缺 file_id）')
 }
 
 export default {
@@ -193,7 +208,11 @@ export default {
           continue
         }
         try {
-          const buf = await fetchFileBytes(bot, f)
+          const buf = await fetchFileBytes(bot, f, {
+            groupId: ev.groupId ?? null,
+            // 私聊时发送者就是文件所有者；群聊也带上（会话类型判断错时还有一次机会）
+            userId: ev.sender?.qq ?? null,
+          })
           if (limitBytes && buf.length > limitBytes) {
             ev.hint.push(`[文件: ${label} 超过上限 ${maxMB}MB，未接收]`)
             log.info(`跳过超大入站文件 ${label}（下载后 ${buf.length} 字节 > ${limitBytes}）`)

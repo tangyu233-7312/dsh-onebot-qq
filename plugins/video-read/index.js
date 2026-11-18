@@ -474,6 +474,23 @@ export default {
           bot.log.debug(`[看视频] getFile(${String(id).slice(0, 20)}) 失败: ${e.message}`)
         }
       }
+      // 容器部署的兜底（2026-11-18）：NapCat 在 Docker 里，get_file 回的是**容器内**路径
+      // （/app/.config/QQ/NapCat/temp/xxx），宿主机 existsSync 永远 false，url 也是同一个容器路径。
+      // "群里把视频当文件发"走的就是这条路 —— 少了这一步就会报"没拿到手"。
+      if (seg.fileId && typeof bot.onebot?.getFileUrl === 'function') {
+        try {
+          const link = await bot.onebot.getFileUrl(seg.fileId, {
+            groupId: ev.isGroup ? ev.groupId : null,
+            userId: ev.sender?.qq ?? null,
+          })
+          if (/^https?:\/\//.test(String(link || ''))) {
+            bot.log.debug(`[看视频] getFileUrl → 直链 ${String(link).slice(0, 60)}`)
+            return { url: link, platform: 'qq' }
+          }
+        } catch (e) {
+          bot.log.debug(`[看视频] getFileUrl 失败: ${e.message}`)
+        }
+      }
       if (/^https?:\/\//.test(seg.url || '')) return { url: seg.url, platform: 'qq' }
       // 走到这里 = 所有把手都试过还拿不到。留一笔 warn（不是 debug），真机排障要靠它：
       // 会直接告诉你协议端给的段里到底有什么字段。

@@ -533,6 +533,45 @@ export class OneBotAdapter {
   }
 
   /**
+   * 按 file_id 换**可下载的 http 直链**（NapCat 的 `get_private_file_url` / `get_group_file_url`）。
+   *
+   * 为什么非要有这个：`get_file` 在容器部署下回的是**容器内路径**
+   * （`/app/.config/QQ/NapCat/temp/新项目.zip`），宿主机 `fs.existsSync` 永远为 false，
+   * 而它回填的 `url` 也是同一个容器路径、不是 http。于是"群里/私聊直接发的文件"全部取不到字节，
+   * 表现就是机器人说"收不到 url"。（2026-11-18 踩过）
+   *
+   * @param {string} fileId 协议端给的 file_id
+   * @param {{ groupId?: number|string|null, userId?: number|string|null }} ctx 私聊传 userId，群聊传 groupId
+   * @returns {Promise<string|null>} http 直链；拿不到返回 null（调用方自行降级，不抛）
+   */
+  async getFileUrl(fileId, ctx = {}) {
+    const id = String(fileId ?? '').trim()
+    if (!id) return null
+    const gid = ctx.groupId != null && Number(ctx.groupId) > 0 ? Number(ctx.groupId) : null
+    const uid = ctx.userId != null && Number(ctx.userId) > 0 ? Number(ctx.userId) : null
+    // 群文件优先走群接口；私聊走私聊接口。两个都试一遍：协议端对"这是群文件还是好友文件"的归类
+    // 不一定和我们的 chatKey 一致（比如群临时会话），试错成本只有一次 HTTP。
+    const tries = []
+    if (gid) tries.push(['get_group_file_url', { group_id: gid, file_id: id }])
+    if (uid) tries.push(['get_private_file_url', { user_id: uid, file_id: id }])
+    if (!gid && !uid) {
+      tries.push(['get_private_file_url', { file_id: id }])
+      tries.push(['get_group_file_url', { file_id: id }])
+    }
+    for (const [action, params] of tries) {
+      try {
+        const { data } = await this._post(action, params, 15000)
+        const url = String(data?.data?.url ?? '')
+        if (data?.status === 'ok' && /^https?:\/\//i.test(url)) return url
+        this.log.debug(`${action} 没拿到直链: ${String(data?.wording || data?.message || '').slice(0, 120)}`)
+      } catch (e) {
+        this.log.debug(`${action} 失败 (${id.slice(0, 16)}): ${e.message}`)
+      }
+    }
+    return null
+  }
+
+  /**
    * 群列表（OneBot v11 `get_group_list`，只读）。失败返回 [] —— 调用方拿不到群名就只显示号码，
    * 绝不因为这层查询坏掉影响聊天。
    * @returns {Promise<Array<{id:number, name:string}>>}

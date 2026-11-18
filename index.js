@@ -809,6 +809,7 @@ export async function apply(ctx, bundleConfig = {}) {
         memberInfo: (...a) => onebot.memberInfo(...a),
         msgById: (...a) => onebot.msgById(...a),
         getFile: (...a) => onebot.getFile(...a),
+        getFileUrl: (...a) => onebot.getFileUrl(...a),
         getForwardMsg: (...a) => onebot.getForwardMsg(...a),
         poke: (...a) => onebot.poke(...a),
         recall: (...a) => onebot.recall(...a),
@@ -1031,6 +1032,17 @@ export async function apply(ctx, bundleConfig = {}) {
             } else if (info?.url && /^https?:\/\//.test(info.url)) {
               const r = await fetch(info.url, { signal: AbortSignal.timeout(15000) })
               if (r.ok) buf = Buffer.from(await r.arrayBuffer())
+            }
+            // 容器部署兜底：get_file 回的是容器内路径，宿主机读不到（见 onebot-adapter 的 getFileUrl）
+            if (!buf && typeof onebot.getFileUrl === 'function') {
+              const link = await onebot.getFileUrl(file, {
+                groupId: ev.isGroup ? ev.groupId : null,
+                userId: ev.sender?.qq ?? null,
+              })
+              if (link) {
+                const r = await fetch(link, { signal: AbortSignal.timeout(15000) })
+                if (r.ok) buf = Buffer.from(await r.arrayBuffer())
+              }
             }
           }
           if (!buf && /^https?:\/\//.test(url)) {

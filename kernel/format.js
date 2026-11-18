@@ -487,9 +487,33 @@ export function extractText(message, selfId) {
     } else if (type === 'record') parts.push('[语音]')
     else if (type === 'video') parts.push('[视频]')
     else if (type === 'file') {
-      // fileId 是回协议端溯源本地文件的唯一把手（url 会过期）；name/url/size 按契约给插件用
-      const fileId = String(d.file_id ?? d.file ?? '')
-      if (fileId) files.push({ name: String(d.name ?? ''), url: String(d.url ?? ''), size: Number(d.file_size ?? 0) || 0, fileId })
+      // fileId 是回协议端溯源本地文件的唯一把手（url 会过期）；name/url/size 按契约给插件用。
+      // ⚠️ 真机（NapCat）给的 file 段是 `{file:'新项目.zip', file_id:'...', file_size:'2404350'}`：
+      //    **文件名在 `file` 里，根本没有 `name` 字段**，而且**没有 url**。
+      //    原来只取 d.name → 插件日志永远「QQ 文件接收失败 (?)」、用户看到的就是"文件没收到"。
+      //    这里把「名字」与「句柄」分开取：名字只管显示/落盘文件名，file_id 才是去要文件的本钱。
+      const name = String(d.name ?? d.file_name ?? d.filename ?? d.file ?? '').trim()
+      // 句柄优先 file_id；有些协议端把句柄放在 file 里 —— 但 file 明显是**带扩展名的真实文件名**时
+      // 不能拿它当 file_id（那会拿"新项目.zip"去问协议端，白跑一次还报错）。
+      // 注意 `??` 挡不住空串：真机确实会给 `file_id: ''`，所以这里要挑**第一个非空**的。
+      const looksLikeName = /\.\w{1,8}$/.test(name)
+      const pickId = (...vals) => {
+        for (const v of vals) {
+          const s = String(v ?? '').trim()
+          if (s) return s
+        }
+        return ''
+      }
+      const fileId = pickId(d.file_id, d.fileId, d.fid, looksLikeName ? '' : d.file)
+      if (fileId || name) {
+        files.push({
+          name,
+          url: String(d.url ?? d.file_url ?? ''),
+          path: String(d.path ?? d.file_path ?? ''),
+          size: Number(d.file_size ?? d.size ?? 0) || 0,
+          fileId,
+        })
+      }
       parts.push('')
     } else if (type === 'reply') {
       const rid = String(d.id ?? d.message_id ?? '')
