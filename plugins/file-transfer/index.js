@@ -104,8 +104,8 @@ export default {
     },
     uploadDir: {
       type: 'str', default: 'qq_uploads', group: '文件', label: '入站文件目录',
-      hint: '收到的群文件 / 私聊文件会按「时间戳-原文件名」存到这个目录（相对路径按数据目录解析；留空 = <数据目录>/qq_uploads），'
-        + '模型提示里会给出完整路径。磁盘紧张就换到大盘目录；过期清理在「文件与图片」页设（默认保留 7 天）。',
+      hint: '收到的群文件 / 私聊文件会按「时间戳-原文件名」存到这个**独立目录**（相对路径按数据目录解析；留空 = <数据目录>/qq_uploads）。'
+        + '模型提示里会给出完整路径，`read_file` 工具也只认这个目录。磁盘紧张就换到大盘目录；过期清理在下面设（默认保留 5 天）。',
     },
     maxFileMB: {
       type: 'int', default: 20, unit: 'MB', min: 0, max: 500, group: '文件与图片', label: '单个文件大小上限',
@@ -116,8 +116,9 @@ export default {
       hint: '防一次刷一堆文件；超出的只提示、不下载。',
     },
     keepDays: {
-      type: 'int', default: 7, unit: '天', min: 0, max: 365, group: '文件与图片', label: '入站文件保留天数',
-      hint: '插件启动时清理超过 N 天的入站文件（0 = 不清理）。',
+      type: 'int', default: 5, unit: '天', min: 0, max: 365, group: '文件与图片', label: '入站文件保留天数',
+      hint: '默认 **5 天**：每 24 小时检查一次，把超过这个天数的入站文件删掉（0 = 永不清）。'
+        + '删的只是 qq_uploads 里的收件，不碰人设、记忆、聊天记录。',
     },
     imageWhitelist: {
       type: 'group', default: [], group: '发图', label: '可发图片目录白名单',
@@ -131,7 +132,12 @@ export default {
     const cfgNow = () => bot.cfg || {}
     const enabledNow = () => cfgNow().enabled !== false
     const fallbackUploadDir = () => path.join(String(bot.core?.dataDir || '.'), 'qq_uploads')
-    const uploadDirNow = () => String(cfgNow().uploadDir || '').trim() || fallbackUploadDir()
+    // 内核已在 buildPluginCfg 里把它解析成绝对路径；这里仍兜一层（单测/手工装配时 cfg 可能是相对值）
+    const uploadDirNow = () => {
+      const raw = String(cfgNow().uploadDir || '').trim()
+      if (!raw) return fallbackUploadDir()
+      return path.isAbsolute(raw) ? raw : path.resolve(String(bot.core?.dataDir || '.'), raw)
+    }
     /** 单文件上限（字节；0 = 不限） */
     const maxFileBytes = () => {
       const mb = Number(cfgNow().maxFileMB)
@@ -151,27 +157,53 @@ export default {
       return [String(bot.core?.dataDir || '.'), String(bot.core?.tmp?.root || '')].filter(Boolean)
     }
 
-    /** 启动时清理过期入站文件（keepDays=0 不清理）；失败只记日志，绝不影响启动。 */
-    function pruneOldUploads() {
+    /**
+     * 清理过期入站文件（默认保留 5 天，每 24 小时检查一次）。
+     *
+     * 为什么要有定时器而不只是启动时清一次：NAS 上的机器人一跑就是十几天不重启，
+     * 只挂启动钩子 = 实际永远不清，收件箱会一直涨。（2026-11-18 用户要求）
+     *
+     * 判定用 mtime：下载完成那一刻就是 mtime，比文件名里的时间戳更可靠。
+     * 失败只记日志，绝不影响聊天。
+     * @param {boolean} force 忽略 24 小时节流（启动时跑的那次）
+     */
+    let lastPruneAt = 0
+    function pruneOldUploads(force = false) {
       const days = Number(cfgNow().keepDays)
-      if (!(days > 0)) return
+      if (!(days > 0)) return 0
+      const intervalMs = 24 * 3600 * 1000
+      if (!force && Date.now() - lastPruneAt < intervalMs) return 0
+      lastPruneAt = Date.now()
       const dir = uploadDirNow()
       let names = []
-      try { names = fs.readdirSync(dir) } catch { return }
-      const cutoff = Date.now() - days * 24 * 3600 * 1000
+      try { names = fs.readdirSync(dir) } catch { return 0 }
+      const cutoff = Date.now() - days * intervalMs
       let removed = 0
       for (const name of names) {
         const file = path.join(dir, name)
         try {
           const st = fs.statSync(file)
-          if (!st.isFile() || st.mtimeMs >= cutoff) continue
-          fs.unlinkSync(file)
-          removed += 1
+          if (st.isFile()) {
+            if (st.mtimeMs >= cutoff) continue
+            fs.unlinkSync(file)
+            removed += 1
+          } else if (st.isDirectory()) {
+            // 收件箱里理论只有文件；真出现子目录（手工放的），整棵树过期了才删
+            if (st.mtimeMs >= cutoff) continue
+            fs.rmSync(file, { recursive: true, force: true })
+            removed += 1
+          }
         } catch { /* 单个文件清理失败不影响其它 */ }
       }
       if (removed) log.info(`已清理 ${removed} 个过期入站文件（保留 ${days} 天，目录 ${dir}）`)
+      return removed
     }
-    try { pruneOldUploads() } catch (e) { log.warn(`清理过期入站文件失败: ${e.message}`) }
+    try { pruneOldUploads(true) } catch (e) { log.warn(`清理过期入站文件失败: ${e.message}`) }
+    // 每 24 小时自检一次；unref() 让它不阻止进程退出（机器人正常运行时进程一直在，无影响）
+    const pruneTimer = setInterval(() => {
+      try { pruneOldUploads() } catch (e) { log.warn(`定时清理入站文件失败: ${e.message}`) }
+    }, 24 * 3600 * 1000)
+    if (typeof pruneTimer.unref === 'function') pruneTimer.unref()
 
     // ── 入站：文件段落盘 ───────────────────────────────────────
     // 默认「被叫才下」：挂在 before-turn（wake 之后、prompt 之前）—— 没叫它的群聊文件不落盘；
@@ -220,8 +252,12 @@ export default {
           }
           const dest = path.join(dir, destName(label))
           fs.writeFileSync(dest, buf)
-          // hint 会原样拼进 prompt：让模型知道"用户发了这个文件、在服务器哪儿"
-          ev.hint.push(`[文件: ${dest}]`)
+          // hint 会原样拼进 prompt：让模型知道"用户发了这个文件、在服务器哪儿"，**并且知道怎么读它**。
+          // 没有后半句的后果（2026-11-18）：文件明明落盘了，模型只会说"本鱼没有打开文件的工具"。
+          const isZip = /\.zip$/i.test(label)
+          ev.hint.push(`[文件: ${dest}（${(buf.length / 1024).toFixed(1)}KB）`
+            + `—— 想看内容就调 read_file({"path":"${dest}"}）`
+            + `${isZip ? '，先传 zip:true 列出包里有什么，再用 entry 读里面的文件' : ''}]`)
           log.info(`QQ 文件已保存: ${dest}（${buf.length} 字节，来自 ${label}）`)
         } catch (e) {
           // 落盘失败也如实告知；不抛，别让一个坏文件拖垮整条消息

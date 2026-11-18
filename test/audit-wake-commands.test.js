@@ -482,7 +482,7 @@ test('FILE-6 单条消息文件数上限：只处理前 N 个并提示', async (
   assert.match(hint, /只处理前 2 个/)
 })
 
-test('FILE-7 启动清理过期入站文件（保留 keepDays 天，默认 7）', async (t) => {
+test('FILE-7 启动清理过期入站文件（保留 keepDays 天，默认 5）', async (t) => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qqbot-ft-'))
   const uploadDir = path.join(dataDir, 'qq_uploads')
   fs.mkdirSync(uploadDir, { recursive: true })
@@ -494,7 +494,7 @@ test('FILE-7 启动清理过期入站文件（保留 keepDays 天，默认 7）'
   fs.utimesSync(oldFile, tenDaysAgo, tenDaysAgo)
   const h = await bootKernel({ dataDir })
   t.after(() => h.dispose())
-  assert.equal(fs.existsSync(oldFile), false, '超过 7 天的入站文件应被清理')
+  assert.equal(fs.existsSync(oldFile), false, '超过 5 天的入站文件应被清理')
   assert.equal(fs.existsSync(newFile), true, '未过期的文件应保留')
 })
 

@@ -202,6 +202,18 @@ function buildPluginCfg(plugin, runtime, dataDir) {
   if (id === 'file-transfer' && !(Array.isArray(cfg.imageWhitelist) && cfg.imageWhitelist.length)) {
     cfg.imageWhitelist = [dataDir, os.tmpdir()]
   }
+  // file-transfer 的入站文件目录与 file-read 的**唯一可读目录**必须是同一个绝对路径：
+  // 在核心里解析一次、两边各自读配置字符串，免得一边相对一边绝对导致白名单对不上。
+  if (id === 'file-transfer') {
+    const raw = String(cfg.uploadDir || '').trim()
+    cfg.uploadDir = raw ? path.resolve(dataDir, raw) : path.join(dataDir, 'qq_uploads')
+  }
+  if (id === 'file-read') {
+    // 单一真相源：读 file-transfer 的入站目录。file-read 自己不再接受任意目录配置。
+    const ft = runtime.pluginConfig?.['file-transfer'] || {}
+    const raw = String(ft.uploadDir || '').trim()
+    cfg.uploadDir = raw ? path.resolve(dataDir, raw) : path.join(dataDir, 'qq_uploads')
+  }
   // 回复节奏的「风格」以顶层 pacing.reply.style 为权威（控制台「主动接话」页）；插件字段作 fallback。
   const style = runtime.pacing?.reply?.style
   if (style && typeof style === 'object') {
