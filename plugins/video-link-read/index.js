@@ -1,4 +1,4 @@
-/**
+﻿/**
  * video-link-read — 链接级"点开看看"（id: 'video-link-read', order: 45）
  *
  * 2026-10-29 起支持两种情况：
@@ -125,103 +125,103 @@ export default {
 
   configSchema: {
     enabled: {
-      type: 'bool', default: true, group: '文件与图片',
+      type: 'bool', default: true, group: '文件与图片', section: 'B站链接 · 开关',
       label: '点开 B 站链接看视频',
       hint: '开：群里有人**叫它**并贴了 B 站链接时，它会把视频下下来抽帧真看一眼再回话；'
         + '关：链接按普通网页处理（模型只拿得到标题和简介）。需要侧车在跑。',
     },
     sidecarUrl: {
-      type: 'str', default: 'http://127.0.0.1:3972', group: '文件与图片',
+      type: 'str', default: 'http://127.0.0.1:3972', group: '文件与图片', section: 'B站链接 · 开关',
       label: '侧车地址',
       hint: '跟看视频共用一个侧车；留空 = 关闭。',
     },
     onlyWhenAddressed: {
-      type: 'bool', default: true, group: '文件与图片',
+      type: 'bool', default: true, group: '文件与图片', section: 'B站链接 · 开关',
       label: '只在被叫到时点开链接',
       hint: '建议开：只有 @ 它 / 叫唤醒词 / 引用它 / 私聊里贴的链接才下载抽帧；关：群里任何人贴的链接都看（更费钱）。\n'
         + '⚠️ 主动接话轮不在这里面——那是它自己找的话，不会为了它去下载视频。',
     },
     allowBvOnly: {
-      type: 'bool', default: true, group: '文件与图片',
+      type: 'bool', default: true, group: '文件与图片', section: 'B站链接 · 开关',
       label: '只发 BV 号也能看',
       hint: '开：群里只贴一串 BV 号（如 BV1GJ411x7h7）而不贴链接时，也当 B 站视频去下载抽帧。\n'
         + '关：只认完整链接。',
     },
     extras: {
-      type: 'bool', default: true, group: '文件与图片',
+      type: 'bool', default: true, group: '文件与图片', section: 'B站链接 · 读哪些内容',
       label: '连简介和评论一起读',
       hint: '开（推荐）：B 站视频的**简介、分P章节、热门评论前几条**会和抽帧一起交给模型 —— 都是公开信息，不需要登录。'
         + '关：只看画面。',
     },
     extrasDanmaku: {
-      type: 'bool', default: false, group: '文件与图片',
+      type: 'bool', default: false, group: '文件与图片', section: 'B站链接 · 读哪些内容',
       label: '再加上弹幕样本',
       hint: '默认关。弹幕多是「哈哈哈」「笑死」这类反应，对「视频讲了什么」帮助有限，还可能带偏；'
         + '想要热闹感再打开（取前 40 条）。',
     },
     subtitle: {
-      type: 'bool', default: true, group: '文件与图片',
+      type: 'bool', default: true, group: '文件与图片', section: 'B站链接 · 读哪些内容',
       label: '连字幕一起读',
       hint: '开（推荐）：B 站视频有 UP 上传字幕或 AI 自动字幕时，把字幕也交给模型 —— 比只抽 8~11 帧准得多。'
         + '关：只抽帧。没有字幕的视频（大部分短视频）自动跳过，不影响原来的行为。',
     },
     subtitleMaxChars: {
-      type: 'int', default: 6000, min: 500, max: 20000, step: 500, group: '文件与图片',
+      type: 'int', default: 6000, min: 500, max: 20000, step: 500, group: '文件与图片', section: 'B站链接 · 读哪些内容',
       label: '字幕最多带多少字',
       hint: '超长字幕会按时间均匀抽段（保开头—中段—结尾），不会整段塞满上下文。默认 6000 字约 3~4k token。',
     },
     platforms: {
-      type: 'group', default: ['bilibili'], group: '文件与图片',
+      type: 'group', default: ['bilibili'], group: '文件与图片', section: 'B站链接 · 读哪些内容',
       label: '只点开这些平台',
       hint: '默认 bilibili（2026-11-10 起抖音已下线：它现在强制要 cookie，拿不到画面）。',
     },
     frames: {
-      type: 'int', default: 8, min: 1, max: 24, step: 1, group: '文件与图片',
+      type: 'int', default: 8, min: 1, max: 24, step: 1, group: '文件与图片', section: 'B站链接 · 抽帧与画质',
       label: '短视频抽几帧',
       hint: '跟群文件视频一致即可。',
     },
     framesLong: {
-      type: 'int', default: 11, min: 1, max: 24, step: 1, group: '文件与图片',
+      type: 'int', default: 11, min: 1, max: 24, step: 1, group: '文件与图片', section: 'B站链接 · 抽帧与画质',
       label: '长视频抽几帧',
       hint: '视频超过下面那个"多长算长"的秒数时，改用这个帧数。\n'
         + '为什么分开：10 分钟的片子 8 帧够概括，11 分钟以上开始漏内容，多给几帧能接上"讲了哪几段"；'
         + '而 1 分钟的小视频抽 11 帧纯属浪费（相邻帧几乎一样）。',
     },
     framesSplitSec: {
-      type: 'int', default: 600, unit: '秒', group: '文件与图片',
+      type: 'int', default: 600, unit: '秒', group: '文件与图片', section: 'B站链接 · 抽帧与画质',
       min: 30, max: 3600, step: 30,
       label: '多长算"长视频"',
       hint: '默认 600 秒 = 10 分钟。超过就用「长视频抽几帧」。只影响抽帧数量，'
         + '不影响「最长看多久」（那个超了直接不看）。',
     },
     maxSide: {
-      type: 'int', default: 1024, min: 256, max: 2048, step: 64, group: '文件与图片',
+      type: 'int', default: 1024, min: 256, max: 2048, step: 64, group: '文件与图片', section: 'B站链接 · 抽帧与画质',
       label: '帧的长边像素',
       hint: 'DSH 单图上限 2MB，1024 基本不会超。',
     },
     maxSeconds: {
-      type: 'int', default: 600, unit: '秒', group: '文件与图片',
+      type: 'int', default: 600, unit: '秒', group: '文件与图片', section: 'B站链接 · 时长与额度',
       label: '最长看多久的视频',
       hint: '超过就不看。默认 600 秒。',
     },
     timeoutMs: {
-      type: 'int', default: 240, unit: '秒', scale: 1000, group: '文件与图片',
+      type: 'int', default: 240, unit: '秒', scale: 1000, group: '文件与图片', section: 'B站链接 · 时长与额度',
       label: '等侧车的超时',
       hint: '链接要现下载，比群文件慢，默认 240 秒。超时后链接照旧交给下游。',
     },
     perUserHour: {
-      type: 'int', default: 0, min: 0, max: 100, group: '文件与图片',
+      type: 'int', default: 0, min: 0, max: 100, group: '文件与图片', section: 'B站链接 · 时长与额度',
       label: '每人每小时最多看几个（0 = 不限）',
       hint: '默认 **0 = 不限制**（不擅自搬旧机器人的额度）。'
         + '想跟「看视频」统一，就把两处填同一个数：**计数槽本来就是共用的**，这里只决定"拦不拦"。',
     },
     perGroupHour: {
-      type: 'int', default: 0, min: 0, max: 500, group: '文件与图片',
+      type: 'int', default: 0, min: 0, max: 500, group: '文件与图片', section: 'B站链接 · 时长与额度',
       label: '每群每小时最多看几个（0 = 不限）',
       hint: '默认 **0 = 不限制**。',
     },
     tellOnFail: {
-      type: 'bool', default: true, group: '文件与图片',
+      type: 'bool', default: true, group: '文件与图片', section: 'B站链接 · 时长与额度',
       label: '没看成时说一句',
       hint: '开：链接打不开/超时长时如实说一句；关：静默交给下游。',
     },

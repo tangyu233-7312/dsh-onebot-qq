@@ -28,6 +28,9 @@
 // 默认文案的唯一真相源在 kernel/pacing.js（REPLY_DEFAULTS.prompts）。
 // 这里 import 过来给控件当 default —— 不让控制台那六个框一进来是空的：
 // 用户没改过就该看到「现在实际在用的那段话」，而不是怀疑「提示词是空的」。
+import fs from 'node:fs'
+import path from 'node:path'
+
 import { REPLY_DEFAULTS } from '../kernel/pacing.js'
 
 export const SECRET_MASK = '••••••••'
@@ -1000,6 +1003,44 @@ export function sectionOf(mergedPage, originalGroup) {
 const PERSONA_GROUPS = []
 
 /**
+ * 文件与图片页：一张"文件到底存哪儿"的实时说明块。
+ *
+ * 为什么要它（2026-11-18）：`入站文件目录` 原来是相对路径（`qq_uploads`），
+ * 面板上只能看到这五个字，用户根本不知道文件真存到磁盘哪个位置；
+ * 而 `read_file` 又只认这个目录 —— 两边对不上时极难排查。
+ * 这里直接按内核解析后的绝对路径显示，并标出目录在不在、有几个文件、占多少。
+ */
+function fileStoreInfo() {
+  return {
+    key: 'info.fileStore', group: '文件与图片', section: '开关与收件目录', type: 'info',
+    label: '文件实际存在哪',
+    text: (kernel) => {
+      // ⚠️ kernel.core 是**函数**（getter），不是对象 —— 取数据目录要用 kernel.dataDir；
+      //    插件配置从 kernel.plugins（数组）里按 id 找，那边才是内核解析后的绝对路径。
+      const dataDir = String(kernel?.dataDir || '')
+      const ft = Array.isArray(kernel?.plugins) ? kernel.plugins.find((p) => p?.id === 'file-transfer') : null
+      const raw = String(ft?.cfg?.uploadDir || '').trim()
+      const dir = raw
+        ? (path.isAbsolute(raw) ? raw : path.resolve(dataDir || '.', raw))
+        : (dataDir ? path.join(dataDir, 'qq_uploads') : '(数据目录未就绪)')
+      let tail = ''
+      try {
+        const names = fs.readdirSync(dir)
+        let bytes = 0
+        for (const n of names) {
+          try { bytes += fs.statSync(path.join(dir, n)).size } catch { /* 单项失败忽略 */ }
+        }
+        tail = `\n现在里面有 ${names.length} 个文件，共 ${(bytes / 1048576).toFixed(1)} MB。`
+      } catch {
+        tail = '\n（这个目录还不存在 —— 收到第一个文件时会自动创建）'
+      }
+      return `📁 ${dir}${tail}\n`
+        + `模型读文件（read_file）只认这一个目录；改上面的「入站文件目录」会同步改这里。`
+    },
+  }
+}
+
+/**
  * 解析 hint：可以是字符串，也可以是 (kernel, rawConfig) => string 的函数。
  *
  * 为什么要有函数形式（2026-10-30）：hint 里写"默认 2 小时、每小时 1 次、每天 3 次"
@@ -1175,6 +1216,17 @@ export function collectSchema(kernel, rawConfig) {
           + (stickerStats.dead > 0 ? `\n⚠️ 另有 ${stickerStats.dead} 条索引指向已被删除的图片（挑到会跳过；打开「收表情」后会自动清理）` : '')
           + `\n收表情（会写索引）：${stickerStats.collect ? '开 —— 会收新图并写 index.json' : '关 —— 库只读，只能挑现有图发'}`,
       })
+    }
+  }
+  // 「文件与图片」页：紧跟在「入站文件目录」那段后面插一张"文件实际存在哪"的说明块。
+  // 位置讲究：要挂在同一个 section 里、且排在目录输入框之后，不然它会跑到页面最上面（controlView 已保留 section）。
+  {
+    const store = fileStoreInfo()
+    const at = entries.findIndex((e) => e.key === 'file-transfer.uploadDir')
+    if (at >= 0) entries.splice(at + 1, 0, store)
+    else {
+      const first = entries.findIndex((e) => e.group === '文件与图片')
+      if (first >= 0) entries.splice(first, 0, store)
     }
   }
   const controls = entries.map((e) => controlView(e, raw, kernel))

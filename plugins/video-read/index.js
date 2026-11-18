@@ -1,4 +1,4 @@
-/**
+﻿/**
  * video-read — 让模型"看得见"群里直接发的视频文件（id: 'video-read', order: 44）
  *
  * 现状：内核把视频段压成一个字符串 `[视频]`（`kernel/format.js:395`），模型只知道"有人发了个视频"，
@@ -153,19 +153,19 @@ export default {
 
   configSchema: {
     enabled: {
-      type: 'bool', default: true, group: '文件与图片',
+      type: 'bool', default: true, group: '文件与图片', section: '群里的视频 · 开关',
       label: '让模型看视频内容',
       hint: '开：群友发视频 / 贴 B 站链接时抽几帧交给模型，它能描述画面、说出讲了什么；'
         + '关：视频只显示成「[视频]」，链接按普通网页处理。'
         + '**需要侧车在跑**（控制台「链接解析」页底部有「启动侧车」按钮）；侧车不在时自动降级，不影响聊天。',
     },
     sidecarUrl: {
-      type: 'str', default: 'http://127.0.0.1:3972', group: '文件与图片',
+      type: 'str', default: 'http://127.0.0.1:3972', group: '文件与图片', section: '群里的视频 · 开关',
       label: '侧车地址',
       hint: '默认 http://127.0.0.1:3972，跟侧车自己的 port 一致。留空 = 关闭看视频。',
     },
     onlyWhenAddressed: {
-      type: 'bool', default: true, group: '文件与图片',
+      type: 'bool', default: true, group: '文件与图片', section: '群里的视频 · 开关',
       label: '只在这条视频/链接"叫了它"时才看',
       hint: '建议开。开：只有 @ 它 / 叫唤醒词 / 引用它之后再发视频、贴链接才看；'
         + '关：群里任何人发都去看（很费钱，适合小群）。',
@@ -173,7 +173,7 @@ export default {
     // 群里"先发视频、再单独发一条 @它"是两条独立消息 —— 视频段在上一条里。
     // 这个窗口让上一条的视频能被下一条接住（腾讯/QQ 客户端没法把两者合成一条）。
     recentVideoSec: {
-      type: 'int', default: 120, unit: '秒', group: '文件与图片',
+      type: 'int', default: 120, unit: '秒', group: '文件与图片', section: '群里的视频 · 开关',
       min: 0, max: 600, step: 10,
       label: '上一条视频能"接住"多久',
       hint: '群里常见的用法是：先发视频 → 再单独发一条「@它 看看这个」。\n'
@@ -181,52 +181,52 @@ export default {
         + '0 = 不接（只认「视频和 @ 在同一条消息里」以及「引用视频」两种）。',
     },
     frames: {
-      type: 'int', default: 8, min: 1, max: 24, step: 1, group: '文件与图片',
+      type: 'int', default: 8, min: 1, max: 24, step: 1, group: '文件与图片', section: '群里的视频 · 抽帧与画质',
       label: '短视频抽几帧',
       hint: '越大越"看得全"，但一次多模态调用也越贵。10 分钟以内的视频，8 帧够描述"讲了什么"。',
     },
     framesLong: {
-      type: 'int', default: 11, min: 1, max: 24, step: 1, group: '文件与图片',
+      type: 'int', default: 11, min: 1, max: 24, step: 1, group: '文件与图片', section: '群里的视频 · 抽帧与画质',
       label: '长视频抽几帧',
       hint: '视频超过下面那个"多长算长"的秒数时，改用这个帧数。\n'
         + '为什么分开：10 分钟的片子 8 帧够概括，11 分钟以上开始漏内容，多给几帧能接上"讲了哪几段"；'
         + '而 1 分钟的小视频抽 11 帧纯属浪费（相邻帧几乎一样）。',
     },
     framesSplitSec: {
-      type: 'int', default: 600, unit: '秒', group: '文件与图片',
+      type: 'int', default: 600, unit: '秒', group: '文件与图片', section: '群里的视频 · 抽帧与画质',
       min: 30, max: 3600, step: 30,
       label: '多长算"长视频"',
       hint: '默认 600 秒 = 10 分钟。超过就用「长视频抽几帧」。只影响抽帧数量，'
         + '不影响「最长看多久」（那个超了直接不看）。',
     },
     maxSide: {
-      type: 'int', default: 1024, min: 256, max: 2048, step: 64, group: '文件与图片',
+      type: 'int', default: 1024, min: 256, max: 2048, step: 64, group: '文件与图片', section: '群里的视频 · 抽帧与画质',
       label: '帧的长边像素',
       hint: '1024 足够看清画面；DSH 单图上限 2MB，压到这个尺寸基本不会超。',
     },
     maxSeconds: {
-      type: 'int', default: 600, unit: '秒', group: '文件与图片',
+      type: 'int', default: 600, unit: '秒', group: '文件与图片', section: '群里的视频 · 时长与额度',
       label: '最长看多久的视频',
       hint: '超过就不看（回一句"太长了"）。默认 600 秒 = 10 分钟；直播回放别碰。',
     },
     timeoutMs: {
-      type: 'int', default: 180, unit: '秒', scale: 1000, group: '文件与图片',
+      type: 'int', default: 180, unit: '秒', scale: 1000, group: '文件与图片', section: '群里的视频 · 时长与额度',
       label: '等侧车的超时',
       hint: '超过就放弃这一轮。链接要现下，比群文件慢，默认 180 秒。',
     },
     perUserHour: {
-      type: 'int', default: 0, min: 0, max: 100, group: '文件与图片',
+      type: 'int', default: 0, min: 0, max: 100, group: '文件与图片', section: '群里的视频 · 时长与额度',
       label: '每人每小时最多看几个（0 = 不限）',
       hint: '默认 **0 = 不限制** —— 你没让人把旧机器人的额度搬过来，所以不默认打开。'
         + '想防刷就设 5；一旦设了，「看视频链接」会自动沿用同一个数（两个插件共用一份额度，不各算各的）。',
     },
     perGroupHour: {
-      type: 'int', default: 0, min: 0, max: 500, group: '文件与图片',
+      type: 'int', default: 0, min: 0, max: 500, group: '文件与图片', section: '群里的视频 · 时长与额度',
       label: '每群每小时最多看几个（0 = 不限）',
       hint: '默认 **0 = 不限制**。想防刷可以设 15。',
     },
     tellOnFail: {
-      type: 'bool', default: true, group: '文件与图片',
+      type: 'bool', default: true, group: '文件与图片', section: '群里的视频 · 时长与额度',
       label: '没看成时说一句',
       hint: '开：拉不到/太长/超额度时如实告诉对方（"这视频我没看成"），免得模型瞎猜画面；'
         + '关：完全不出声。',

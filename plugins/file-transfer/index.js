@@ -1,4 +1,4 @@
-/**
+﻿/**
  * file-transfer — 文件收发子插件（id: 'file-transfer', order: 30）
  *
  * ⚠️ **QQ 只收不发文件**：OneBot 的 `upload_private_file` / `upload_group_file` 内核从来没接，
@@ -96,34 +96,50 @@ export default {
   title: '文件与图片',
   order: 30,
   configSchema: {
-    enabled: { type: 'bool', default: true, group: '文件与图片', label: '文件与图片（收文件 + 发图）', hint: '总开关：关 = 不接收入站文件、send_image 拒绝发图（纯文本照常）。' },
+    enabled: {
+      type: 'bool', default: true, group: '文件与图片', section: '开关与收件目录',
+      label: '文件与图片（收文件 + 发图）',
+      hint: '总开关：关 = 不接收入站文件、send_image 拒绝发图（纯文本照常）。'
+        + '\n下面按「收文件 → 存哪 → 能读什么 → 发图」分了几个可折叠的小节；'
+        + '想调哪一块就点开哪一块，不用从头翻到尾。',
+    },
     downloadPolicy: {
-      type: 'enum', default: 'woken', group: '文件与图片', label: '什么时候下载入站文件',
+      type: 'enum', default: 'woken', group: '文件与图片', section: '收文件：何时下、多大、几个',
+      label: '什么时候下载入站文件',
       options: [{ value: 'woken', label: '被叫到时才下（推荐）' }, { value: 'all', label: '过门禁的消息都下' }],
       hint: '「被叫到时才下」= 只有真正会回复的消息才落盘（群里没叫它的文件不占磁盘）；「都下」= 任何通过门禁的消息都落盘（旧行为，更占磁盘）。',
     },
-    uploadDir: {
-      type: 'str', default: 'qq_uploads', group: '文件', label: '入站文件目录',
-      hint: '收到的群文件 / 私聊文件会按「时间戳-原文件名」存到这个**独立目录**（相对路径按数据目录解析；留空 = <数据目录>/qq_uploads）。'
-        + '模型提示里会给出完整路径，`read_file` 工具也只认这个目录。磁盘紧张就换到大盘目录；过期清理在下面设（默认保留 5 天）。',
-    },
     maxFileMB: {
-      type: 'int', default: 20, unit: 'MB', min: 0, max: 500, group: '文件与图片', label: '单个文件大小上限',
-      hint: '超过就不下载、只在提示里写明「未接收」（0 = 不限）。防大文件吃内存 / 塞满盘。',
+      type: 'int', default: 20, unit: 'MB', min: 0, max: 500, group: '文件与图片', section: '收文件：何时下、多大、几个',
+      label: '单个文件大小上限',
+      hint: '超过就不下载、只在提示里写明「未接收」（0 = 不限）。防大文件吃内存 / 塞满盘。'
+        + '注意这不是"QQ 只能发这么大"：协议端和网络本身另有上限，这里只是本机的拦收线。',
     },
     maxFilesPerMsg: {
-      type: 'int', default: 5, min: 1, max: 20, group: '文件与图片', label: '单条消息最多处理几个文件',
+      type: 'int', default: 5, min: 1, max: 20, group: '文件与图片', section: '收文件：何时下、多大、几个',
+      label: '单条消息最多处理几个文件',
       hint: '防一次刷一堆文件；超出的只提示、不下载。',
     },
+    uploadDir: {
+      type: 'str', default: 'qq_uploads', group: '文件与图片', section: '开关与收件目录',
+      label: '入站文件目录（文件就存在这儿）',
+      hint: '收到的群文件 / 私聊文件会按「时间戳-原文件名」存进这个**独立目录**。'
+        + '\n· 相对路径按数据目录解析，留空 = <数据目录>/qq_uploads；\n'
+        + '· 提示里给模型的完整路径就是这里拼出来的，`read_file` 工具**只认这一个目录**；\n'
+        + '· 它与配置 / 人设 / 记忆 / 聊天记录分开放，磁盘紧张可以整个换到大盘目录。',
+    },
     keepDays: {
-      type: 'int', default: 5, unit: '天', min: 0, max: 365, group: '文件与图片', label: '入站文件保留天数',
+      type: 'int', default: 5, unit: '天', min: 0, max: 365, group: '文件与图片', section: '开关与收件目录',
+      label: '入站文件保留天数',
       hint: '默认 **5 天**：每 24 小时检查一次，把超过这个天数的入站文件删掉（0 = 永不清）。'
-        + '删的只是 qq_uploads 里的收件，不碰人设、记忆、聊天记录。',
+        + '删的只是上面那个收件目录里的东西，不碰人设、记忆、聊天记录。',
     },
     imageWhitelist: {
-      type: 'group', default: [], group: '发图', label: '可发图片目录白名单',
+      type: 'group', default: [], group: '文件与图片', section: '发图',
+      label: '可发图片目录白名单',
       hint: '允许 send_image / 图生图读取的目录白名单（一项一个目录，相对路径按数据目录解析）。默认由内核注入「数据目录 + 系统临时目录」；'
-        + '自己填了就只认填的目录。校验会先 realpath（软链穿不出去），不是真实文件也发不出去。想让它发某个固定文件夹的图，把那个目录加进来即可。',
+        + '自己填了就只认填的目录。校验会先 realpath（软链穿不出去），不是真实文件也发不出去。想让它发某个固定文件夹的图，把那个目录加进来即可。'
+        + '\n⚠️ 这是**发图**用的白名单，和上面「入站文件目录」是两件事：收进来的文件由 `read_file` 读（只认收件目录），发图才看这里。',
     },
   },
 

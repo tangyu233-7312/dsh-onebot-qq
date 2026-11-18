@@ -149,25 +149,25 @@ export default {
 
   configSchema: {
     enabled: {
-      type: 'bool', default: true, group: '文件与图片',
+      type: 'bool', default: true, group: '文件与图片', section: '读文件（read_file）',
       label: '让模型能打开收到的文件',
       hint: '开：模型可以调 `read_file` 读入站文件的内容（文本直接读，zip 可以先列目录再读里面的文件）。'
         + '关：只能看到路径，读不了内容。**只读**，没有写入 / 删除 / 执行能力。',
     },
     uploadDir: {
-      type: 'str', default: '', group: '文件与图片',
+      type: 'str', default: '', group: '文件与图片', section: '读文件（read_file）',
       label: '可读目录（自动跟「入站文件目录」走）',
-      hint: '留空 = 用「文件与图片 → 入站文件目录」（默认 `<数据目录>/qq_uploads`）。'
+      hint: '留空 = 用「文件与图片 → 文件存在哪 → 入站文件目录」（默认 `<数据目录>/qq_uploads`）。'
         + '这是本工具**唯一**能读的目录 —— 填了也只认这一处，读不到配置、凭据、会话记录。'
         + '想换位置请改「入站文件目录」，两边会自动保持一致。',
     },
     maxChars: {
-      type: 'int', default: MAX_CHARS, min: 1000, max: 200000, group: '文件与图片',
+      type: 'int', default: MAX_CHARS, min: 1000, max: 200000, group: '文件与图片', section: '读文件（read_file）',
       label: '单次最多读多少字',
       hint: '一次读超了就截断并在结果里说明还有多少行。太大会把上下文撑爆，默认 20000 字够读十几页 markdown。',
     },
     allowExtensions: {
-      type: 'str', default: '', group: '文件与图片',
+      type: 'str', default: '', group: '文件与图片', section: '读文件（read_file）',
       label: '额外允许当文本读的扩展名',
       hint: '逗号分隔（如 `.abc,.def`）。默认已覆盖常见文本 / 代码 / 字幕格式；二进制文件不会硬灌给模型。',
     },

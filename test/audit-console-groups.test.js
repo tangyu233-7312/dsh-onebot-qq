@@ -50,7 +50,7 @@ test('消息设置：原回话细节 4 项 + 合批 6 项都在「人设与语�
   ]) assert.ok(keys.includes(k), `消息设置应含 ${k}`)
 })
 
-test('「其他」页：权限 / 门禁 / 文件 / 发图 / 头像 五组的控件统一并进来，且有详细悬停解释', async (t) => {
+test('「其他」页：权限 / 门禁 / 头像 这类低频配置统一并进来，且有详细悬停解释', async (t) => {
   const schema = await schemaOf(t)
   const names = schema.groups.map((g) => g.name)
   for (const g of ['权限', '门禁', '文件', '发图', '头像']) {
@@ -62,9 +62,14 @@ test('「其他」页：权限 / 门禁 / 文件 / 发图 / 头像 五组的控�
   for (const key of [
     'gate-wake.adminQq', 'gate-wake.ignoreGroups', 'gate-wake.groupUserBlocklist',
     'gate-wake.groupUserAllowlist', 'gate-wake.allowedUsers',
-    'file-transfer.uploadDir', 'file-transfer.imageWhitelist',
     'imagegen.avatarDir', 'imagegen.avatarCacheHours',
   ]) assert.ok(other.some((c) => c.key === key), '其他页应含 ' + key)
+  // ⚠️ 2026-11-18 改：入站文件目录 / 发图白名单**搬回「文件与图片」页**。
+  //    原来并进「其他」的后果是：用户问"文件到底存哪"在文件页里根本找不到那个输入框。
+  //    它们现在各自在「开关与收件目录」/「发图」小节里，见下一条用例。
+  for (const key of ['file-transfer.uploadDir', 'file-transfer.imageWhitelist']) {
+    assert.equal(other.some((c) => c.key === key), false, key + ' 不该再藏在「其他」页')
+  }
   for (const c of other.filter((x) => x.type !== 'info')) {
     assert.ok(String(c.hint || '').trim().length >= 40, c.key + ' 的悬停解释太短')
   }
@@ -115,17 +120,34 @@ test('引用拦截开关在「句池」页（persona-voice 一对一），标签
   assert.equal(schema.groups.some((g) => g.name === '回话'), false, '「回话」页应已并入「人设与语气」')
 })
 
-test('文件与图片页：行为类开关都在同一页；目录 / 白名单在「其他」页', async (t) => {
+test('文件与图片页：收件目录 / 白名单都回到本页，并拆成多个可折叠小节', async (t) => {
   const schema = await schemaOf(t)
-  const keys = schema.controls.filter((c) => c.group === '文件与图片').map((c) => c.key)
+  const rows = schema.controls.filter((c) => c.group === '文件与图片')
+  const keys = rows.map((c) => c.key)
   for (const k of [
     'file-transfer.enabled', 'file-transfer.downloadPolicy', 'file-transfer.maxFileMB',
     'file-transfer.maxFilesPerMsg', 'file-transfer.keepDays',
   ]) assert.ok(keys.includes(k), '文件与图片页应含 ' + k)
-  for (const k of ['file-transfer.uploadDir', 'file-transfer.imageWhitelist']) {
-    assert.equal(keys.includes(k), false, k + ' 应移到「其他」页')
-    assert.ok(schema.controls.some((c) => c.key === k && c.group === '其他'), k + ' 应在其他页')
+
+  // 2026-11-18：目录 / 白名单从「其他」搬回本页 —— 用户在文件页找不到"文件存哪"那个框。
+  for (const k of ['file-transfer.uploadDir', 'file-transfer.imageWhitelist', 'file-read.uploadDir']) {
+    assert.ok(keys.includes(k), k + ' 应在本页可见（别再藏到「其他」）')
   }
+
+  // 用户要求：别全堆一起，按功能拆成可展开的菜单。
+  const secs = [...new Set(rows.map((c) => c.section).filter(Boolean))]
+  assert.ok(secs.length >= 6, `应拆成多个折叠小节，实际只有 ${secs.length} 个：${secs.join(' / ')}`)
+  assert.ok(secs.includes('开关与收件目录'), '目录相关应在「开关与收件目录」')
+  assert.ok(secs.includes('读文件（read_file）'), '新工具要有自己的小节')
+  assert.ok(secs.some((s) => s.startsWith('群里的视频')), '群里的视频要单独成块')
+  assert.ok(secs.some((s) => s.startsWith('B站链接')), 'B 站链接要单独成块（两个插件别混在一起）')
+
+  // 新工具（读文件）必须写明"文件放在哪"：说明块要显示**绝对路径**
+  const info = rows.find((c) => c.key === 'info.fileStore')
+  assert.ok(info, '应有「文件实际存在哪」说明块')
+  assert.ok(String(info.text).includes('qq_uploads') || /[\\/]/.test(String(info.text)), '说明块要给出真实目录')
+  assert.ok(String(info.text).includes('read_file'), '要说清 read_file 只认这个目录')
+
   for (const g of ['文件', '发图', '头像']) {
     assert.equal(schema.groups.some((x) => x.name === g), false, g + ' 不应单独成页')
   }
