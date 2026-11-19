@@ -163,7 +163,7 @@ export default {
       type: 'bool', default: true, group: '文件与图片', section: 'B站链接 · 读哪些内容',
       label: '连字幕一起读',
       hint: '开（推荐）：B 站视频有 UP 上传字幕或 AI 自动字幕时，把字幕也交给模型 —— 比只抽 8~11 帧准得多。'
-        + '关：只抽帧。没有字幕的视频（大部分短视频）自动跳过，不影响原来的行为。',
+        + '字幕轨通常需要登录：Cookie 在「链接解析 → 看视频（侧车）」填写。无可用字幕时仍会读取画面。',
     },
     subtitleMaxChars: {
       type: 'int', default: 6000, min: 500, max: 20000, step: 500, group: '文件与图片', section: 'B站链接 · 读哪些内容',
@@ -229,6 +229,11 @@ export default {
 
   setup(bot) {
     const cfg = () => bot.cfg || {}
+    // 字幕设置只在此处维护，链接搬运下载时读取同一份设置。
+    if (bot.shared) bot.shared.videoSubtitleSettings = () => ({
+      subtitle: cfg().subtitle !== false,
+      subtitleMaxChars: Math.max(500, Math.min(20000, Number(cfg().subtitleMaxChars) || 6000)),
+    })
     const urlOf = () => String(cfg().sidecarUrl || '').trim()
     /**
      * 等侧车的超时（毫秒）。
@@ -310,12 +315,15 @@ export default {
       const started = Date.now()
       let data = null
       try {
+        await bot.shared?.syncVideoSidecar?.(urlOf())
         const res = await fetch(`${urlOf().replace(/\/+$/, '')}/read`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             url: hit.url,
             platform: hit.platform,
+            subtitle: cfg().subtitle !== false,
+            subtitleMaxChars: Math.max(500, Math.min(20000, Number(cfg().subtitleMaxChars) || 6000)),
             frames: Number(cfg().frames) || 8,
             // 动态抽帧：超过 framesSplitSec 就用 framesLong 帧（侧车按实际时长选）
             framesLong: Number(cfg().framesLong) || 11,
@@ -373,7 +381,8 @@ export default {
         + `${(data.frames || []).map((f) => `${f.sec}s`).join('/')}）。`
         + `这些图就是视频画面（按时间顺序），直接据此回话即可；没看清的地方如实说看不清]`)
       // 字幕（2026-11-10）：B 站有 UP 字幕 / AI 自动字幕就当文字线索；没有就跳过
-      const subText = String((data && data.subtitle && data.subtitle.text) || '').trim()
+      const subText = cfg().subtitle === false ? '' : String(data?.subtitle?.text || '').trim().slice(0, Math.max(500, Math.min(20000, Number(cfg().subtitleMaxChars) || 6000)))
+      bot.log.info(`[看链接] 字幕状态=${data.subtitleStatus || (subText ? 'available' : 'unavailable')} 字数=${subText.length}`)
       if (subText) {
         ev.hint.push('[视频字幕（自动生成，可能有错字；看不清的地方以抽帧画面为准）]\n' + subText)
       }

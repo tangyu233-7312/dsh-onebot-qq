@@ -173,10 +173,6 @@ export default {
         + '⚠️ 用自己账号的 cookie 有风控风险（机器人 7×24 跑），建议用小号；不填不影响任何现有功能。\n'
         + '格式：浏览器里复制的 `SESSDATA=xxx; bili_jct=yyy; buvid3=zzz` 一整串即可，保存后写进侧车的 cookies.console.txt，只回显占位符。',
     },
-    subtitle: {
-      type: 'bool', default: false, group: '链接解析', section: '看视频（侧车）', label: '读视频字幕',
-      hint: '默认关。开了并且填了 cookie，才会把 B 站字幕交给模型；没有字幕的视频自动跳过。',
-    },
     extras: {
       type: 'bool', default: true, group: '链接解析', section: '看视频（侧车）', label: '读简介和评论',
       hint: '开（默认）：B 站视频的简介、分P章节、热门评论会和抽帧一起交给模型。**不需要登录**，开源用户开箱可用。',
@@ -204,17 +200,18 @@ export default {
     // 为什么放这里：cookie 与字幕/评分开关真正生效的是 sidecar 进程，配置在它自己的 json 里；
     // 控制台只负责收集。值没变就不同步（避免每次解析都写盘 + 刷侧车日志）。
     let lastPushed = ''
-    async function pushSidecarSettings() {
-      const parserUrl = parserUrlOf()
+    async function pushSidecarSettings(targetUrl = parserUrlOf()) {
+      const parserUrl = String(targetUrl || '').trim().replace(/\/+$/, '')
       if (!parserUrl) return
       const payload = {
         biliCookies: String(cfg.biliCookie || '').trim(),
-        subtitle: cfg.subtitle === true,
+        ...(bot.shared?.videoSubtitleSettings?.() || {}),
         extras: cfg.extras !== false,
         extrasDanmaku: cfg.extrasDanmaku === true,
       }
       const sig = JSON.stringify(payload)
-      if (sig === lastPushed) return
+      const signature = parserUrl + sig
+      if (signature === lastPushed) return
       try {
         const res = await fetch(`${parserUrl}/config`, {
           method: 'POST',
@@ -224,27 +221,31 @@ export default {
         })
         const r = res.ok ? await res.json() : null
         if (r && r.ok) {
-          lastPushed = sig
+          lastPushed = signature
           log.info('[链接解析] 已同步看视频设置到侧车（cookie ' + (payload.biliCookies ? '已填' : '未填') + '，字幕 ' + (payload.subtitle ? '开' : '关') + '）')
         }
       } catch { /* 侧车没起就算了，下次再试 */ }
     }
 
+    // 即使链接搬运关闭，直接看 BV 号也需要先同步登录态。
+    // 共享操作而非 Cookie 值，其他插件不接触凭据。
+    if (bot.shared) bot.shared.syncVideoSidecar = pushSidecarSettings
+
     async function callParse(url, session) {
       const parserUrl = parserUrlOf()
       if (!parserUrl) return null
       try {
+        await pushSidecarSettings()
         const res = await fetch(`${parserUrl}/parse`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ url, session, limit: MAX_ITEMS }),
+          body: JSON.stringify({ url, session, limit: MAX_ITEMS, ...(bot.shared?.videoSubtitleSettings?.() || {}) }),
           signal: AbortSignal.timeout(PARSE_TIMEOUT_MS),
         })
         if (!res.ok) {
           log.warn(`[链接解析] 侧车 HTTP ${res.status}, 本条按普通消息处理`)
           return null
         }
-        void pushSidecarSettings()
         return await res.json()
       } catch (e) {
         log.warn(`[链接解析] 服务不可用(${e.name === 'TimeoutError' || e.name === 'AbortError' ? '超时' : e.message}), 本条按普通消息处理`)

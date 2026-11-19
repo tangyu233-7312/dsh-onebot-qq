@@ -122,11 +122,11 @@ function ytdlpCmd() {
 }
 
 /**
- * cookie 参数（2026-11-10 起：抖音已下线，B 站不需要 cookie；这两项留着给将来别的站点用）。
+ * Cookie 参数：公开视频可能允许匿名下载，B 站字幕通常要求有效登录态。
  * 两种给法，配一个就行：
  *   · cookiesFromBrowser: "edge" / "chrome" / "firefox" —— 直接借浏览器里已登录的 cookie
  *   · cookiesFile: "C:\\path\\cookies.txt" —— 事先导出的 Netscape 格式 cookie 文件
- * 都不配 = 只靠公开接口（B 站够用）。
+ * 都不配 = 只靠公开接口，不能保证获得字幕。
  */
 function cookieArgs() {
   const out = []
@@ -221,9 +221,24 @@ const probeYtdlp = { at: 0, ok: false, version: '' }
 const recentDownloads = new Map()
 const reuseMs = () => Math.max(60_000, (Number(CFG.reuseMinutes) || 10) * 60_000)
 
-function cachedDownload(url) {
+function subtitleOptions(body = {}) {
+  return {
+    subtitle: typeof body.subtitle === 'boolean' ? body.subtitle : CFG.subtitle !== false,
+    subtitleMaxChars: Math.max(500, Math.min(20000, Number(body.subtitleMaxChars ?? CFG.subtitleMaxChars) || 6000)),
+  }
+}
+
+function subtitleCacheKey(options = subtitleOptions()) {
+  let fileStamp = ''
+  try { const st = fs.statSync(CFG.cookiesFile); fileStamp = `${st.size}:${st.mtimeMs}` } catch {}
+  // 登录态只参与指纹比较，不进入日志或响应。
+  return crypto.createHash('sha256').update(JSON.stringify([options.subtitle, CFG.biliCookies || '',
+    CFG.cookiesFile || '', CFG.cookiesFromBrowser || '', fileStamp])).digest('hex')
+}
+
+function cachedDownload(url, options = subtitleOptions()) {
   const hit = recentDownloads.get(String(url).trim())
-  if (!hit) return null
+  if (!hit || hit.subtitleKey !== subtitleCacheKey(options)) return null
   if (nowMs() - hit.at > reuseMs()) { recentDownloads.delete(String(url).trim()); return null }
   try {
     if (!fs.existsSync(hit.file)) { recentDownloads.delete(String(url).trim()); return null }
@@ -324,7 +339,7 @@ async function ytdlpMeta(url) {
   } catch { return null }
 }
 
-async function ytdlpDownload(url, outDir, { maxHeight = 720 } = {}) {
+async function ytdlpDownload(url, outDir, { maxHeight = 720, subtitle = CFG.subtitle !== false } = {}) {
   const { cmd, pre } = ytdlpCmd()
   const tpl = path.join(outDir, '%(id)s.%(ext)s')
   // 封顶高度：太大对"看内容"没意义，只会让下载和抽帧都变慢。
@@ -335,10 +350,10 @@ async function ytdlpDownload(url, outDir, { maxHeight = 720 } = {}) {
   //    改用 -S 排序：先挑最接近 maxHeight 的，挑不到就往下降，任何稿件都有得选。
   const r = await run(cmd, [
     ...pre, '-f', 'bv*+ba/b/best', '-S', `res:${maxHeight}`,
-    '--merge-output-format', 'mp4', '--no-playlist', '--no-warnings',
+    '--merge-output-format', 'mp4', '--no-playlist',
     // 2026-11-10：顺手把字幕也下下来（B 站有 UP 上传字幕 + AI 自动字幕）。
     // --convert-subs srt 让 YouTube/B 站的 vtt/json 统一成 srt；加 --ignore-errors 免得没字幕时整条失败。
-    ...(CFG.subtitle === false ? [] : ['--write-subs', '--write-auto-subs', '--convert-subs', 'srt',
+    ...(!subtitle ? [] : ['--write-subs', '--write-auto-subs', '--convert-subs', 'srt',
       '--sub-langs', 'zh-Hans,zh-CN,zh,ai-zh,zh-Hant,en', '--ignore-errors']),
     ...cookieArgs(),
     '-o', tpl, url,
@@ -356,7 +371,10 @@ async function ytdlpDownload(url, outDir, { maxHeight = 720 } = {}) {
   const subs = (await fsp.readdir(outDir).catch(() => []))
     .filter((f) => /\.(srt|vtt)$/i.test(f))
     .map((f) => path.join(outDir, f))
-  return { ok: true, file: mp4, size: st.size, subs }
+  const subtitleStatus = !subtitle ? 'disabled' : subs.length ? 'downloaded'
+    : /[Ss]ubtitles are only available when logged in/.test(r.stderr) ? 'login_required'
+      : /(?:WARNING|ERROR).*subtit/i.test(r.stderr) ? 'download_failed' : 'unavailable'
+  return { ok: true, file: mp4, size: st.size, subs, subtitleStatus }
 }
 
 /**
@@ -453,6 +471,9 @@ async function handleRead(body) {
   const dlDir = path.join(DL_DIR, `${Date.now().toString(36)}-${rand()}`)
   // 本次请求实际生效的限制（请求优先，配置文件兜底，另有硬上限防失控）
   const LIM = limitOf(body)
+  const subOptions = subtitleOptions(body)
+  const subtitleKey = subtitleCacheKey(subOptions)
+  let subtitleStatus = subOptions.subtitle ? 'unavailable' : 'disabled'
   let source = ''
   try {
     // ① 拿源文件
@@ -478,10 +499,11 @@ async function handleRead(body) {
       const allow = hostAllowed(url)
       if (!allow.ok) return { ok: false, code: 'denied', error: allow.why }
       // 先看有没有刚下过的同一 URL（"抽帧看 + 搬进群"是同一条视频，别再下一次）
-      const hit = cachedDownload(url)
+      const hit = cachedDownload(url, subOptions)
       if (hit) {
         meta = hit.meta || { title: '', durationSec: 0, platform }
         source = hit.file
+        subtitleStatus = hit.subtitleStatus || subtitleStatus
         log(`/read 复用 ${Math.round((nowMs() - hit.at) / 1000)} 秒前下载的文件（跳过重复下载）`)
         if (Array.isArray(hit.subs) && hit.subs.length) lastSubs.set(hit.file, hit.subs)
         // 复用也不能跳过时长检查：上一次可能是在别的 maxSeconds 下下过的
@@ -502,7 +524,7 @@ async function handleRead(body) {
             return { ok: false, code: 'too_long', error: `视频 ${Math.round(meta.durationSec)} 秒，超过上限 ${LIM.seconds} 秒` }
           }
           await fsp.mkdir(dlDir, { recursive: true })
-          dl = await ytdlpDownload(url, dlDir, { maxHeight: 480 })
+          dl = await ytdlpDownload(url, dlDir, { maxHeight: 480, ...subOptions })
         } else {
           log('/read 直链下载（不走 yt-dlp）')
           dl = await directDownload(url, dlDir)
@@ -513,7 +535,8 @@ async function handleRead(body) {
         }
         source = dl.file
         if (Array.isArray(dl.subs) && dl.subs.length) lastSubs.set(dl.file, dl.subs)
-        rememberDownload(url, { file: dl.file, size: dl.size, meta })
+        subtitleStatus = dl.subtitleStatus || subtitleStatus
+        rememberDownload(url, { file: dl.file, size: dl.size, meta, subs: dl.subs || [], subtitleStatus, subtitleKey })
         // 下下来的视频**不立刻删**：插件很可能紧接着要把它搬进群（"先搬视频、再发感想"那条链路），
         // 删早了那边就读到不存在的文件。改为登记进待删清单，交给 sweep() 按 TTL / 总量清理。
         log(`/read 下载 ${mb(dl.size)}MB → 保留 ${Math.round(reuseMs() / 60000)} 分钟供复用`)
@@ -531,7 +554,9 @@ async function handleRead(body) {
     })
     if (!ext.ok) return ext
     // 字幕（2026-11-10）：有就交给模型当文字线索，没有就算了（抖音已下线、群内文件没有字幕）
-    const sub = CFG.subtitle === false ? { text: '', chars: 0, lines: 0 } : subtitleText(lastSubs.get(source) || [], Number(CFG.subtitleMaxChars) || 6000)
+    const sub = !subOptions.subtitle ? { text: '', chars: 0, lines: 0 } : subtitleText(lastSubs.get(source) || [], subOptions.subtitleMaxChars)
+    subtitleStatus = !subOptions.subtitle ? 'disabled' : sub.text ? 'available' : subtitleStatus === 'downloaded' ? 'parse_failed' : subtitleStatus
+    log(`/read subtitle=${subtitleStatus} chars=${sub.chars}`)
     log(`/read ok ${platform} ${meta.durationSec || ext.durationSec}s → ${ext.frames.length} 帧` + (sub.chars ? ` + 字幕 ${sub.chars} 字` : '（无字幕）'))
     return {
       ok: true,
@@ -544,6 +569,7 @@ async function handleRead(body) {
       mediaBytes: await fsp.stat(source).then((s) => s.size).catch(() => 0),
       note: `共 ${Math.floor(ext.durationSec / 60)} 分 ${ext.durationSec % 60} 秒，抽 ${ext.frames.length} 帧`,
       // 字幕：text 给模型，chars/lines 给排查用
+      subtitleStatus,
       subtitle: sub.text ? { text: sub.text, chars: sub.chars, lines: sub.lines, truncated: sub.truncated === true } : null,
     }
   } catch (e) {
@@ -643,6 +669,8 @@ async function handleExtras(body) {
 
 async function handleParse(body) {
   const t0Parse = nowMs()
+  const subOptions = subtitleOptions(body)
+  const subtitleKey = subtitleCacheKey(subOptions)
   const url = String(body.url || '').trim()
   if (!url) return { ok: false, code: 'bad_request', error: '缺少 url' }
   const allow = hostAllowed(url)
@@ -652,7 +680,7 @@ async function handleParse(body) {
   const dir = path.join(DL_DIR, `${Date.now().toString(36)}-${rand()}`)
   try {
     // 复用：`video-link-read` 刚为同一个链接下过（480p）就直接用，不再下一次
-    const hit = cachedDownload(url)
+    const hit = cachedDownload(url, subOptions)
     if (hit) {
       const meta = hit.meta || {}
       log(`/parse 复用 ${Math.round((nowMs() - hit.at) / 1000)} 秒前下载的文件`)
@@ -671,13 +699,14 @@ async function handleParse(body) {
     }
     const meta = await ytdlpMeta(url)
     await fsp.mkdir(dir, { recursive: true })
-    const dl = await ytdlpDownload(url, dir, { maxHeight: 720 })
+    const dl = await ytdlpDownload(url, dir, { maxHeight: 720, ...subOptions })
     if (!dl.ok) return { ok: false, code: 'download_failed', error: dl.error }
     if (dl.size > CFG.maxMb * 1048576) {
       await fsp.rm(dir, { recursive: true, force: true }).catch(() => {})
       return { ok: true, platform: meta?.platform || 'unknown', title: meta?.title || '', platformName: meta?.platform || '', resourceId: '', elapsedMs: 0, media: [], skipped: [{ kind: 'video', reason: `超过 ${CFG.maxMb}MB` }] }
     }
-    rememberDownload(url, { file: dl.file, size: dl.size, meta: meta || {} })
+    if (dl.subs?.length) lastSubs.set(dl.file, dl.subs)
+    rememberDownload(url, { file: dl.file, size: dl.size, meta: meta || {}, subs: dl.subs || [], subtitleStatus: dl.subtitleStatus, subtitleKey })
     return {
       ok: true,
       platform: meta?.platform || 'unknown',
