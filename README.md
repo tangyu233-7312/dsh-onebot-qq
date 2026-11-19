@@ -70,7 +70,7 @@ dsh plugin --profile web add github:tangyu233-7312/dsh-onebot-qq#custom
 | 唤醒与权限 | `gate-wake`、`commands`、`private-friend-gate` | @、引用、唤醒词、基础命令、好友准入 |
 | 发言节奏 | `anti-repeat`、`tone-guard` | 重复消息冷却、按语境处理辱骂与垃圾消息 |
 | 人设与表达 | `persona-voice`、`persona-version` | 固定句池、回复拆条、人设读取与版本管理 |
-| 媒体与图片 | `file-transfer`、`imagegen`、`stickers` | 收取媒体、发送图片、生图/改图、头像和表情库 |
+| 媒体与图片 | `file-transfer`、`file-read`、`imagegen`、`stickers` | 收取媒体、读取收件箱文本/ZIP、发送图片、生图/改图、头像和表情库 |
 | 视频理解 | `video-read`、`video-link-read`、`video-wander` | 看视频附件、B 站链接/BV 号、按需或定时观看 |
 | 侧车与解析 | `sidecar-control`、`link-parser` | 侧车状态与启动管理、下载链接媒体 |
 | 语音与唱歌 | `voice` | 语音输出、曲库管理、RVC 翻唱、本机或 PC 网关计算 |
@@ -78,6 +78,8 @@ dsh plugin --profile web add github:tangyu233-7312/dsh-onebot-qq#custom
 | 群与空间 | `group-welcome`、`qzone` | 入群欢迎、QQ 空间日记及发布记录 |
 
 主动接话、合批和静默时段由内核与配置协同处理。内置「蓝色大肥鱼」示例人设和 [人设模板](examples/personas/_模板.md)，可在控制台管理；更换人设及旧会话生效问题见 [使用说明书](docs/使用说明书.md) 和 [维护与交接](docs/维护与交接.md)。
+
+B 站视频可同时读取画面与可用字幕；字幕开关、Cookie 获取方法和状态诊断见 [侧车字幕说明](sidecar/README.md#b-站字幕配置与排查)。当前没有语音识别回退，视频中烧录的文字也不等于可下载的字幕轨。
 
 `watch_now` 将画面交给当前会话里的模型理解；`watch_video` 走后台观看流程。跨会话流水账记录机器人做过的事，并可保留它自己的视频感想；这与存储聊天要点的长期记忆是不同模块，详见 [一个脑子](docs/一个脑子.md)。
 

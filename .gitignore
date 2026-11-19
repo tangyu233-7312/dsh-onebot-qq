@@ -30,6 +30,8 @@ _sp_*.wav
 # 侧车/能力包跑起来之后才会有的东西
 tools/singing-pack/.venv/
 sidecar/run.json
+sidecar/cookies*.txt
+sidecar/sidecar.config.json.tmp-*
 sidecar/trace.log
 sidecar/*.bak-*
 CON

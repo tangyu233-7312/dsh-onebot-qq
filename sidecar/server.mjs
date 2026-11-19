@@ -26,7 +26,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { srtToLines, subtitleText } from './subtitle.mjs'
+import { subtitleText } from './subtitle.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const VERSION = '1.0.0'
@@ -312,9 +312,6 @@ async function sweep() {
 }
 setInterval(sweep, 60_000).unref?.()
 
-/** 源文件 → 字幕文件列表（下载时登记；抽帧时按 source 取） */
-const lastSubs = new Map()
-
 // ── /read：看视频 ────────────────────────────────────────────────────
 async function probeDuration(file) {
   if (!FFPROBE) return 0
@@ -475,6 +472,7 @@ async function handleRead(body) {
   const subtitleKey = subtitleCacheKey(subOptions)
   let subtitleStatus = subOptions.subtitle ? 'unavailable' : 'disabled'
   let source = ''
+  let sourceSubs = []
   try {
     // ① 拿源文件
     let meta = { title: '', durationSec: 0, platform }
@@ -505,7 +503,7 @@ async function handleRead(body) {
         source = hit.file
         subtitleStatus = hit.subtitleStatus || subtitleStatus
         log(`/read 复用 ${Math.round((nowMs() - hit.at) / 1000)} 秒前下载的文件（跳过重复下载）`)
-        if (Array.isArray(hit.subs) && hit.subs.length) lastSubs.set(hit.file, hit.subs)
+        sourceSubs = hit.subs || []
         // 复用也不能跳过时长检查：上一次可能是在别的 maxSeconds 下下过的
         if (meta.durationSec > LIM.seconds) {
           return { ok: false, code: 'too_long', error: `视频 ${Math.round(meta.durationSec)} 秒，超过上限 ${LIM.seconds} 秒` }
@@ -534,7 +532,7 @@ async function handleRead(body) {
           return { ok: false, code: 'too_big', error: `文件 ${mb(dl.size)}MB 超过上限 ${CFG.maxMb}MB` }
         }
         source = dl.file
-        if (Array.isArray(dl.subs) && dl.subs.length) lastSubs.set(dl.file, dl.subs)
+        sourceSubs = dl.subs || []
         subtitleStatus = dl.subtitleStatus || subtitleStatus
         rememberDownload(url, { file: dl.file, size: dl.size, meta, subs: dl.subs || [], subtitleStatus, subtitleKey })
         // 下下来的视频**不立刻删**：插件很可能紧接着要把它搬进群（"先搬视频、再发感想"那条链路），
@@ -554,7 +552,7 @@ async function handleRead(body) {
     })
     if (!ext.ok) return ext
     // 字幕（2026-11-10）：有就交给模型当文字线索，没有就算了（抖音已下线、群内文件没有字幕）
-    const sub = !subOptions.subtitle ? { text: '', chars: 0, lines: 0 } : subtitleText(lastSubs.get(source) || [], subOptions.subtitleMaxChars)
+    const sub = !subOptions.subtitle ? { text: '', chars: 0, lines: 0 } : subtitleText(sourceSubs, subOptions.subtitleMaxChars)
     subtitleStatus = !subOptions.subtitle ? 'disabled' : sub.text ? 'available' : subtitleStatus === 'downloaded' ? 'parse_failed' : subtitleStatus
     log(`/read subtitle=${subtitleStatus} chars=${sub.chars}`)
     log(`/read ok ${platform} ${meta.durationSec || ext.durationSec}s → ${ext.frames.length} 帧` + (sub.chars ? ` + 字幕 ${sub.chars} 字` : '（无字幕）'))
@@ -705,7 +703,6 @@ async function handleParse(body) {
       await fsp.rm(dir, { recursive: true, force: true }).catch(() => {})
       return { ok: true, platform: meta?.platform || 'unknown', title: meta?.title || '', platformName: meta?.platform || '', resourceId: '', elapsedMs: 0, media: [], skipped: [{ kind: 'video', reason: `超过 ${CFG.maxMb}MB` }] }
     }
-    if (dl.subs?.length) lastSubs.set(dl.file, dl.subs)
     rememberDownload(url, { file: dl.file, size: dl.size, meta: meta || {}, subs: dl.subs || [], subtitleStatus: dl.subtitleStatus, subtitleKey })
     return {
       ok: true,

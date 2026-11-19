@@ -26,7 +26,7 @@ function sidecar(t) {
   const cfg = {concurrency:2,maxMb:250,subtitle:false,subtitleMaxChars:6000,reuseMinutes:10}
   const c = vm.createContext({
     CFG:cfg,fs,crypto,path,FRAME_DIR:dir,DL_DIR:dir,running:0,
-    recentDownloads:new Map(),lastSubs:new Map(),nowMs:()=>1000,reuseMs:()=>600000,
+    recentDownloads:new Map(),nowMs:()=>1000,reuseMs:()=>600000,
     rand:()=> 'fixture',log(){},mb:n=>n/1048576,hostAllowed:()=>({ok:true}),
     fsp:{mkdir:async()=>{},stat:async()=>({size:7}),rm:async()=>{}},
     ytdlpMeta:async()=>({title:'fixture',durationSec:60,platform:'bilibili'}),
@@ -45,7 +45,6 @@ function sidecar(t) {
 test('字幕 /parse → /read 复用仍保留字幕，只下载一次',async t=>{
   const {c,cfg,calls,body}=sidecar(t);cfg.biliCookies='EXAMPLE_LOGIN'
   assert.equal((await c.handleParse(body)).ok,true)
-  c.lastSubs.clear()
   const read=await c.handleRead(body)
   assert.equal(read.ok,true);assert.match(read.subtitle.text,/字幕测试内容/)
   assert.equal(read.subtitleStatus,'available');assert.equal(calls.length,1)
