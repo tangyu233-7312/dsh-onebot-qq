@@ -27,8 +27,10 @@ import { createRequire } from 'node:module'
 
 import { CONTRACT_VERSION, STAGES, withDefaults, createEvent, createTurnContext } from './contracts.js'
 import {
-  normalizeEvent, buildPromptText, extractText, renderForward, senderNameOf, detectImageMediaType, parseKeywordLines,
+  normalizeEvent, buildPromptText, extractText, senderNameOf, parseKeywordLines,
 } from './kernel/format.js'
+import { appendForwardContext } from './kernel/forward-context.js'
+import { loadIncomingImages } from './kernel/incoming-images.js'
 
 import { OneBotAdapter } from './kernel/onebot-adapter.js'
 import { ChatState, Pipeline, createDeliver, turnStore } from './kernel/state-pipeline.js'
@@ -978,7 +980,10 @@ export async function apply(ctx, bundleConfig = {}) {
       try {
         const qMsg = await onebot.msgById(ev.replyToId)
         if (qMsg) {
-          const parsed = extractText(qMsg.message ?? qMsg.raw_message ?? '', onebot.selfId)
+          let parsed = extractText(qMsg.message ?? qMsg.raw_message ?? '', onebot.selfId)
+          if (!parsed.text && !parsed.images.length && !parsed.forwards.length && qMsg.raw_message) {
+            parsed = extractText(qMsg.raw_message, onebot.selfId)
+          }
           const qSender = senderNameOf(qMsg.sender, qMsg.sender?.user_id ?? qMsg.user_id)
           const imgTag = parsed.images?.length ? ` [被引图×${parsed.images.length}]` : ''
           ev._scratch.quoteText = `[${qSender}(QQ:${qMsg.sender?.user_id ?? qMsg.user_id ?? '?'})]: ${parsed.text || '[媒体/富文本]'}${imgTag}`
@@ -987,93 +992,14 @@ export async function apply(ctx, bundleConfig = {}) {
           // 而 video-read 要靠它去抽帧（QQ 里"发视频"和"@它"必然是两条消息，第二条只能引用）。
           // 这里已经调过 msgById，插件不必再打一次同一个接口。
           ev._scratch.replyRawSegments = Array.isArray(qMsg.message) ? qMsg.message : []
+          ev._scratch.replyForwards = parsed.forwards
         }
       } catch { /* 引用反查失败不阻塞本轮 */ }
     }
-    // 2.5 合并转发：正文要在这一步再取一次（get_forward_msg）。
-    // 只在**这条消息真要进模型**（ev.wake 已有）时取，避免给每条消息都打接口。
-    //
-    // ⚠️ 关键：QQ 里「发转发」和「@它」**必然是两条消息**（客户端限制），第二条只能引用第一条。
-    //    before-turn 跑在"@它"那条上，它的 _scratch.forwards 是空的 —— 转发 id 在被引消息里。
-    //    所以这里必须**反查一次被引消息**把 forwards 挖出来。这跟 video-read 拿被引视频同构。
-    // forwards 现在是 [{ id, content }]：content 是协议端在 get_msg 里已经内联好的转发正文
-    // （真机上 get_forward_msg(id) 常直接失败："消息已过期或者为内层消息"，所以内联才是主路径）
-    let fwdItems = Array.isArray(ev._scratch?.forwards) ? ev._scratch.forwards : []
-    if (ev.wake && !fwdItems.length && ev.replyToId) {
-      try {
-        const qMsg = await onebot.msgById(ev.replyToId)
-        const qParsed = qMsg ? extractText(qMsg.message ?? qMsg.raw_message ?? '', onebot.selfId) : null
-        if (qParsed?.forwards?.length) fwdItems = qParsed.forwards
-      } catch (e) {
-        log.debug(`反查被引消息失败（不影响本轮）: ${e.message}`)
-      }
-    }
-    if (ev.wake && fwdItems.length) {
-      const parts = []
-      for (const item of fwdItems.slice(0, 2)) {   // 一条消息最多两条转发
-        // ① 先用已经内联好的正文（主路径，省一次接口且更可靠）
-        let rendered = renderForward(Array.isArray(item?.content) ? { content: item.content } : null)
-        // ② 内联没有才回退请求（有些来源确实只给 id）
-        if (!rendered && item?.id) {
-          try {
-            const fwd = await onebot.getForwardMsg(item.id)
-            rendered = fwd ? renderForward(fwd) : ''
-          } catch (e) {
-            log.warn(`取合并转发失败（id=${item.id}）: ${e.message}`)
-          }
-        }
-        parts.push(rendered || '（这条转发的内容取不到）')
-      }
-      if (parts.length) ev.hint.push(`[合并转发内容（原文，按条分隔）]\n${parts.join('\n---\n')}`)
-    }
-
-    // 3. 入站图片（含被引图）三级溯源下载 → sharp 缩图(≤8000px) → 填 ev.imageParts & ev.imagePaths
-    if (Array.isArray(ev.images) && ev.images.length && !ev.imageParts.length) {
-      for (const im of ev.images) {
-        const file = String(im?.file || '')
-        const url = String(im?.url || '')
-        if (!file && !url) continue
-        try {
-          let buf = null
-          if (file && fs.existsSync(file) && fs.statSync(file).isFile()) {
-            buf = fs.readFileSync(file)
-          } else if (file && typeof onebot.getFile === 'function') {
-            const info = await onebot.getFile(file)
-            if (info?.file && fs.existsSync(info.file) && fs.statSync(info.file).isFile()) {
-              buf = fs.readFileSync(info.file)
-            } else if (info?.url && /^https?:\/\//.test(info.url)) {
-              const r = await fetch(info.url, { signal: AbortSignal.timeout(15000) })
-              if (r.ok) buf = Buffer.from(await r.arrayBuffer())
-            }
-            // 容器部署兜底：get_file 回的是容器内路径，宿主机读不到（见 onebot-adapter 的 getFileUrl）
-            if (!buf && typeof onebot.getFileUrl === 'function') {
-              const link = await onebot.getFileUrl(file, {
-                groupId: ev.isGroup ? ev.groupId : null,
-                userId: ev.sender?.qq ?? null,
-              })
-              if (link) {
-                const r = await fetch(link, { signal: AbortSignal.timeout(15000) })
-                if (r.ok) buf = Buffer.from(await r.arrayBuffer())
-              }
-            }
-          }
-          if (!buf && /^https?:\/\//.test(url)) {
-            const r = await fetch(url, { signal: AbortSignal.timeout(15000) })
-            if (r.ok) buf = Buffer.from(await r.arrayBuffer())
-          }
-          if (!buf || !buf.length) continue
-          buf = await shrinkImageForModel(buf)
-          const mediaType = detectImageMediaType(buf)
-          ev.imageParts.push({ mediaType, data: buf.toString('base64'), name: 'qq-image' })
-          const ext = mediaType === 'image/png' ? 'png' : mediaType === 'image/gif' ? 'gif' : mediaType === 'image/webp' ? 'webp' : 'jpg'
-          const tmpPath = tmp.file('incoming', `.${ext}`)
-          fs.writeFileSync(tmpPath, buf)
-          ev.imagePaths.push(tmpPath)
-        } catch (e) {
-          log.warn(`入站图片处理失败: ${e.message}`)
-        }
-      }
-    }
+    // 2.5 内联优先展开转发，同时保留条目/图片归属；短期追问只关联同群同人。
+    await appendForwardContext(ev, { onebot, state })
+    // 3. 普通图、被引图、转发图复用溯源下载及缩图流程，加载后报告实际状态。
+    await loadIncomingImages(ev, { onebot, tmp, shrink: shrinkImageForModel, log })
   }, { order: 50, pluginId: 'kernel:context' })
 
   // ── 原生工具注册：必须 inject 后再注册（受限 ctx 的坑，见文件头纪律 3） ──

@@ -218,6 +218,9 @@ export function createDshDriver(opts) {
     const content = [{ type: 'text', text: promptText }]
     for (const im of Array.isArray(imageParts) ? imageParts : []) {
       if (im?.data && im.mediaType) {
+        if (String(im.name || '').startsWith('qq-forward:')) {
+          content.push({ type: 'text', text: `[下一张图片对应：${im.name.slice('qq-forward:'.length)}；外部转发材料]` })
+        }
         content.push({ type: 'image', mediaType: im.mediaType, data: im.data, name: im.name || 'qq-image' })
       }
     }
