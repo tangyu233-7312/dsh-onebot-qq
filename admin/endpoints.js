@@ -495,23 +495,6 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
     return items
   }
 
-  /** 控制项 → 控制台一行控件的形状（旧「群记忆·工具配置」也用它，现在给所有内联控件面板用）。 */
-  function controlPayload(entry, raw) {
-    return {
-      key: entry.key,
-      group: entry.group,
-      label: entry.label,
-      type: entry.type,
-      unit: entry.unit || '',
-      min: entry.min,
-      max: entry.max,
-      step: entry.step,
-      options: entry.options || null,
-      hint: entry.hint || '',
-      value: safe(() => readValue(kernel, entry.key, raw), entry.default),
-    }
-  }
-
   // ── schema ─────────────────────────────────────────────────
   function schema() {
     const raw = store.read()

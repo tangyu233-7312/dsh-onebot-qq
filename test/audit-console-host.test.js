@@ -12,9 +12,10 @@ test('控制台 HTTP：回环、本机网卡和额外 Host 可用；陌生 Host 
     else process.env.QQ_CONSOLE_ALLOWED_HOSTS = previous
   })
   let handler
+  const logs = []
   const host = await createAdminHost({
     ctx: { webServer: { register(route) { handler = route.handler } } },
-    kernel: {}, ops: {}, log: { info() {}, warn() {} },
+    kernel: {}, ops: {}, log: { info(message) { logs.push(message) }, warn() {} },
   })
   t.after(() => host.dispose())
   assert.ok(handler, '公开宿主入口应注册 HTTP handler')
@@ -35,5 +36,6 @@ test('控制台 HTTP：回环、本机网卡和额外 Host 可用；陌生 Host 
     })
     assert.equal(response.status, name.startsWith('unknown.') ? 403 : 200, name)
     if (response.status === 200) assert.equal(JSON.parse(response.body).result.value.ok, false, '未知端点干净返回业务错误')
+    else assert.ok(logs.some(message => message.includes('拒绝 Host=' + name)), '拒绝请求应留下可诊断的日志')
   }
 })

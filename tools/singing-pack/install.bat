@@ -42,8 +42,8 @@ echo ============================================
 echo  安装完成。接下来：
 echo   1. 把你的 .pth 音色模型放进 voice-models\
 echo      （可配同名 .index 提升音色相似度）
-echo   2. 把歌放进 songs\，或用 tools\fetch-song.js 抓
-echo   3. 把 skills\singing 整个目录复制到 QQ-agent 的 skills\
-echo   4. 控制台里启用「唱歌」技能，填好 Python 路径
+echo   2. 把歌曲音频放进 songs\
+echo   3. QQ 控制台「语音与唱歌」启用唱歌，填写 RVC 目录与 Python 路径
+echo   4. 运行 python\rvc-infer.py info 检查依赖，再测试点歌
 echo ============================================
 endlocal

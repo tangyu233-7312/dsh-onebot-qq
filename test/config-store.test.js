@@ -23,7 +23,6 @@ import {
   applyCredentialEnv,
   loadConfig,
   saveConfig,
-  exampleConfig,
 } from '../kernel/config-store.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -292,7 +291,6 @@ test('examples/config.example.json：合法、能通过校验、无私有值', (
   assert.equal(merged.adminQq, 10001, '示例用占位 QQ')
   assert.deepEqual(validateConfig(merged), [], '示例配置填完占位值后应能通过校验')
   assert.equal(merged.credentials.gptImage.protocol, 'openai-images', '示例配置应带生图协议字段')
-  assert.equal(exampleConfig().version, CONFIG_VERSION)
 })
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -19,7 +19,6 @@ import {
   buildPromptText,
   toWellFormedText,
   escapeCq,
-  parseWire,
 } from '../kernel/format.js'
 import { ChatState, Pipeline, createDeliver, currentTurn } from '../kernel/state-pipeline.js'
 import { createEvent, SENSITIVE_KINDS } from '../contracts.js'
@@ -403,7 +402,6 @@ test('deliver：target/空正文校验；@ 名字反查；显式 replyTo 与 0 �
   assert.equal(rn.replyTo, -123456)
   assert.equal(rn.mode, 'reply')
   assert.ok(sent.at(-1).wire.startsWith('[CQ:reply,id=-123456]'))
-  assert.equal(parseWire(sent.at(-1).wire).replyTo, -123456, '留档/回报解析也要认负 id')
 })
 
 test('deliver：超长且无 @/引用 → 合并转发卡片；卡片失败自动降级普通发送，不吞话', async () => {

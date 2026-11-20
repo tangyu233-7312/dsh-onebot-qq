@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { pickSplitPoint, splitBubbles } from '../kernel/format.js'
+import { splitBubbles } from '../kernel/format.js'
 import { bootKernel, emitRaw, waitFor, ADMIN_QQ, GROUP_ID, MEMBER_QQ, groupAtEvent, privateEvent } from './helpers.mjs'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -198,15 +198,6 @@ test('splitBubbles：按自然句拆 2~N 条；无断点/带 CQ → null；超�
   const p = splitBubbles('好。行。那就这样。明天见。', { maxParts: 3 })
   assert.equal(p.length, 3, '四句按上限收到三条')
   assert.equal(p.join(''), '好。行。那就这样。明天见。', '拆完拼回去不能丢字')
-})
-
-test('pickSplitPoint 边界：短开头+正话才拆；首句过长/单句/带 CQ → null（降级单条）', () => {
-  const split = pickSplitPoint('好呀，这个我知道。今天天气不错，适合出去玩。')
-  assert.ok(Array.isArray(split) && split.length === 2, '有自然断点 → 拆两条')
-  assert.equal(split[0] + split[1], '好呀，这个我知道。今天天气不错，适合出去玩。')
-  assert.equal(pickSplitPoint('嗯'), null, '单句太短不拆')
-  assert.equal(pickSplitPoint('这是一个特别特别特别特别特别特别特别特别特别特别长的句子没有断点'), null, '无自然断点不拆')
-  assert.equal(pickSplitPoint('[CQ:image,file=a.png] 看图'), null, '带 CQ 码不拆')
 })
 
 test('插件热关：persona-voice.enabled=false → pick() 返回空，调用方回落各自内置兜底句', async (t) => {

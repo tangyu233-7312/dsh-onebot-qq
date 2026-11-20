@@ -252,14 +252,6 @@ export function scoreBili(v) {
   return score
 }
 
-/** 从候选里挑最像原曲的一条。 */
-export function pickBiliBest(list) {
-  if (!list?.length) return null
-  const clean = list.filter(v => !BILI_BAD.test(v.title))
-  const pool = clean.length ? clean : list
-  return [...pool].sort((a, b) => scoreBili(b) - scoreBili(a))[0] || null
-}
-
 /** 用 yt-dlp 下 B 站音频到曲库。返回落地文件路径。 */
 export async function downloadBili(py, bvid, dir, proxy = []) {
   await fsp.mkdir(dir, { recursive: true })

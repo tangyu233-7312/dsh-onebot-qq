@@ -1522,9 +1522,9 @@ export async function apply(ctx, bundleConfig = {}) {
     config: { dataDir, configPath, toolPrefix: prefix, adminQq: kernel.adminQq, configReady, version: PACKAGE_VERSION },
   })
 
-  // ── 控制面（admin/host.js 由工作流 B 提供；未就绪时只记 TODO，不挡内核） ──
+  // ── 控制面（控制台加载失败时保留聊天内核，接口返回明确错误） ──
   let adminHost = null
-  const ADMIN_TODO = '控制面未就绪（admin/host.js 尚未提供）'
+  const ADMIN_UNAVAILABLE = '控制台接口不可用'
   try {
     const mod = await import('./admin/host.js')
     if (typeof mod.createAdminHost === 'function') {
@@ -1533,31 +1533,22 @@ export async function apply(ctx, bundleConfig = {}) {
       else if (host && typeof host === 'object') adminHost = host
       if (adminHost) log.info('控制面已挂载（/qq-console RPC）')
     } else {
-      log.warn(`admin/host.js 没有导出 createAdminHost（${ADMIN_TODO}）`)
+      log.warn(`admin/host.js 没有导出 createAdminHost（${ADMIN_UNAVAILABLE}）`)
     }
   } catch (e) {
     const isMissing = e?.code === 'ERR_MODULE_NOT_FOUND' && /admin[\\/]host\.js/.test(String(e.message))
-    if (isMissing) log.warn(`[控制面] admin/host.js 尚未就绪（TODO：待控制面工作流提供）— RPC 控制台暂不可用`)
+    if (isMissing) log.warn(`[控制面] admin/host.js 缺失，控制台暂不可用`)
     else log.error(`[控制面] admin/host.js 加载失败: ${e.message}`)
   }
   // 与控制面契约一致：业务失败返回 {ok:false,error}，不 throw（compat-server / 测试直调都吃这个形状）
   const adminHandle = async (endpoint, payload) => {
-    if (!adminHost?.handle) return { ok: false, error: ADMIN_TODO }
+    if (!adminHost?.handle) return { ok: false, error: ADMIN_UNAVAILABLE }
     try { return await adminHost.handle(endpoint, payload) } catch (e) { return { ok: false, error: String(e?.message || e) } }
   }
-  // 兼容旧内部形态（同步取 schema / 读值 / 写值）：控制面就绪时直接复用它的实现
+  // 同步取控制台 schema：控制面就绪时复用它的实现
   kernel.adminSchema = () => (
-    adminHost?.api?.schema ? adminHost.api.schema() : { ok: false, error: ADMIN_TODO }
+    adminHost?.api?.schema ? adminHost.api.schema() : { ok: false, error: ADMIN_UNAVAILABLE }
   )
-  kernel.adminRead = () => {
-    if (!adminHost?.api?.schema) return { ok: false, error: ADMIN_TODO }
-    const schema = adminHost.api.schema() || {}
-    return Object.fromEntries((schema.controls || []).map((c) => [c.key, c.value]))
-  }
-  kernel.adminWrite = (key, value) => {
-    if (!adminHost?.handle) throw new Error(ADMIN_TODO)
-    return adminHost.handle('set', { key, value })
-  }
   kernel.handleAdminRpc = adminHandle
   /**
    * 控制台「生图 → 🧪 试优化一条提示词」的后端入口。

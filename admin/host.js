@@ -100,7 +100,7 @@ function allowedConsoleHosts() {
   return set
 }
 
-function webServerHandler(api) {
+function webServerHandler(api, log) {
   const prefix = `${CHANNEL}/`
   const allowed = allowedConsoleHosts()
   return async (req, res) => {
@@ -108,7 +108,7 @@ function webServerHandler(api) {
     const host = raw.split(':')[0]
     if (!allowed.has(host)) {
       // 打一行日志：不然"为什么 403"只能靠猜（这行以前没有，排错花了很久）
-      info(api.log, `拒绝 Host=${raw}：不在允许名单（回环 / 本机网卡 / QQ_CONSOLE_ALLOWED_HOSTS）`)
+      info(log, `拒绝 Host=${raw}：不在允许名单（回环 / 本机网卡 / QQ_CONSOLE_ALLOWED_HOSTS）`)
       res.writeHead(403)
       res.end('forbidden')
       return
@@ -193,7 +193,7 @@ export async function createAdminHost({ ctx, kernel, configPath = '', dataDir = 
     try {
       const webServer = child?.webServer
       if (webServer && typeof webServer.register === 'function') {
-        const dispose = webServer.register({ kind: 'prefix', path: CHANNEL, handler: webServerHandler(api) })
+        const dispose = webServer.register({ kind: 'prefix', path: CHANNEL, handler: webServerHandler(api, log) })
         if (typeof dispose === 'function') disposers.push(dispose)
         mode = 'webServer'
         info(log, `webServer 直挂路由已注册 ${CHANNEL}/*（信封 {type:'server-response'}）`)
@@ -267,9 +267,4 @@ export async function handleAdminRpc(endpoint, payload = {}) {
   } catch (e) {
     return { ok: false, error: String(e?.message || e) }
   }
-}
-
-/** 取当前控制面（调试/测试用；未初始化返回 null）。 */
-export function getAdminHost() {
-  return active ? active.api : null
 }

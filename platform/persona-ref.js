@@ -97,25 +97,6 @@ export function newestVersionOf(names, prefix = '') {
   return prefix && list.includes(prefix) ? prefix : list[list.length - 1]
 }
 
-/**
- * 人设库里的「角色」列表：把 `角色YYYYMMDD[-N]` 归并成 `角色`。
- * 用来在控制台只显示一个角色，而不是几十个日期版本。
- */
-export function personaRoles(personaDir) {
-  const roles = new Map()
-  for (const name of listPersonas(personaDir)) {
-    const m = /^(.*?)(?:\d{8})(?:[-_]\d+)?$/.exec(name)
-    const role = m && m[1] ? m[1] : name
-    if (!roles.has(role)) roles.set(role, [])
-    roles.get(role).push(name)
-  }
-  return [...roles.entries()].map(([role, versions]) => ({
-    role,
-    versions: versions.sort(),
-    latest: newestVersionOf(versions, versions.some((v) => v !== role) ? role : ''),
-  }))
-}
-
 function firstExisting(candidates) {
   for (const p of candidates) {
     try {

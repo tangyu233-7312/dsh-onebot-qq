@@ -55,11 +55,6 @@ export function sanitizeSensitive(text, { exempt = false } = {}) {
   return { text: out, hits }
 }
 
-/** 兼容旧调用：只要清理后的文本 */
-export function redactSensitive(text) {
-  return sanitizeSensitive(text).text
-}
-
 // ============================================================
 // CQ 码 / @ 标记 / 文本长度
 // ============================================================
@@ -142,10 +137,6 @@ export function splitLongText(text, opts = {}) {
 }
 
 /**
- * 拆条用：找"短开头 + 正话"的自然断点，找不到返回 null。
- * 只在首句够短（2~13 字、不含换行）且余下 ≥8 字时才拆 —— 绝不把一句话拦腰砍断。
- */
-/**
  * 把一段回复按**自然句末**切成 2~maxParts 条（拆条 = 连发几条短消息，像真人打字）。
  *
  * 纪律：只在句末标点（。！？!?…～~）或换行处切，**绝不把一句话从中间砍开**；
@@ -178,17 +169,6 @@ export function splitBubbles(text, { maxParts = 3, minPartChars = 2 } = {}) {
     parts.splice(at, 2, parts[at] + parts[at + 1])
   }
   return parts.length >= 2 ? parts : null
-}
-
-/** 旧接口（只拆两条）：等价于 splitBubbles(text, { maxParts: 2 })。 */
-export function pickSplitPoint(text) {
-  const parts = splitBubbles(text, { maxParts: 2 })
-  if (!parts) return null
-  // 老语义还有两条长度约束：首条是短反应（≤13 字），第二条得说满 8 字
-  const [head, tail] = parts
-  if (!head || !tail || head.includes('\n')) return null
-  if (head.length > 13 || tail.length < 8) return null
-  return [head, tail]
 }
 
 /**
@@ -224,29 +204,6 @@ export function parseKeywordLines(input) {
     push(key || '*', body.split(/[,，\s]+/).map((w) => w.trim()).filter(Boolean))
   }
   return table
-}
-
-// ============================================================
-// 出站 wire（CQ 码串）解析 —— 给留档/回报用，不参与发送
-// ============================================================
-
-/** wire 串 → 可读文本（剥 CQ 码） */
-export function wireToText(wire) {
-  return String(wire ?? '')
-    .replace(/\[CQ:reply,id=-?\d+\]\s*/g, '')
-    .replace(/\[CQ:at,qq=(\d+)[^\]]*\]/g, '@$1')
-    .replace(/\[CQ:image,[^\]]*\]/g, '[图片]')
-    .replace(/\[CQ:face,[^\]]*\]/g, '[表情]')
-    .trim()
-}
-
-/** wire 串 → { at, replyTo, images } */
-export function parseWire(wire) {
-  const s = String(wire ?? '')
-  const at = [...s.matchAll(/\[CQ:at,qq=(\d+)/g)].map((m) => Number(m[1]))
-  const reply = /\[CQ:reply,id=(-?\d+)\]/.exec(s)
-  const images = [...s.matchAll(/\[CQ:image,[^\]]*file=([^,\]]+)/g)].map((m) => m[1])
-  return { at, replyTo: reply ? Number(reply[1]) : null, images }
 }
 
 // ============================================================
@@ -305,14 +262,6 @@ export function pickImageSizeByRatio(buf) {
 export function senderNameOf(event, userId) {
   const s = event?.sender ?? event ?? {}
   return s.card || s.name || s.nickname || String(userId ?? s.qq ?? '')
-}
-
-/** 北京时间字符串（进程时区是 UTC，手工 +8） */
-export function beijingTime(ms) {
-  const d = new Date(Number(ms || Date.now()) + 8 * 3600 * 1000)
-  const p = (n) => String(n).padStart(2, '0')
-  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} `
-    + `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
 }
 
 // ============================================================
@@ -394,59 +343,6 @@ function extractCardUrl(seg) {
  *    —— 旧实现两处判据不一致，采集侧把 sub_type 7/11 的表情静默滤掉过。
  *  · 卡片链接抽出来单独放 cards，**不塞进 text**：保持"卡片不算文字"的旧行为，只有链接解析用它。
  */
-/**
- * 把一条合并转发（get_forward_msg 的返回）渲染成可读文本。
- *
- * 为什么单独一个函数：转发是**嵌套结构**（一条转发里还有发送者、时间、以及任意段），
- * 内联在 extractText 里会和主流程互相纠缠；而且它是**纯函数**，测试不用起协议端。
- *
- * 取舍：
- *   · 每条前缀 `[昵称(QQ:号)]: `（跟群上文格式一致，模型认这个形状）
- *   · 单条正文 clip 到 `perItemChars`，整体 clip 到 `totalChars` —— 一条 200 条的转发
- *     全塞进去会把上下文撑爆，而模型只需要"大概聊了啥"
- *   · 超量时明确告诉模型"后面还有 N 条省略"，别让它以为就这些
- *
- * @param {{messages:Array}|null} forward  get_forward_msg 的返回
- * @param {object} [opts]
- * @param {number} [opts.maxItems]      最多渲染几条（默认 30）
- * @param {number} [opts.perItemChars]  单条最多多少字（默认 80）
- * @param {number} [opts.totalChars]    总字数上限（默认 2000）
- * @returns {string} 渲染结果；forward 为空时返回 ''（调用方据此降级）
- */
-export function renderForward(forward, opts = {}) {
-  // 两种来源都吃：
-  //   · get_forward_msg 的返回 → { messages: [...] }
-  //   · get_msg 内联的 forward 段 → { content: [...] }（真机走这条，别漏）
-  const list = Array.isArray(forward?.messages) ? forward.messages
-    : Array.isArray(forward?.content) ? forward.content
-      : Array.isArray(forward) ? forward
-        : []
-  if (!list.length) return ''
-  const maxItems = Number(opts.maxItems) > 0 ? Number(opts.maxItems) : 30
-  const perItem = Number(opts.perItemChars) > 0 ? Number(opts.perItemChars) : 80
-  const total = Number(opts.totalChars) > 0 ? Number(opts.totalChars) : 2000
-
-  const shown = list.slice(0, maxItems)
-  const lines = []
-  for (const it of shown) {
-    const uid = it?.sender?.user_id ?? it?.user_id ?? ''
-    const name = String(it?.sender?.card || it?.sender?.nickname || uid || '?')
-    // 每条内容按段解析（不递归 parse 转发 —— 嵌套转发极罕见，且会被 QQ 折叠）
-    // ⚠️ 真机：内层条目的 message 有时是空字符串/空数组，正文只在 raw_message 里
-    const body = clipChars(extractText(it?.message ?? it?.content ?? '', null).text
-      || String(it?.raw_message ?? '').trim()
-      || '[非文字]', perItem)
-      .replace(/\s+/g, ' ')
-      .trim()
-    lines.push(`[${name}${uid ? `(QQ:${uid})` : ''}]: ${body}`)
-  }
-  let text = lines.join('\n')
-  if (text.length > total) text = `${clipChars(text, total)}…`
-  const rest = list.length - shown.length
-  if (rest > 0) text += `\n…（还有 ${rest} 条未列出）`
-  return text
-}
-
 export function extractText(message, selfId) {
   let segments = []
   if (typeof message === 'string') segments = parseCqString(message)

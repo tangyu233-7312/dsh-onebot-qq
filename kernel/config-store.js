@@ -404,8 +404,3 @@ export function saveConfig(configPath, raw, { backup = true } = {}) {
   atomicWriteFileSync(file, `${JSON.stringify(raw, null, 4)}\n`, { mode: 0o600 })
   return { ok: true, file, backup: backupFile ? path.basename(backupFile) : '' }
 }
-
-/** 生成示例配置（init 用；adminQq=0 表示待填）。 */
-export function exampleConfig() {
-  return defaultConfig()
-}
