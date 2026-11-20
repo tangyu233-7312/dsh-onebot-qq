@@ -1190,6 +1190,21 @@ export async function apply(ctx, bundleConfig = {}) {
       if (at) { clearTimeout(at); activeTurnTimers.delete(turnCtx.chatKey) }
     }
   }
+  // Attribution snapshots differ per input; effects belong to the whole DSH turn.
+  // Accessors also retain late updates from an async tool using an earlier snapshot.
+  function bindTurnEffects(turn, previous) {
+    const effects = previous?._effects || {
+      stickersSent: turn.stickersSent || 0,
+      imagegenUsed: turn.imagegenUsed || 0,
+      stickerNudged: turn.stickerNudged || 0,
+      nextImageParts: turn.nextImageParts || [],
+    }
+    turn._effects = effects
+    for (const key of Object.keys(effects)) Object.defineProperty(turn, key, {
+      enumerable: true, configurable: true,
+      get: () => effects[key], set: (value) => { effects[key] = value },
+    })
+  }
   function consumeInput(sessionId, requestId) {
     if (!requestId) return
     const input = kernel.pendingTurns.get(sessionId)?.find((t) => t.requestId === requestId)
@@ -1198,6 +1213,7 @@ export async function apply(ctx, bundleConfig = {}) {
     input._turnStarted = true
     const previous = kernel.turnBySession.get(sessionId)
     if (!previous) {
+      bindTurnEffects(input)
       holdTurnSession(sessionId, input)
       holdActiveTurn(input.chatKey, input)
       return
@@ -1209,8 +1225,8 @@ export async function apply(ctx, bundleConfig = {}) {
       // Renew only the newest consumed input, not everybody in this turn.
       participants: input.participants,
       _triggeredBy: inputs.every((t) => t._triggeredBy === 'master') ? 'master' : 'other',
-      nextImageParts: inputs.flatMap((t) => t.nextImageParts || []),
     }
+    bindTurnEffects(combined, previous)
     if (inputs.some((t) => ['at', 'quote', 'keyword', 'private'].includes(t.wakeKind))) {
       combined.wakeKind = inputs.findLast((t) => t.wakeKind !== 'followup')?.wakeKind || input.wakeKind
     }

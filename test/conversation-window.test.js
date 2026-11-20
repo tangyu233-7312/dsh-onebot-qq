@@ -243,11 +243,21 @@ test('连续读取两次插话：引用跟随最新输入，结束后所有输�
   const h = await boot(t)
   await emitRaw(h.kernel, groupAtEvent({ text: '第一问', messageId: 721 }))
   const a = h.ctx._prompts[0]; start(h, a)
+  const original = h.kernel.turnBySession.get(a.sessionId)
+  original.stickersSent = 1
+  original.stickerNudged = 2
   for (const messageId of [722, 723]) {
     await emitRaw(h.kernel, groupAtEvent({ text: '补充问题', userId: MEMBER_QQ, messageId }))
     consumed(h, h.ctx._prompts.at(-1))
   }
   assert.equal(h.kernel.turnBySession.get(a.sessionId)._inputs.length, 3)
+  const latest = h.kernel.turnBySession.get(a.sessionId)
+  assert.equal(latest.stickersSent, 1, '插话不重置单轮表情额度')
+  assert.equal(latest.stickerNudged, 2, '插话不重置提醒次数')
+  original.imagegenUsed++ // async tool finishing after consumption of a steer
+  assert.equal(latest.imagegenUsed, 1, '旧工具异步完成仍更新同一回合')
+  original.nextImageParts.push({ name: 'frame' })
+  assert.deepEqual(latest.nextImageParts, [{ name: 'frame' }])
   await send(h, a, '回答最新补充'); assert.match(h.sent.at(-1).wire, /reply,id=723/)
   end(h, a)
   assert.equal(h.kernel.pendingTurns.size, 0)
