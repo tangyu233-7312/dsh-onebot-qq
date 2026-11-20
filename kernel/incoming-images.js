@@ -47,9 +47,12 @@ export async function loadIncomingImages(ev, { onebot, tmp, shrink = async (buf)
   let usedBytes = 0
   const hasEarlierParts = ev.imageParts.length > 0
   for (const im of ev.images || []) {
+    // gif-read 成功后，原始 GIF 已经由侧车展开成多张帧；不要再把 GIF 容器重复送给模型。
+    const consumedGif = ev._scratch?.['gif-read:consumed']
+    if (im._gifReadConsumed || [im.file, im.url].filter(Boolean).some((key) => consumedGif?.has?.(String(key)))) continue
     const forwarded = !!im._forwardLabels?.length
-    // 保持视频插件原有优先级，但它已有帧时，不能再把本轮转发图一起跳过。
-    if (hasEarlierParts && !forwarded) continue
+    // GIF 展开时同消息里的普通图片仍可继续加载；视频插件未标记时保持原有优先级。
+    if (hasEarlierParts && !forwarded && ev._scratch?.['gif-read:expanded'] !== true) continue
     if (forwarded && now() >= deadline) { im._forwardResult = { reason: '图片处理超时' }; continue }
     const maxBytes = forwarded ? Math.min(cap.perImageBytes, cap.totalBytes - usedBytes) : Infinity
     if (maxBytes <= 0) { im._forwardResult = { reason: '图片总量超限' }; continue }
