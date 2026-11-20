@@ -1,34 +1,39 @@
-/**
- * test/audit-console-host.test.js — 控制台 Host 白名单（2026-10-30）
- *
- * 线上两次踩同一个坑：NAS 上手改过 admin/host.js 的 IP 白名单，一重装就被覆盖，
- * 表现是「设置 → QQ 控制台 → 读取失败 transport failure / HTTP 403」。
- * 现在改成自动收集本机网卡地址，这条测试盯着「不要再退回只认回环」。
- */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import path from 'node:path'
 import os from 'node:os'
+import http from 'node:http'
+import { createAdminHost } from '../admin/host.js'
 
-const root = path.join(import.meta.dirname, '..')
-const src = fs.readFileSync(path.join(root, 'admin', 'host.js'), 'utf8')
-
-test('Host 白名单不能只有回环（NAS 上用局域网 IP 访问会 403）', () => {
-  assert.match(src, /networkInterfaces\(\)/, '要靠网卡枚举自动收集，而不是手写 IP')
-  assert.match(src, /allowedConsoleHosts/, '要有统一的名单函数')
-})
-
-test('允许额外配置的 Host（反代 / 跨网段）', () => {
-  assert.match(src, /QQ_CONSOLE_ALLOWED_HOSTS/, '要留一个环境变量口子')
-})
-
-test('403 时要留日志（不然只能靠猜）', () => {
-  assert.match(src, /拒绝 Host=/, '拒绝时打一行日志')
-})
-
-test('不要把具体 IP 写死在源码里', () => {
-  const ips = [...src.matchAll(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g)].map((m) => m[0])
-  const hardcoded = ips.filter((ip) => !/^(127\.0\.0\.1|0\.0\.0\.0|255\.|10\.0\.2\.)/.test(ip))
-  assert.deepEqual(hardcoded, [], '写死 IP 换网络就坏：' + hardcoded.join(','))
+test('控制台 HTTP：回环、本机网卡和额外 Host 可用；陌生 Host 被拒绝', async t => {
+  const previous = process.env.QQ_CONSOLE_ALLOWED_HOSTS
+  process.env.QQ_CONSOLE_ALLOWED_HOSTS = 'console.example.invalid'
+  t.after(() => {
+    if (previous === undefined) delete process.env.QQ_CONSOLE_ALLOWED_HOSTS
+    else process.env.QQ_CONSOLE_ALLOWED_HOSTS = previous
+  })
+  let handler
+  const host = await createAdminHost({
+    ctx: { webServer: { register(route) { handler = route.handler } } },
+    kernel: {}, ops: {}, log: { info() {}, warn() {} },
+  })
+  t.after(() => host.dispose())
+  assert.ok(handler, '公开宿主入口应注册 HTTP handler')
+  const server = http.createServer(handler)
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise(resolve => server.close(resolve)))
+  const locals = Object.values(os.networkInterfaces()).flat().filter(x => x?.family === 'IPv4').map(x => x.address)
+  for (const name of ['localhost', '127.0.0.1', ...new Set(locals), 'console.example.invalid', 'unknown.example.invalid']) {
+    const response = await new Promise((resolve, reject) => {
+      const request = http.request({ hostname: '127.0.0.1', port: server.address().port,
+        path: '/qq-console/unknown', method: 'POST', headers: { host: name }, agent: false }, res => {
+        let body = ''
+        res.on('data', chunk => { body += chunk })
+        res.on('end', () => resolve({ status: res.statusCode, body }))
+      })
+      request.on('error', reject)
+      request.end('{}')
+    })
+    assert.equal(response.status, name.startsWith('unknown.') ? 403 : 200, name)
+    if (response.status === 200) assert.equal(JSON.parse(response.body).result.value.ok, false, '未知端点干净返回业务错误')
+  }
 })

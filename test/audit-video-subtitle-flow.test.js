@@ -3,75 +3,36 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import vm from 'node:vm'
-import crypto from 'node:crypto'
 import video from '../plugins/video-link-read/index.js'
 import parser from '../plugins/link-parser/index.js'
-import { subtitleText } from '../sidecar/subtitle.mjs'
-const source = fs.readFileSync(new URL('../sidecar/server.mjs', import.meta.url), 'utf8')
-function fn(name) {
-  const start = source.indexOf('function ' + name + '(')
-  const a = source.slice(start - 6, start) === 'async ' ? start - 6 : start
-  const end = source.indexOf('\n}\n', start) + 3
-  assert.ok(start >= 0 && end > start, name)
-  return source.slice(a, end)
-}
-function sidecar(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'subtitle-flow-'))
-  const sub = path.join(dir, 'video.ai-zh.srt')
-  fs.writeFileSync(sub, '1\n00:00:01,000 --> 00:00:03,000\n字幕测试内容\n\n2\n00:01:01,000 --> 00:01:03,000\n结尾字幕\n')
-  const file = path.join(dir, 'video.mp4')
-  fs.writeFileSync(file, 'fixture')
-  const calls = []
-  const cfg = {concurrency:2,maxMb:250,subtitle:false,subtitleMaxChars:6000,reuseMinutes:10}
-  const c = vm.createContext({
-    CFG:cfg,fs,crypto,path,FRAME_DIR:dir,DL_DIR:dir,running:0,
-    recentDownloads:new Map(),nowMs:()=>1000,reuseMs:()=>600000,
-    rand:()=> 'fixture',log(){},mb:n=>n/1048576,hostAllowed:()=>({ok:true}),
-    fsp:{mkdir:async()=>{},stat:async()=>({size:7}),rm:async()=>{}},
-    ytdlpMeta:async()=>({title:'fixture',durationSec:60,platform:'bilibili'}),
-    ytdlpDownload:async(url,out,options)=>{
-      calls.push(options)
-      const has=options.subtitle && cfg.biliCookies
-      return {ok:true,file,size:7,subs:has?[sub]:[],subtitleStatus:!options.subtitle?'disabled':has?'downloaded':'login_required'}
-    },
-    limitOf:()=>({seconds:1500,frames:8}),
-    extractFrames:async()=>({ok:true,durationSec:60,frames:[{path:file,sec:1}]}),subtitleText,
-  })
-  vm.runInContext(['subtitleOptions','subtitleCacheKey','cachedDownload','rememberDownload','handleParse','handleRead'].map(fn).join('\n'),c)
-  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}))
-  return {c,cfg,calls,body:{url:'https://www.bilibili.com/video/BV1xx411c7mD',platform:'bilibili',subtitle:true}}
-}
-test('字幕 /parse → /read 复用仍保留字幕，只下载一次',async t=>{
-  const {c,cfg,calls,body}=sidecar(t);cfg.biliCookies='EXAMPLE_LOGIN'
-  assert.equal((await c.handleParse(body)).ok,true)
-  const read=await c.handleRead(body)
-  assert.equal(read.ok,true);assert.match(read.subtitle.text,/字幕测试内容/)
-  assert.equal(read.subtitleStatus,'available');assert.equal(calls.length,1)
+import { startSidecar } from './sidecar-fixture.mjs'
+
+test('HTTP 字幕缓存：parse/read 两个方向复用，开关与登录态改变失效，字数改变复用', async t => {
+  const s = await startSidecar(t)
+  const base = { url: 'https://www.bilibili.com/video/BV1xx411c7mD', platform: 'bilibili' }
+  await s.request('/config', { biliCookies: 'fixture=value', subtitle: false })
+  const off = await s.request('/read', base)
+  assert.equal(off.subtitleStatus, 'disabled')
+  const on = await s.request('/read', { ...base, subtitle: true })
+  assert.equal(on.subtitleStatus, 'available')
+  assert.match(on.subtitle.text, /字幕测试内容/)
+  assert.notEqual(on.mediaPath, off.mediaPath)
+  const parsed = await s.request('/parse', { ...base, subtitle: true })
+  assert.equal(parsed.reused, true)
+  const smaller = await s.request('/read', { ...base, subtitle: true, subtitleMaxChars: 500 })
+  assert.equal(smaller.mediaPath, on.mediaPath, '改字数不重复下载')
+  await s.request('/config', { biliCookies: 'fixture=updated', subtitle: true })
+  const renewed = await s.request('/parse', base)
+  assert.equal(renewed.ok, true)
+  assert.notEqual(renewed.reused, true, '登录态改变需重新下载')
+  const read = await s.request('/read', base)
+  assert.equal(read.subtitleStatus, 'available')
+  assert.equal(read.mediaPath, renewed.media[0].path, 'parse 后 read 复用相同源文件')
+  const disabled = await s.request('/read', { ...base, subtitle: false })
+  assert.equal(disabled.subtitle, null)
+  assert.equal(disabled.subtitleStatus, 'disabled')
 })
-test('字幕 /read → /parse 反向复用不重复下载',async t=>{
-  const {c,cfg,calls,body}=sidecar(t);cfg.biliCookies='EXAMPLE_LOGIN'
-  assert.equal((await c.handleRead(body)).subtitleStatus,'available')
-  assert.equal((await c.handleParse(body)).reused,true);assert.equal(calls.length,1)
-})
-test('开启字幕、更换登录态失效旧缓存，字数调整直接复用',async t=>{
-  const {c,cfg,calls,body}=sidecar(t)
-  assert.equal((await c.handleRead({...body,subtitle:false})).subtitleStatus,'disabled')
-  assert.equal((await c.handleRead(body)).subtitleStatus,'login_required')
-  cfg.biliCookies='EXAMPLE_LOGIN'
-  assert.equal((await c.handleRead(body)).subtitleStatus,'available');assert.equal(calls.length,3)
-  await c.handleRead({...body,subtitleMaxChars:500});assert.equal(calls.length,3)
-  cfg.biliCookies='EXAMPLE_UPDATED'
-  await c.handleRead(body);assert.equal(calls.length,4)
-})
-test('请求开关覆盖侧车旧值；关闭不返回字幕；字数有边界',async t=>{
-  const {c,cfg,body}=sidecar(t);cfg.biliCookies='EXAMPLE_LOGIN'
-  assert.equal((await c.handleRead(body)).subtitleStatus,'available')
-  const off=await c.handleRead({...body,subtitle:false})
-  assert.equal(off.subtitle,null);assert.equal(off.subtitleStatus,'disabled')
-  assert.equal(c.subtitleOptions({subtitleMaxChars:999999}).subtitleMaxChars,20000)
-  assert.equal(c.subtitleOptions({subtitleMaxChars:1}).subtitleMaxChars,500)
-})
+
 function bot(plugin,shared,overrides={}) {
   const hooks={};const cfg=Object.fromEntries(Object.entries(plugin.configSchema).map(([k,v])=>[k,v.default]))
   Object.assign(cfg,overrides)

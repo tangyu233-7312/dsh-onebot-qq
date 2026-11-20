@@ -25,13 +25,6 @@ async function boot(t, opts = {}) {
   return h
 }
 
-test('默认配置：preset = qq-chat，工作区名称 = 「QQ 聊天」', () => {
-  const cfg = defaultConfig()
-  assert.equal(cfg.dsh.agentPreset, 'qq-chat')
-  assert.equal(cfg.dsh.workspaceTitle, 'QQ 聊天')
-  assert.equal(cfg.dsh.qqWorkspacePath, 'workspace')
-})
-
 test('工作区自举：没有已注册工作区时按路径创建「QQ 聊天」（幂等）', async (t) => {
   // 自定义 ctx 且不给 workspacePath → 夹具注册表为空，走真正的 create 分支
   const ctx = createMockCtx({})

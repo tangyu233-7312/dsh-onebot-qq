@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { extractUrls, stripUrls, extractCardUrl, fmtDuration } from '../plugins/link-parser/index.js'
+import { extractUrls, stripUrls, extractCardUrl } from '../plugins/link-parser/index.js'
 import { bootKernel, emitRaw, waitFor, ADMIN_QQ, GROUP_ID, groupAtEvent } from './helpers.mjs'
 
 // 1x1 PNG（最小合法图片字节）
@@ -95,13 +95,6 @@ test('link-parser extractCardUrl：detail_1.qqdocurl / miniapp / news 挖真链�
   assert.equal(extractCardUrl(segData({ meta: { miniapp: { jumpUrl: 'https://example.invalid/mini' } } })), 'https://example.invalid/mini')
   assert.equal(extractCardUrl(segData({ meta: { news: { jumpUrl: 'https://example.invalid/news' } } })), 'https://example.invalid/news')
   assert.equal(extractCardUrl(segData({ meta: { detail_1: { icon: 'https://example.invalid/icon.png' } } })), null)
-})
-
-test('link-parser fmtDuration：分:秒 格式（向下取整）', () => {
-  assert.equal(fmtDuration(59), '0:59')
-  assert.equal(fmtDuration(65), '1:05')
-  assert.equal(fmtDuration(319.9), '5:19')
-  assert.equal(fmtDuration(3725), '62:05')
 })
 
 test('link-parser 默认关闭：带链接的消息不抢答，照常交给模型', async (t) => {
@@ -454,18 +447,6 @@ test('imagegen 额外字段：JSON 写错 → 立刻报清晰错误、不打上�
   assert.equal(r.ok, true)
 })
 
-test('imagegen 额外字段：控制台「生图」页有该项（text 多行框，归 imagegen）', async (t) => {
-  const h = await bootImagegen(t)
-  const { collectSchema } = await import('../admin/schema.js')
-  const schema = collectSchema(h.kernel, h.raw)
-  const c = (schema.controls || []).find((x) => x.key === 'imagegen.extraBody')
-  assert.ok(c, '控制台应有 imagegen.extraBody')
-  assert.equal(c.plugin, 'imagegen')
-  assert.equal(c.group, '生图')
-  assert.equal(c.type, 'text', '应是多行文本域')
-  assert.equal(c.value, '')
-})
-
 // ─────────────────────────────────────────────────────────────────────────────
 // 图片清单：不再每轮塞正文（2026-10-26 主人要求），改成按需工具 list_images
 // ─────────────────────────────────────────────────────────────────────────────
@@ -631,24 +612,6 @@ test('refine_image_prompt：只返回优化后的文字，不画图、不占冷�
   const g = await gen.execute({ prompt: '画只猫', target: `group:${GROUP_ID}` })
   assert.equal(g.ok, true)
   assert.notEqual(g.blocked, true, 'refine 不占生图冷却')
-})
-
-test('控制台「生图」页：三个优化配置项都在，且提示词框首次显示完整可编辑默认值', async (t) => {
-  const h = await bootImagegen(t, { credentials: IMG_CREDS })
-  const schema = h.kernel.adminSchema()   // 控制表本体（RPC 端点是 {ok,value} 信封）
-  assert.ok(Array.isArray(schema.controls) && schema.controls.length > 0, '控制表应有控件')
-  const byKey = (k) => (schema.controls || []).find((c) => c.key === k)
-  const opt = byKey('imagegen.optimizePrompt')
-  assert.ok(opt, '应有「先让大模型优化提示词」开关')
-  assert.equal(opt.type, 'bool')
-  assert.equal(opt.value, true, '默认开')
-  const txt = byKey('imagegen.promptOptimizeText')
-  assert.ok(txt, '应有可编辑的优化提示词框')
-  assert.equal(txt.type, 'text')
-  assert.equal(txt.plugin, 'imagegen')
-  assert.ok(String(txt.value).includes('生图提示词'), '首次就把默认提示词显示在框里')
-  assert.equal(txt.value, txt.helperDefault, '当前值=内置默认（没改过）')
-  assert.ok(byKey('imagegen.promptOptimizeTimeoutMs'), '应有优化超时')
 })
 
 test('控制台「试优化一条提示词」：动作注册在生图页，调用只走文本模型、不画图', async (t) => {

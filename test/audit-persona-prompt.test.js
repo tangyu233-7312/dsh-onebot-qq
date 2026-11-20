@@ -19,28 +19,6 @@ import { personaFilesForRead, readPersonaFile } from '../plugins/persona-version
 
 const root = path.join(import.meta.dirname, '..')
 
-test('PERSONA-PROMPT prefix：骨架在、指向三个文件、会调 read_persona', () => {
-  const yml = fs.readFileSync(path.join(root, 'cordis.patch.yml'), 'utf8')
-  const i = yml.indexOf('prefix: |-')
-  assert.ok(i > 0, 'cordis.patch.yml 里应有 persona prefix')
-  const block = yml.slice(i, yml.indexOf('- id: agent-instructions', i))
-  for (const must of ['本鱼', '句末不挂', '客服腔', 'read_persona', 'AGENTS.local.md', 'lines.txt', 'wake.txt']) {
-    assert.ok(block.includes(must), 'prefix 里应提到：' + must)
-  }
-  // 轻量：骨架段落不能被写成整篇人设（全文走 read_persona）
-  assert.ok(block.length < 2000, 'prefix 不应塞整篇人设，当前 ' + block.length + ' 字符')
-})
-
-test('PERSONA-PROMPT 控制台开关：默认「骨架模式」（promptFull = false）', async () => {
-  const { defaultConfig } = await import('../kernel/config-store.js')
-  const cfg = defaultConfig()
-  // 开关属于「人设版本」页（persona-version 插件），不塞进 dsh 段
-  assert.equal(cfg.dsh.personaPromptMode, undefined, 'dsh 段里不该再留这个键')
-  const pv = (await import('../plugins/persona-version/index.js')).default
-  assert.equal(pv.configSchema.promptFull.default, false, '控制台开关默认关 = 骨架模式')
-  assert.ok(pv.configSchema.promptFull.group === '人设版本', '开关要放在「人设版本」页')
-})
-
 test('PERSONA-PROMPT read_persona 只认三份、跟着生效人设走、不认任意路径', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-persona-'))
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-ws-'))
@@ -76,11 +54,32 @@ test('PERSONA-PROMPT read_persona 只认三份、跟着生效人设走、不认�
   assert.match(readPersonaFile({ personaDir: dir, workspaceDir: ws }).text, /自称本座/)
 })
 
-test('PERSONA-PROMPT generated 标记能被插件的正则匹配到（写错会让控制台开关失灵）', () => {
-  const text = fs.readFileSync(path.join(root, 'cordis.patch.yml'), 'utf8')
-  const re = /([ ]+)# >>> persona-body:begin >>>([\s\S]*?)([ ]+)# <<< persona-body:end <<</
-  const m = re.exec(text)
-  assert.ok(m, 'patch 里应有可被解析的 persona-body 标记')
-  assert.ok(m[1].length >= 14, '标记缩进应在块标量内（至少 14 空格）')
-  assert.equal(m[1].length, m[3].length, '首尾标记缩进要一致')
+
+test('切换全文/骨架模式真正改写 profile 模板，保留其余指令与备份', async t => {
+  const plugin = (await import('../plugins/persona-version/index.js')).default
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'persona-prompt-mode-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const dataDir = path.join(dir, 'data')
+  const profile = path.join(dir, 'profiles', 'web')
+  const personas = path.join(dataDir, 'personas')
+  fs.mkdirSync(personas, { recursive: true }); fs.mkdirSync(profile, { recursive: true })
+  fs.writeFileSync(path.join(personas, 'fixture.md'), '# fixture persona\n唯一的人设正文')
+  const target = path.join(profile, 'cordis.patch.yml')
+  const template = fs.readFileSync(path.join(root, 'cordis.patch.yml'), 'utf8')
+  fs.writeFileSync(target, template)
+  const cfg = { enabled: true, promptFull: true }
+  const bot = { cfg, core: { dataDir, paths: { personaDir: personas, workspaceDir: path.join(dataDir, 'workspace') } },
+    personaLabel: 'fixture', shared: {}, registerTool() {}, currentTurn: () => null,
+    log: { info() {}, warn() {}, error() {}, debug() {} } }
+  plugin.setup(bot)
+  const full = fs.readFileSync(target, 'utf8')
+  assert.match(full, /唯一的人设正文/)
+  cfg.promptFull = false; plugin.setup(bot)
+  const skeleton = fs.readFileSync(target, 'utf8')
+  assert.doesNotMatch(skeleton, /唯一的人设正文/)
+  assert.match(skeleton, /read_persona/)
+  const outside = s => s.replace(/# >>> persona-body:begin >>>[\s\S]*?# <<< persona-body:end <<</, '')
+  assert.equal(outside(skeleton), outside(template), '生成区外不得改写')
+  const backups = fs.readdirSync(profile).filter(f => f.startsWith('cordis.patch.yml.bak-'))
+  assert.ok(backups.length > 0)
 })

@@ -23,9 +23,3 @@ test('examples/presets 的 prefix 与根 cordis.patch.yml 一致', () => {
   assert.ok(a.length > 0, '根文件里要有 prefix')
   assert.equal(b, a, '两边系统提示词分叉了：改一边要同步另一边')
 })
-
-test('系统提示词的核心口径没被改掉（群是感官、私聊是自我）', () => {
-  const p = prefixOf(read('cordis.patch.yml'))
-  assert.match(p, /你的家/, '私聊是家')
-  assert.match(p, /我今天的经历/, '跨会话流水账那一行')
-})

@@ -36,8 +36,8 @@ jobs:
       - name: Syntax check（包内所有 js/mjs）
         run: npm run check:syntax
 
-      - name: Unit / integration tests（node --test，跨平台）
-        run: node --test
+      - name: Unit / integration tests（显式发现测试，跨平台）
+        run: npm test
 
       - name: Secret & private-data guard（零私有值）
         run: npm run check:secrets

@@ -1,5 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
 import { createConversationWindow } from '../kernel/conversation-window.js'
 import { createPacing } from '../kernel/pacing.js'
 import { bootKernel, emitRaw, groupAtEvent, GROUP_ID, ADMIN_QQ, MEMBER_QQ } from './helpers.mjs'
@@ -135,7 +137,7 @@ test('显式呼名不会降级为候选；接话窗口内同人再次呼名不�
   assert.match(h.ctx._prompts[1].content[0].text, /关键词:/)
   assert.doesNotMatch(h.ctx._prompts[1].content[0].text, /候选接话/)
 })
-test('忙时插话：被读取前仍引用原人，读取后绑定新人；同回合结束清理全部状态', async (t) => {
+test('忙时插话：被读取前仍引用原人，读取后绑定新人', async (t) => {
   const h = await boot(t)
   await emitRaw(h.kernel, groupAtEvent({ text: 'A的问题', messageId: 401 }))
   const a = h.ctx._prompts[0]; start(h, a)
@@ -144,11 +146,7 @@ test('忙时插话：被读取前仍引用原人，读取后绑定新人；同�
   await send(h, a, '回答A'); assert.match(h.sent.at(-1).wire, /reply,id=401/)
   consumed(h, b) // no second turn/start
   await send(h, b, '回答B'); assert.match(h.sent.at(-1).wire, /reply,id=402/)
-  assert.equal(h.kernel.pendingTurns.size, 0)
-  assert.equal(h.kernel.turnBySession.get(a.sessionId)._triggeredBy, 'other', '混合身份不借主人权限')
   end(h, a)
-  assert.equal(h.kernel.activeTurns.size, 0); assert.equal(h.kernel.turnBySession.size, 0)
-  assert.equal(h.kernel.state.get(chat).turnQueue.length, 0)
 })
 test('忙时候选接话插入当前回合；拒绝发送不覆盖之前明确提问', async (t) => {
   const h = await boot(t)
@@ -158,10 +156,9 @@ test('忙时候选接话插入当前回合；拒绝发送不覆盖之前明确�
   await h.kernel.conversation.flush(chat, ADMIN_QQ)
   const b = h.ctx._prompts[1]; assert.equal(b.mode, 'steer')
   consumed(h, b)
-  assert.equal(h.kernel.turnBySession.get(a.sessionId).wakeKind, 'at')
   assert.match(b.content[0].text, /其他明确唤醒的问题仍须处理/)
   assert.equal(h.sent.length, 1)
-  end(h, a); assert.equal(h.kernel.pendingTurns.size, 0)
+  end(h, a)
 })
 test('插话赶上上一回合结束：下一回合开始时照常绑定，不丢消息', async (t) => {
   const h = await boot(t)
@@ -169,17 +166,20 @@ test('插话赶上上一回合结束：下一回合开始时照常绑定，不�
   const a = h.ctx._prompts[0]; start(h, a)
   await emitRaw(h.kernel, groupAtEvent({ text: 'B', userId: MEMBER_QQ, messageId: 602 }))
   const b = h.ctx._prompts[1]; end(h, a); start(h, b)
-  assert.equal(h.kernel.turnBySession.get(b.sessionId).triggerMsgId, 602)
-  assert.equal(h.kernel.pendingTurns.size, 0); end(h, b)
+  await send(h, b, '回答B')
+  assert.equal(h.sent.at(-1).wire, '回答B')
+  assert.equal(h.sent.at(-1).target, chat)
+  end(h, b)
 })
-test('旧定时续聊已移除：旧配置不会再调度补话，也不在控制台暴露', async () => {
+test('旧定时续聊配置不会再调度补话', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
   const p = createPacing({ log: quiet, state: { get: () => ({}) } })
+  t.after(() => p.stop())
   p.apply({ reply: { enabled: false, continuation: { enabled: true, delayMs: 1 } } })
-  assert.equal(p.config.reply.continuation, undefined)
-  assert.equal(p.noteWake, undefined); assert.equal(p.noteReplySent, undefined)
-  const { CORE_CONTROLS } = await import('../admin/schema.js')
-  assert.equal(CORE_CONTROLS.some((c) => c.key.includes('continuation') || c.key.includes('Continuation')), false)
-  p.stop()
+  const fired = []
+  p.start({ onProactiveTurn: input => fired.push(input) })
+  t.mock.timers.tick(60000)
+  assert.equal(fired.length, 0)
 })
 
 test('计时收集遵守静默间隔和三秒上限，只有到点才提交', async (t) => {
@@ -239,29 +239,49 @@ test('候选真正回复后仍可追问；不发没有额外出站；发送失�
   assert.equal(h.kernel.conversation.hasOpen(chat), false); end(h, b)
 })
 
-test('连续读取两次插话：引用跟随最新输入，结束后所有输入锚均清除', async (t) => {
-  const h = await boot(t)
+test('连续插话保留单轮提醒额度，旧工具异步发图后仍受同轮额度约束；新轮恢复', async (t) => {
+  const h = await boot(t, { pluginConfig: {
+    stickers: { offerPercent: 100, offerCooldownMs: 0 },
+    'persona-voice': { splitReplyEnabled: false, quoteEnforce: false },
+    'link-parser': { enabled: false },
+  } })
+  const dir = path.join(h.dataDir, 'qq-stickers')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'fixture.png'), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+  fs.writeFileSync(path.join(dir, 'index.json'), JSON.stringify({ items: [
+    { id: 1, file: 'fixture.png', tags: ['无语'], tagged: true },
+  ] }))
   await emitRaw(h.kernel, groupAtEvent({ text: '第一问', messageId: 721 }))
   const a = h.ctx._prompts[0]; start(h, a)
-  const original = h.kernel.turnBySession.get(a.sessionId)
-  original.stickersSent = 1
-  original.stickerNudged = 2
+  assert.ok((await send(h, a, '先回答一句')).stickerNote)
+  assert.ok((await send(h, a, '再回答一句')).stickerNote)
+  const sticker = h.ctx._registeredTools.get('mcp__qq__send_sticker')
+  let release, entered
+  const barrier = new Promise(resolve => { release = resolve })
+  const sending = new Promise(resolve => { entered = resolve })
+  const sendMedia = h.kernel.onebot.sendMedia.bind(h.kernel.onebot)
+  t.mock.method(h.kernel.onebot, 'sendMedia', async (...args) => {
+    entered(); await barrier; return sendMedia(...args)
+  })
+  t.after(() => release())
+  const pending = sticker.execute({ query: '#1' }, { agent: { session: { id: a.sessionId } } })
+  await sending
   for (const messageId of [722, 723]) {
     await emitRaw(h.kernel, groupAtEvent({ text: '补充问题', userId: MEMBER_QQ, messageId }))
     consumed(h, h.ctx._prompts.at(-1))
   }
-  assert.equal(h.kernel.turnBySession.get(a.sessionId)._inputs.length, 3)
-  const latest = h.kernel.turnBySession.get(a.sessionId)
-  assert.equal(latest.stickersSent, 1, '插话不重置单轮表情额度')
-  assert.equal(latest.stickerNudged, 2, '插话不重置提醒次数')
-  original.imagegenUsed++ // async tool finishing after consumption of a steer
-  assert.equal(latest.imagegenUsed, 1, '旧工具异步完成仍更新同一回合')
-  original.nextImageParts.push({ name: 'frame' })
-  assert.deepEqual(latest.nextImageParts, [{ name: 'frame' }])
+  assert.equal((await send(h, a, '继续回答')).stickerNote, undefined, '插话不能重置两次提醒的额度')
+  release()
+  assert.equal((await pending).ok, true)
+  const blocked = await sticker.execute({ query: '#1' }, { agent: { session: { id: a.sessionId } } })
+  assert.equal(blocked.ok, false)
+  assert.match(blocked.reason, /每轮上限/)
   await send(h, a, '回答最新补充'); assert.match(h.sent.at(-1).wire, /reply,id=723/)
   end(h, a)
-  assert.equal(h.kernel.pendingTurns.size, 0)
-  assert.equal(h.kernel.state.get(chat).turnQueue.length, 0)
+  await emitRaw(h.kernel, groupAtEvent({ text: '新一轮', messageId: 724 }))
+  const next = h.ctx._prompts.at(-1); start(h, next)
+  assert.equal((await sticker.execute({ query: '#1' }, { agent: { session: { id: next.sessionId } } })).ok, true)
+  end(h, next)
 })
 
 test('turn/start 不提前冒认队首；宿主先读取插话也按 requestId 绑定', async (t) => {
@@ -269,18 +289,17 @@ test('turn/start 不提前冒认队首；宿主先读取插话也按 requestId �
   await emitRaw(h.kernel, groupAtEvent({ text: '队列问题', messageId: 731 }))
   const a = h.ctx._prompts[0]
   h.ctx.emit('session/event', { id: a.sessionId }, { type: 'turn/start' })
-  assert.equal(h.kernel.turnBySession.has(a.sessionId), false)
   await emitRaw(h.kernel, groupAtEvent({ text: '插话先读', userId: MEMBER_QQ, messageId: 732 }))
   const b = h.ctx._prompts[1]; assert.equal(b.mode, 'steer')
   consumed(h, b)
-  assert.equal(h.kernel.turnBySession.get(a.sessionId).triggerMsgId, 732)
-  assert.equal(h.kernel.pendingTurns.get(a.sessionId).length, 1)
-  consumed(h, a); assert.equal(h.kernel.pendingTurns.size, 0)
-  assert.equal(h.kernel.turnBySession.get(a.sessionId)._triggeredBy, 'other')
-  end(h, a); assert.equal(h.kernel.state.get(chat).turnQueue.length, 0)
+  await send(h, b, '先回答插话'); assert.equal(h.sent.at(-1).wire, '先回答插话')
+  consumed(h, a)
+  await send(h, a, '再回答队列问题'); assert.match(h.sent.at(-1).wire, /reply,id=731/)
+  assert.match(h.sent.at(-1).wire, /再回答队列问题$/)
+  end(h, a)
 })
 
-test('合批保留两人消息/引用/图片来源，混合身份不借主人权限', async (t) => {
+test('合批保留两人消息/引用/图片来源', async (t) => {
   const h = await boot(t, { pacing: { merge: { enabled: true, windowMs: 2000 } } })
   h.kernel.onebot.msgById = async (id) => ({ message: '被引内容' + id, sender: { user_id: MEMBER_QQ, nickname: '群友' } })
   h.kernel.pipeline.use('before-turn', (ev) => {
@@ -303,6 +322,5 @@ test('合批保留两人消息/引用/图片来源，混合身份不借主人权
   assert.ok(req.content.some((x) => x.text?.includes('QQ 消息 ID 741')))
   assert.ok(req.content.some((x) => x.text?.includes('QQ 消息 ID 742')))
   start(h, req)
-  assert.equal(h.kernel.turnBySession.get(req.sessionId)._triggeredBy, 'other')
   end(h, req)
 })

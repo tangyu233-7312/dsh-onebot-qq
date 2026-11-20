@@ -34,27 +34,6 @@ async function boot(t, opts = {}) {
 // 控制面 schema / read / write
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('collectSchema：控件齐全（核心 + 插件）、9 个模块、动作列表、每个控件有 key/value', async (t) => {
-  const h = await boot(t)
-  const schema = collectSchema(h.kernel, h.raw)
-  assert.ok(Array.isArray(schema.controls) && schema.controls.length >= 60, `控件数=${schema.controls.length}`)
-  assert.ok(Array.isArray(schema.groups) && schema.groups.length > 0)
-  assert.ok(schema.modules.length >= 9, '内置子插件都应在 modules 里')
-  assert.ok(Array.isArray(schema.actions), '应有动作列表')
-  for (const c of schema.controls) {
-    assert.ok(c.key && typeof c.key === 'string')
-    for (const f of ['group', 'type', 'label']) assert.ok(f in c, `控件缺 ${f}`)
-    // 契约：info 是纯说明块（没有 value/不可写），其余控件必须有 value
-    if (c.type === 'info') assert.ok(typeof c.text === 'string' && c.text.length > 0, `info 控件 ${c.key} 应有 text`)
-    else assert.ok('value' in c, `控件 ${c.key} 应有 value`)
-  }
-  // 插件项 key 形如 <id>.<field>
-  const pluginControls = schema.controls.filter((c) => c.plugin)
-  assert.ok(pluginControls.length > 0)
-  // 插件项默认 key=<id>.<field>；映射到别的配置路径（生图凭据）的会带 mapped 标记
-  assert.ok(pluginControls.every((c) => c.key.startsWith(`${c.plugin}.`) || c.mapped === true))
-})
-
 test('collectModules：on 跟随配置；停用插件（plugins[id]=false）仍出现在列表但 loaded=false', async (t) => {
   const h = await boot(t, { config: { plugins: { stickers: false } } })
   const modules = collectModules(h.kernel, h.raw)

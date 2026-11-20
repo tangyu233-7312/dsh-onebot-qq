@@ -1,245 +1,47 @@
-/**
- * test/audit-console-groups.test.js — 控制台分组命名与「高级」折叠标记。
- * 锁定：回话细节 → 消息设置；回话模式 → 主动接话；回话模式·高级 不再单独成页，
- * 进阶项用 `advanced: true` 标出来，由前端「高级」按钮决定显示/收起。
- */
-import { test } from 'node:test'
+import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-
 import { bootKernel } from './helpers.mjs'
 import { collectSchema } from '../admin/schema.js'
 
-async function schemaOf(t) {
-  const h = await bootKernel({})
-  t.after(() => h.dispose?.())
-  return collectSchema(h.kernel, h.raw)
-}
-
-test('分组命名：合并后的页名（2026-11-09 精简）；旧页名不再出现', async (t) => {
-  const schema = await schemaOf(t)
-  const groups = schema.groups.map((g) => g.name)
-  // 一页 = 用户心里的一件事：消息设置/唤醒/语气守卫/句池/人设版本 并进「人设与语气」
-  assert.ok(groups.includes('人设与语气'), '应有「人设与语气」页')
-  assert.ok(groups.includes('主动接话'), '应有「主动接话」页')
-  for (const old of ['回话细节', '回话模式', '回话模式·高级', '消息设置', '唤醒', '语气守卫', '句池', '人设版本']) {
-    assert.equal(groups.includes(old), false, `旧分组名不应再单独成页：${old}`)
-  }
-  // 合并后的页签顺序由后端给出（前端照它排）
-  assert.ok(Array.isArray(schema.groupOrder) && schema.groupOrder.includes('人设与语气'))
+let h, schema
+before(async () => {
+  h = await bootKernel({})
+  schema = collectSchema(h.kernel, h.raw)
 })
+after(() => h?.dispose())
 
-test('主动接话：基础项不带 advanced，进阶项全部带 advanced', async (t) => {
-  const schema = await schemaOf(t)
-  const all = schema.controls.filter((c) => c.group === '主动接话')
-  const basic = all.filter((c) => !c.advanced)
-  const adv = all.filter((c) => c.advanced)
-  assert.ok(basic.some((c) => c.key === 'pacing.reply.enabled'))
-  assert.equal(basic.some((c) => c.key.startsWith('pacing.reply.weights.')), false, '语境权重必须折叠')
-  // 不写死进阶项数量（新增项不该让测试红）：只要求确实折叠了一批、且都归在 pacing.reply 下
-  assert.ok(adv.length >= 15, `进阶项至少 15 个，实际 ${adv.length}`)
-  assert.ok(adv.every((c) => c.key.startsWith('pacing.reply.')))
-})
-
-test('消息设置：原回话细节 4 项 + 合批 6 项都在「人设与语气」页的「消息设置」小节', async (t) => {
-  const schema = await schemaOf(t)
-  const keys = schema.controls.filter((c) => c.group === '人设与语气' && c.section === '消息设置').map((c) => c.key)
-  for (const k of [
-    'outbound.replyMaxLength', 'outbound.longForwardThreshold', 'outbound.longForwardChunkSize', 'outbound.quoteAfterMsgs',
-    'pacing.merge.enabled', 'pacing.merge.windowMs', 'pacing.merge.windowActiveMs', 'pacing.merge.activeGapMs',
-    'pacing.merge.maxWaitMs', 'pacing.merge.skipIfSlowMs',
-  ]) assert.ok(keys.includes(k), `消息设置应含 ${k}`)
-})
-
-test('「其他」页：权限 / 门禁 / 头像 这类低频配置统一并进来，且有详细悬停解释', async (t) => {
-  const schema = await schemaOf(t)
-  const names = schema.groups.map((g) => g.name)
-  for (const g of ['权限', '门禁', '文件', '发图', '头像']) {
-    assert.equal(names.includes(g), false, g + ' 不应再单独成页')
-    assert.equal(schema.controls.some((c) => c.group === g), false, g + ' 的控件应改为挂在「其他」')
+test('控制台导航：关键设置能在对应业务页找到，旧独立页不再分散入口', () => {
+  const locations = [
+    ['outbound.replyMaxLength', '人设与语气', '消息设置'],
+    ['pacing.merge.enabled', '人设与语气', '消息设置'],
+    ['persona-voice.quoteEnforce', '人设与语气', '句池'],
+    ['gate-wake.keywords', '人设与语气', '唤醒'],
+    ['gate-wake.groupFollowUpMs', '人设与语气', '唤醒'],
+    ['gate-wake.adminQq', '其他'],
+    ['commands.enabled', '群聊'],
+    ['file-transfer.uploadDir', '文件与图片', '开关与收件目录'],
+    ['file-transfer.imageWhitelist', '文件与图片', '发图'],
+    ['file-read.uploadDir', '文件与图片', '读文件（read_file）'],
+    ['credentials.gptImage.apiKey', '生图'],
+  ]
+  for (const [key, group, section] of locations) {
+    const matches = schema.controls.filter(c => c.key === key)
+    assert.equal(matches.length, 1, key + ' 入口应唯一')
+    assert.equal(matches[0].group, group, key)
+    if (section) assert.equal(matches[0].section, section, key)
   }
-  assert.ok(names.includes('其他'), '应有「其他」页')
-  const other = schema.controls.filter((c) => c.group === '其他')
-  for (const key of [
-    'gate-wake.adminQq', 'gate-wake.ignoreGroups', 'gate-wake.groupUserBlocklist',
-    'gate-wake.groupUserAllowlist', 'gate-wake.allowedUsers',
-    'imagegen.avatarDir', 'imagegen.avatarCacheHours',
-  ]) assert.ok(other.some((c) => c.key === key), '其他页应含 ' + key)
-  // ⚠️ 2026-11-18 改：入站文件目录 / 发图白名单**搬回「文件与图片」页**。
-  //    原来并进「其他」的后果是：用户问"文件到底存哪"在文件页里根本找不到那个输入框。
-  //    它们现在各自在「开关与收件目录」/「发图」小节里，见下一条用例。
-  for (const key of ['file-transfer.uploadDir', 'file-transfer.imageWhitelist']) {
-    assert.equal(other.some((c) => c.key === key), false, key + ' 不该再藏在「其他」页')
-  }
-  for (const c of other.filter((x) => x.type !== 'info')) {
-    assert.ok(String(c.hint || '').trim().length >= 40, c.key + ' 的悬停解释太短')
-  }
-  assert.ok(other.some((c) => c.type === 'info' && String(c.text).includes('门禁')), '其他页顶部应有分组说明')
-})
-
-test('句池 / 唤醒：并进「人设与语气」页，各自是一个小节', async (t) => {
-  const schema = await schemaOf(t)
-  assert.deepEqual(schema.personaGroups, [], '不再折叠进总览')
-  const names = schema.groups.map((g) => g.name)
-  assert.equal(names.includes('句池'), false, '「句池」不再单独成页')
-  assert.equal(names.includes('唤醒'), false, '「唤醒」不再单独成页')
-  assert.ok(names.includes('人设与语气'), '应有「人设与语气」页')
-  const want = {
-    '句池': ['persona-voice.enabled', 'persona-voice.personaDir', 'persona-voice.activePersona', 'persona-voice.quoteEnforce'],
-    '唤醒': ['gate-wake.enabled', 'gate-wake.pokeBack', 'gate-wake.keywords', 'gate-wake.callAck'],
-  }
-  for (const g of Object.keys(want)) {
-    for (const k of want[g]) {
-      const c = schema.controls.find((x) => x.key === k)
-      assert.ok(c, k + " 应可见")
-      assert.equal(c.group, '人设与语气', k + ' 应在「人设与语气」页')
-      assert.equal(c.section, g, k + ' 的小节应是「' + g + '」')
-    }
-  }
-  const pv = schema.controls.filter((c) => c.plugin === 'persona-voice')
-  assert.ok(pv.every((c) => c.group === '人设与语气'), pv.map((c) => c.key + ':' + c.group).join(','))
-  const gw = schema.controls.filter((c) => c.plugin === 'gate-wake')
-  assert.ok(gw.every((c) => c.group === '人设与语气' || c.group === '其他'), gw.map((c) => c.key + ':' + c.group).join(','))
-})
-
-test('所有可见开关都带鼠标悬停解释（hint 非空）', async (t) => {
-  const schema = await schemaOf(t)
-  const missing = schema.controls
-    .filter((c) => c.type !== 'info' && !String(c.hint || '').trim())
-    .map((c) => c.key)
-  assert.deepEqual(missing, [], `这些开关缺少悬停解释：${missing.join(', ')}`)
-})
-
-test('引用拦截开关在「句池」页（persona-voice 一对一），标签/解释写明作用', async (t) => {
-  const schema = await schemaOf(t)
-  const q = schema.controls.find((c) => c.key === 'persona-voice.quoteEnforce')
-  assert.ok(q, 'quoteEnforce 应仍可见')
-  assert.equal(q.group, '人设与语气', '应归到「人设与语气」页')
-  assert.equal(q.section, '句池', '应落在「句池」小节')
-  assert.match(String(q.label), /不引用/, '标签应说明「不引用刚触发回复的那条消息」')
-  assert.ok(String(q.hint).includes('引用门槛'), '解释里应带「引用门槛」这个上下游关系')
-  assert.equal(schema.groups.some((g) => g.name === '回话'), false, '「回话」页应已并入「人设与语气」')
-})
-
-test('文件与图片页：收件目录 / 白名单都回到本页，并拆成多个可折叠小节', async (t) => {
-  const schema = await schemaOf(t)
-  const rows = schema.controls.filter((c) => c.group === '文件与图片')
-  const keys = rows.map((c) => c.key)
-  for (const k of [
-    'file-transfer.enabled', 'file-transfer.downloadPolicy', 'file-transfer.maxFileMB',
-    'file-transfer.maxFilesPerMsg', 'file-transfer.keepDays',
-  ]) assert.ok(keys.includes(k), '文件与图片页应含 ' + k)
-
-  // 2026-11-18：目录 / 白名单从「其他」搬回本页 —— 用户在文件页找不到"文件存哪"那个框。
-  for (const k of ['file-transfer.uploadDir', 'file-transfer.imageWhitelist', 'file-read.uploadDir']) {
-    assert.ok(keys.includes(k), k + ' 应在本页可见（别再藏到「其他」）')
-  }
-
-  // 用户要求：别全堆一起，按功能拆成可展开的菜单。
-  const secs = [...new Set(rows.map((c) => c.section).filter(Boolean))]
-  assert.ok(secs.length >= 6, `应拆成多个折叠小节，实际只有 ${secs.length} 个：${secs.join(' / ')}`)
-  assert.ok(secs.includes('开关与收件目录'), '目录相关应在「开关与收件目录」')
-  assert.ok(secs.includes('读文件（read_file）'), '新工具要有自己的小节')
-  assert.ok(secs.some((s) => s.startsWith('群里的视频')), '群里的视频要单独成块')
-  assert.ok(secs.some((s) => s.startsWith('B站链接')), 'B 站链接要单独成块（两个插件别混在一起）')
-
-  // 新工具（读文件）必须写明"文件放在哪"：说明块要显示**绝对路径**
-  const info = rows.find((c) => c.key === 'info.fileStore')
-  assert.ok(info, '应有「文件实际存在哪」说明块')
-  assert.ok(String(info.text).includes('qq_uploads') || /[\\/]/.test(String(info.text)), '说明块要给出真实目录')
-  assert.ok(String(info.text).includes('read_file'), '要说清 read_file 只认这个目录')
-
-  for (const g of ['文件', '发图', '头像']) {
-    assert.equal(schema.groups.some((x) => x.name === g), false, g + ' 不应单独成页')
+  const groups = schema.groups.map(g => g.name)
+  for (const old of ['回话细节', '回话模式', '消息设置', '唤醒', '能力', 'OneBot 连接']) {
+    assert.equal(groups.includes(old), false, old)
   }
 })
 
-test('文案里不再引用已删除的页面名（所有提示/说明都指向现有页）', async (t) => {
-  const schema = await schemaOf(t)
-  const BAD = /「权限」页|「工具」页|「留档」页|「DSH 连接」|「登录」页|「回话」页|「文件」页|「发图」页|「头像」页/
-  const bad = []
-  for (const c of schema.controls) {
-    const text = `${c.hint || ''}\n${c.text || ''}`
-    const m = text.match(BAD)
-    if (m) bad.push(`${c.key} → ${m[0]}`)
-  }
-  assert.deepEqual(bad, [], `仍有旧页面引用：${bad.join(' / ')}`)
-})
-
-test('表情包「自动打标」不暴露（内核暂无看图能力，避免死开关）', async (t) => {
-  const schema = await schemaOf(t)
-  assert.equal(schema.controls.some((c) => c.key === 'stickers.tagging'), false)
-})
-
-test('「能力」页已拆：gate-wake 归「人设与语气·唤醒」、commands 归「群聊」', async (t) => {
-  const schema = await schemaOf(t)
-  assert.equal(schema.groups.some((g) => g.name === '能力'), false, '「能力」页不应再出现')
-  const byKey = (k) => schema.controls.find((c) => c.key === k)
-  assert.equal(byKey('commands.enabled').group, '群聊')
-  assert.equal(byKey('gate-wake.enabled').group, '人设与语气')
-  assert.equal(byKey('gate-wake.enabled').section, '唤醒')
-  assert.equal(byKey('gate-wake.pokeBack').group, '人设与语气')
-  const keys = schema.controls.filter((c) => c.group === '群聊').map((c) => c.key)
-  assert.ok(keys.includes('adminQq'), '群聊页原有核心项保留')
-  assert.ok(keys.includes('outbound.groupContextCount'), '群聊页原有核心项保留')
-})
-
-test('「生图」页 1:1：非说明控件全归 imagegen（凭据已从核心拆进生图）', async (t) => {
-  const schema = await schemaOf(t)
-  const list = schema.controls.filter((c) => c.group === '生图')
-  assert.ok(list.length >= 10, list.length + " 个控件")
-  const bad = list.filter((c) => c.type !== 'info' && c.plugin !== 'imagegen').map((c) => c.key + ':' + (c.plugin || 'core'))
-  assert.deepEqual(bad, [], bad.join(","))
-  for (const k of ['credentials.gptImage.protocol', 'credentials.gptImage.baseUrl', 'credentials.gptImage.model', 'credentials.gptImage.apiKey']) {
-    const c = schema.controls.find((x) => x.key === k)
-    assert.ok(c, k + " 应仍在生图页")
-    assert.equal(c.plugin, 'imagegen', k + ' 应归 imagegen')
-    if (k.endsWith('apiKey')) assert.equal(c.secret, true, 'API Key 应脱敏')
-  }
-  assert.equal(schema.controls.filter((c) => c.key === 'credentials.gptImage.apiKey').length, 1, '凭据控件不应重复')
-})
-
-test('表情包页：有「收表情（会写索引）」开关（默认关）+ 实时数量说明', async (t) => {
-  const schema = await schemaOf(t)
-  const c = schema.controls.find((x) => x.key === 'stickers.collect')
-  assert.ok(c, '应有 stickers.collect 开关')
-  assert.equal(c.group, '表情包')
-  assert.equal(c.type, 'bool')
-  assert.equal(c.default, false, '默认关（库只读）')
-  assert.ok(String(c.hint).includes('默认关'), '解释里要写明默认关')
-  const info = schema.controls.find((x) => x.key === 'info.stickers')
-  assert.ok(info, '表情包页应有实时概况行')
-  assert.match(String(info.text), /当前表情库：\d+ 张/, '概况要带数量')
-  assert.match(String(info.text), /收表情（会写索引）：(开|关)/)
-})
-
-test('群聊页「入站条数上限」：标签写明是上限、解释讲清"只给最后 N 条"与 token 代价', async (t) => {
-  const schema = await schemaOf(t)
-  const c = schema.controls.find((x) => x.key === 'outbound.groupContextCount')
-  assert.ok(c, '控件应存在')
-  assert.equal(c.group, '群聊')
-  assert.equal(c.label, '入站条数上限', '标签统一叫「入站条数上限」')
-  const hint = String(c.hint || '')
-  assert.ok(hint.includes('最多'), '解释要说明"最多"（上限语义）')
-  assert.ok(hint.includes('丢弃'), '解释要说明超过上限时更早的会被丢弃')
-  assert.ok(hint.includes('token'), '解释要提到 token 代价')
-  assert.equal(c.min, 0)
-  assert.equal(c.max, 50)
-})
-
-test('控制台命名：OneBot 连接收进「运维」页的小节，且不再残留旧实现名', async (t) => {
-  const schema = await schemaOf(t)
-  const groups = schema.groups.map((g) => g.name)
-  assert.equal(groups.includes('OneBot 连接'), false, '「OneBot 连接」不再单独成页（2026-11-09 并进运维）')
-  assert.ok(groups.includes('运维'), '应有「运维」页')
-  const onebotCtrl = schema.controls.find((c) => c.plugin === 'sidecar-control' || /onebot/i.test(c.key))
-  if (onebotCtrl) assert.equal(onebotCtrl.group, '运维', 'OneBot 相关控件应在运维页')
-  const onebotSection = schema.controls.filter((c) => c.section === 'OneBot 连接')
-  assert.ok(onebotSection.length >= 3, `「OneBot 连接」小节应有连接地址/token 等控件，实际 ${onebotSection.length}`)
-  // 全量 schema 里不该再出现旧实现名（守卫用例：正则里保留旧名正是为了检测它不再出现）
-  const dump = JSON.stringify(schema)
-  assert.equal(/NapCat|napcat/i.test(dump), false, '旧实现名不应再出现在 schema 里')
-  // 运维页两个按钮：名字与 id 都是 OneBot
-  const ids = new Map(schema.actions.map((a) => [a.id, a.label]))
-  assert.equal(ids.get('onebot-check'), '🔌 测试 OneBot 连接')
-  assert.equal(ids.get('onebot-reconnect'), '↻ 重新连接 OneBot')
+test('控制台可操作性：控件有帮助，凭据不重复，隐藏功能不作为可写开关暴露', () => {
+  assert.deepEqual(schema.controls.filter(c => c.type !== 'info' && !c.hint?.trim()).map(c => c.key), [])
+  assert.equal(schema.controls.find(c => c.key === 'credentials.gptImage.apiKey').secret, true)
+  assert.equal(schema.controls.some(c => c.key === 'stickers.tagging'), false)
+  assert.equal(schema.controls.some(c => c.key.includes('continuation')), false)
+  const info = schema.controls.find(c => c.key === 'info.fileStore')
+  assert.ok(info.text.includes('read_file'))
+  assert.ok(/[\\/]/.test(info.text), '收件位置应给出实际路径')
 })

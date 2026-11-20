@@ -81,7 +81,7 @@ dsh plugin --profile web add link:C:\path\to\dsh-onebot-qq
 ```
 
 > 路径含空格时用引号：`dsh plugin --profile web add "C:\my bots\dsh-onebot-qq"`。
-> 📁 命令里的相对路径（`node bin\dsh-onebot-qq.mjs`、`examples\`、`node --test`）以**包目录**为基准：
+> 📁 命令里的相对路径（`node bin\dsh-onebot-qq.mjs`、`examples\`、`npm test`）以**包目录**为基准：
 > 源码仓库跑 = 仓库根（如 `C:\src\dsh-onebot-qq`）；tgz 装进 profile = `%USERPROFILE%\.dsh\profiles\web\node_modules\dsh-onebot-qq`。
 > （tgz 的 `files` 不含 `test/`，所以**离线测试只能在源码仓库根跑**。）
 
@@ -225,11 +225,11 @@ dsh web
 
 ```powershell
 # ⚠️ 必须在「源码仓库根」执行（tgz 装进 profile 的包里不含 test/）：
-node --test
+npm test
 node --test test\e2e.test.js   # 只跑假协议端（fake OneBot）端到端（本机动态端口，无需网络）
 ```
 
-- `node --test` 会跑全部测试，包括：装配、出站脱敏、五阶段、配置迁移、CLI、假协议端（fake OneBot）的
+- `npm test` 会通过显式测试入口跑全部 `*.test.js`，包括：装配、出站脱敏、五阶段、配置迁移、CLI、假协议端（fake OneBot）的
   入站→模型(mock)→工具→出站 全链路；
 - 也可以把 `config.json` 的 bundle 配置 `autoConnect: false`，只验证「配置能加载、工具能注册」；
 - `node bin\dsh-onebot-qq.mjs doctor --no-net` 检查环境与配置。
@@ -282,4 +282,4 @@ node --test test\e2e.test.js   # 只跑假协议端（fake OneBot）端到端（
 - [ ] 发图成功（必要时切换 `DSH_QQ_MEDIA_REF` 并记录）
 - [ ] 人设切换成功（copy 或 symlink）
 - [ ] 重启 dsh-web 后会话连续
-- [ ] `node --test` 在 Windows 全绿（或 CI windows-latest 绿）
+- [ ] `npm test` 在 Windows 全绿（或 CI windows-latest 绿）

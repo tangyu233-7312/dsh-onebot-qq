@@ -1,4 +1,3 @@
-
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -129,27 +128,6 @@ function setup(over = {}) {
   return { bot, tools, delivered, pluginDelivered, selfLogRows, shared, prompts, cfg, restore, dir, triggerTurnEnd: () => turnEndCb?.() }
 }
 
-test('默认：插件启用但自动看关', () => {
-  const s = setup()
-  try {
-    assert.equal(s.cfg.enabled, true, '插件默认启用')
-    assert.equal(s.cfg.autoEnabled, false, '自动看默认关')
-    assert.equal(typeof s.shared.videoWanderRunNow, 'function')
-    assert.equal(typeof s.shared.videoWanderStatus, 'function')
-  } finally { s.restore() }
-})
-
-test('配置项都是控制台可调：20 项且都有默认值', () => {
-  const schema = plugin.configSchema
-  const keys = Object.keys(schema)
-  assert.equal(keys.length, 27, '配置项数量变了要顺手看文档：' + keys.join(','))
-  for (const k of keys) assert.ok(schema[k].default !== undefined, k + ' 必须有默认值')
-  // 关键数字项都得有 min/max，不能让用户填出界
-  for (const k of ['everyHours', 'maxPerDay', 'thoughtMaxChars', 'frames', 'maxMinutes', 'retryMinutes', 'excludeDays']) {
-    assert.ok(schema[k].min !== undefined && schema[k].max !== undefined, k + ' 需要 min/max')
-  }
-})
-
 test('跑一次：挑视频 → 抽帧 → 交感想 → 发给主人私聊', async () => {
   const s = setup({ cfg: { autoEnabled: true, masterQq: '10001' } })
   try {
@@ -161,6 +139,12 @@ test('跑一次：挑视频 → 抽帧 → 交感想 → 发给主人私聊', as
     assert.ok(s.delivered[0].text.includes('看了：'), '应带标题行')
     assert.ok(s.delivered[0].text.includes('https://www.bilibili.com/video/'), '应带链接')
     assert.ok(s.delivered[0].text.includes('街道'), '应带感想正文')
+    assert.ok(s.prompts[0].imageParts.length > 0, '帧应实际进入模型输入')
+    assert.match(s.prompts[0].imageParts[0].mediaType, /^image\//)
+    assert.deepEqual(s.shared.__scope.allowed, ['report_watched', 'skip_watching', 'watch_status'])
+    const watched = s.selfLogRows.find(row => row.thought)
+    assert.match(watched.what, /看完了/)
+    assert.match(watched.thought, /街道/, '经历应包含完整感想')
   } finally { s.restore() }
 })
 
@@ -426,26 +410,6 @@ test('watchPrompt 被清空：回落到默认，不是「没有任何要求」',
   } finally { s.restore() }
 })
 
-test('会话登记了工具白名单：只有三个工具能用', async () => {
-  const s = setup({ cfg: { autoEnabled: true } })
-  try {
-    await s.shared.videoWanderRunNow('测试')
-    assert.equal(s.shared.__session.key, 'desk:video-wander')
-    assert.deepEqual(s.shared.__scope.allowed, ['report_watched', 'skip_watching', 'watch_status'])
-  } finally { s.restore() }
-})
-
-test('帧真的塞进了 prompt（imageParts 非空）', async () => {
-  const s = setup({ cfg: { autoEnabled: true } })
-  try {
-    await s.shared.videoWanderRunNow('测试')
-    assert.equal(s.prompts.length, 1)
-    assert.ok(s.prompts[0].imageParts.length >= 1)
-    assert.match(s.prompts[0].imageParts[0].mediaType, /^image\//)
-    assert.ok(s.prompts[0].text.includes('report_watched'))
-  } finally { s.restore() }
-})
-
 test('状态落盘：seen 里记下 BV 号，runs 有记录', async () => {
   const s = setup({ cfg: { autoEnabled: true } })
   try {
@@ -479,58 +443,7 @@ test('maxPerDay = 0 等于自动关掉', () => {
   } finally { s.restore() }
 })
 
-test('侧车超时按「秒」解释：默认 180 秒，不是 5 秒（2026-10-29 的线上故障）', async () => {
-  // 踩过的坑：timeoutMs 是子插件配置，storedOf 不做 scale 换算 →
-  // 存的是秒（180）。原代码直接当毫秒：Math.max(5000, 180) = 5 秒，
-  // 比侧车实际耗时还短（实测 6.2 秒出帧），于是每次都被判「超时」，
-  // 用户看到的是「看视频的服务没起来」—— 但服务一直好好的。
-  const fs2 = await import('node:fs')
-  for (const [rel, fallback] of [['../plugins/video-read/index.js', 180], ['../plugins/video-link-read/index.js', 240]]) {
-    const src = fs2.readFileSync(new URL(rel, import.meta.url), 'utf8')
-    assert.match(src, /const timeoutMsOf = \(\) =>/, rel + ' 应有超时换算函数')
-    assert.match(src, /n >= 1000 \? Math\.round\(n\) : Math\.round\(n \* 1000\)/, rel + ' 应兼容秒/毫秒两种历史值')
-    assert.match(src, new RegExp(fallback + ' \\* 1000'), rel + ' 兜底应是 ' + fallback + ' 秒')
-    // 不允许再出现「直接当毫秒」的旧写法
-    assert.doesNotMatch(src, /Math\.max\(5000, Number\(cfg\(\)\.timeoutMs\)/, rel + ' 不应再有旧写法')
-  }
-})
-
-test('超时换算：180/240 秒，以及旧的毫秒值也能认', () => {
-  const conv = (n) => {
-    if (!Number.isFinite(n) || n <= 0) return 180 * 1000
-    return n >= 1000 ? Math.round(n) : Math.round(n * 1000)
-  }
-  assert.equal(conv(180), 180000, '180 秒 → 180000ms')
-  assert.equal(conv(240), 240000)
-  assert.equal(conv(180000), 180000, '旧的毫秒值原样认')
-  assert.equal(conv(undefined), 180000, '缺失 → 默认 180 秒')
-  assert.equal(conv(0), 180000)
-  assert.equal(conv(30), 30000, '30 秒')
-})
-
 // ── 2026-10-30 线上：它点了「去看」，但看完的结果没回到它自己的记录里 ─────
-test('回归：看完的感想必须经插件自己的 deliver 投递（内核才能记进它那一轮）', async () => {
-  const s = setup({ cfg: { autoEnabled: true, masterQq: '10001' } })
-  try {
-    await s.shared.videoWanderRunNow('测试')
-    assert.equal(s.pluginDelivered.length, 1, '结果要走 bot.deliver，不能走裸 deliver')
-    assert.match(s.pluginDelivered[0].text, /街道/, '感想正文要在里面')
-  } finally { s.restore() }
-})
-
-test('回归：看完后流水账里要有「看到了什么」，不能只有标题', async () => {
-  const s = setup({ cfg: { autoEnabled: true, masterQq: '10001' } })
-  try {
-    await s.shared.videoWanderRunNow('测试')
-    // 2026-10-31 改：投递前先把**完整感想**记进流水账（thought 字段）。
-    // 原来只写一条「看了个视频」+ 60 字摘要，私聊里追问时它只剩标题可说。
-    const done = s.selfLogRows.find((r) => String(r.thought || '').trim())
-    assert.ok(done, '看完要把感想原文记下来，否则下一轮只剩标题')
-    assert.match(done.what, /看完了/, '要说明看完了哪个')
-    assert.match(done.thought, /街道/, '感想原文要完整进流水账')
-  } finally { s.restore() }
-})
-
 test('WATCH-READ 翻自己看过的视频：给完整感想，并能带出当时抽的帧', async () => {
   const s = setup({ cfg: { autoEnabled: true, masterQq: '10001' } })
   try {

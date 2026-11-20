@@ -1,62 +1,44 @@
-/**
- * test/audit-private-busy.test.js — 「主动接话永远不触发」的两个防线（2026-10-30）
- *
- * 线上：15:17 主动说过一次，之后三个多小时一声不响；群里照常接话。
- * 两道防线都曾经缺：
- *   ① pendingTurns 没有超时清理 —— prompt 提交了但 turn/start 没来就永久占住这条线，
- *      hasPendingTurn 永远 true → isBusy 永远 true → 主动接话再也起不来。
- *   ② 每个 continue 都静默 —— 只能靠翻 stats / 猜 / 手工调 NapCat 接口查。
- */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import path from 'node:path'
+import { bootKernel, emitRaw, privateEvent } from './helpers.mjs'
+import { setupPacing, flushPacing, MIN, localAt } from './pacing-fixture.mjs'
 
-const root = path.join(import.meta.dirname, '..')
-const read = (f) => fs.readFileSync(path.join(root, f), 'utf8')
-
-/** 取某个顶层函数的完整函数体：从 `function xxx` 到下一个顶层 `function `。
- *  为什么不用固定字数窗口：函数一长就误报。2026-11-08 实测 tickPrivateSilence 只长了 7 个字，
- *  那条「要走节流日志」的断言就红了，而代码本身完全正常（logPrivateSkip 就在函数里）。
- */
-function fnBody(src, name) {
-  const start = src.indexOf('function ' + name)
-  if (start < 0) return ''
-  const endRel = src.slice(start + 1).search(/\nfunction /)
-  return endRel < 0 ? src.slice(start) : src.slice(start, start + 1 + endRel)
-}
-
-test('hasPendingTurn 必须带超时（否则永久占线）', () => {
-  const src = read('index.js')
-  const i = src.indexOf('const hasPendingTurn')
-  assert.ok(i > 0, '要有 hasPendingTurn')
-  const body = src.slice(i, i + 1200)
-  assert.match(body, /startedAt/, '要按 startedAt 判年龄')
-  assert.match(body, /ACTIVE_TURN_TTL_MS/, '复用同一个 TTL')
-  assert.match(body, /清理/, '清理时要有日志，别静默')
+test('未被宿主读取的请求超时后不再永久阻挡私聊主动接话', async t => {
+  let now = Date.now()
+  t.mock.method(Date, 'now', () => now)
+  const h = await bootKernel({ config: {
+    pacing: { merge: { enabled: false }, reply: {
+      enabled: true, quietEnabled: false, silenceEnabled: false, privateEnabled: true,
+      privateFriendsOnly: false, privateQqs: [10001], privateColdSilenceMs: MIN,
+    } },
+  } })
+  t.after(() => h.dispose())
+  await emitRaw(h.kernel, privateEvent({ text: '尚未读取的问题', messageId: 1 }))
+  assert.equal(h.ctx._prompts.length, 1)
+  now += 2 * MIN
+  h.kernel.pacing.tickNow(); await flushPacing()
+  assert.equal(h.ctx._prompts.length, 1, '仍忙时不可另外起话')
+  now += 4 * MIN
+  h.kernel.pacing.tickNow(); await flushPacing()
+  assert.equal(h.ctx._prompts.length, 2, '等待超过五分钟后恢复主动起话')
 })
 
-test('私聊每一步 continue 都要能说出原因', () => {
-  const src = read('kernel/pacing.js')
-  const body = fnBody(src, 'tickPrivateSilence')
-  for (const reason of ['还没冷场', '这条线正忙', '没有对话基线']) {
-    assert.ok(body.includes(reason), '缺诊断原因：' + reason)
-  }
-  // 配额那道闸要**说出是哪一种**（2026-10-30：三个原因混成一句「配额或间隔未到」，
-  // 线上分不清是每小时上限、每天上限还是最小间隔）
-  assert.match(body, /quotaBlocked/, '配额要单独算出具体原因')
-  const quota = fnBody(src, 'privateQuotaBlocked')
-  for (const why of ['每小时上限', '每天上限', '距上次主动开口还差']) {
-    assert.ok(quota.includes(why), '配额原因要具体：' + why)
-  }
-  assert.match(body, /logPrivateSkip/, '要走节流日志')
-  assert.match(body, /code = 'warming'|code = 'busy'/, '要有原因代码（节流按代码）')
-})
-
-test('诊断日志是节流 info，不会每 30 秒刷屏', () => {
-  const src = read('kernel/pacing.js')
-  assert.match(src, /function logPrivateSkip/, '要有节流函数')
-  assert.match(src, /10 \* 60000/, '10 分钟窗口')
-  assert.match(src, /prev\.code === code/, '节流按代码判，不按文案（文案带数字会失效）')
-  assert.ok(src.includes("log.info('[主动接话] '"), '用 info（debug 默认看不到）')
+test('私聊阻挡原因变更立即记日志，同一原因在十分钟内不刷屏', async t => {
+  const messages = []
+  let busy = false
+  const { p, advance } = setupPacing(t, {
+    now: localAt(12), seed: { 'private:10001': { lastInboundAt: localAt(12) } },
+    reply: { privateColdSilenceMs: 2 * MIN }, isBusy: () => busy,
+    log: { info: s => messages.push(s), warn() {}, error() {}, debug() {} },
+  })
+  const skipped = () => messages.filter(s => s.includes('暂不开口'))
+  p.tickNow(); await flushPacing()
+  assert.equal(skipped().length, 1)
+  advance(MIN); p.tickNow(); await flushPacing()
+  assert.equal(skipped().length, 1, '文案里的分钟变化不应绕过节流')
+  busy = true; advance(MIN); p.tickNow(); await flushPacing()
+  assert.equal(skipped().length, 2)
+  assert.match(skipped().at(-1), /忙/)
+  advance(10 * MIN); p.tickNow(); await flushPacing()
+  assert.equal(skipped().length, 3)
 })
