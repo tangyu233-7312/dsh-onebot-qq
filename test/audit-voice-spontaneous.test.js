@@ -35,6 +35,8 @@ test('quoteEnforce：模型引用「刚触发本轮」的消息且插话未达�
   const h = await boot(t)
   const send = h.ctx._registeredTools.get('mcp__qq__send_message')
   h.ctx.setPromptHandler(async (req) => {
+    h.ctx.emit('session/event', { id: req.sessionId }, { type: 'turn/start' })
+    h.ctx.emit('session/event', { id: req.sessionId }, { type: 'user/message', data: { source: { rpcId: req.requestId } } })
     await send.execute({ target: `group:${GROUP_ID}`, text: '回复刚来的那条', reply_to: 88 }, { agent: { session: { id: req.sessionId } } })
   })
   // 手工把本轮 triggerMsgId 设为 88（真实链路由入站消息决定）
@@ -45,6 +47,8 @@ test('quoteEnforce：模型引用「刚触发本轮」的消息且插话未达�
   assert.equal(h.sent.at(-1).wire.includes('[CQ:reply'), false, '引用刚触发消息（零信息量）被抹掉')
 
   h.ctx.setPromptHandler(async (req) => {
+    h.ctx.emit('session/event', { id: req.sessionId }, { type: 'turn/start' })
+    h.ctx.emit('session/event', { id: req.sessionId }, { type: 'user/message', data: { source: { rpcId: req.requestId } } })
     await send.execute({ target: `group:${GROUP_ID}`, text: '回复更早那条', reply_to: 77 }, { agent: { session: { id: req.sessionId } } })
   })
   // 新一轮：消息 89，turnCtx.triggerMsgId=89，显式引用 77 ≠ 触发消息 → 保留
@@ -59,6 +63,8 @@ test('拆条：长回复拆成两条、都走唯一出站口；短回复/带 CQ 
   })
   const send = h.ctx._registeredTools.get('mcp__qq__send_message')
   h.ctx.setPromptHandler(async (req) => {
+    h.ctx.emit('session/event', { id: req.sessionId }, { type: 'turn/start' })
+    h.ctx.emit('session/event', { id: req.sessionId }, { type: 'user/message', data: { source: { rpcId: req.requestId } } })
     await send.execute({ target: `group:${GROUP_ID}`, text: '好呀，这个我知道。今天天气不错，适合出去玩，要不要一起？' }, { agent: { session: { id: req.sessionId } } })
   })
   await emitRaw(h.kernel, groupAtEvent({ text: '在吗', messageId: 101 }))
@@ -172,6 +178,8 @@ test('两条线并发：工具按 DSH 会话 id 认线，target 写错时按会�
   const send = h.ctx._registeredTools.get('mcp__qq__send_message')
   const sessions = []
   h.ctx.setPromptHandler(async (req) => {
+    h.ctx.emit('session/event', { id: req.sessionId }, { type: 'turn/start' })
+    h.ctx.emit('session/event', { id: req.sessionId }, { type: 'user/message', data: { source: { rpcId: req.requestId } } })
     sessions.push(req.sessionId)
     // 模型把 target 写成了群，但本轮其实是私聊会话 → 工具应按会话纠正
     await send.execute({ target: `group:${GROUP_ID}`, text: '我是私聊回复' }, { agent: { session: { id: req.sessionId } } })

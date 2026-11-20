@@ -25,8 +25,6 @@ export function currentTurn() {
 const emptyChatState = () => ({
   lastSendAt: 0,      // 自发接话的"静默期"判据
   lastInboundAt: 0,
-  followUpUntil: 0,   // "@ 之后同一人补发的正文"接续窗口截止时间
-  followUpCache: null, // 接续窗口里挂起的引用/图片
   lastContextId: null, // 群上文水位（只补新消息，不整份重发）
   turnQueue: [],      // 引用锚队列：每轮 wake 后 push { triggerId, arrived, at }
 })
@@ -172,9 +170,10 @@ export class Pipeline {
    *   · passive-tap **fire-and-forget**：不 await、抛错只记日志（采集/留档不许拖慢也不许弄挂聊天）；
    *   · 其余阶段逐个 try/catch：异常只记日志 + onPluginError，继续下一个。
    */
-  async run(ev, terminal) {
+  async run(ev, terminal, { prepare = true } = {}) {
     if (!ev || ev.stopped) return undefined
     for (const stage of STAGES) {
+      if (!prepare && stage === 'before-turn') continue
       for (const s of [...this.stages.get(stage)]) {
         if (ev.stopped) break
         if (stage === 'passive-tap') {
@@ -195,9 +194,17 @@ export class Pipeline {
       if (ev.stopped) return undefined
     }
     if (!ev.wake) return undefined // 没唤醒 = 这条不归模型管
-    // 唤醒通过才创建 TurnContext，并挂进 AsyncLocalStorage —— 贯穿 prompt/工具/出站，turn/end 时自然失效
-    ev.turnCtx = createTurnContext(ev)
-    return turnStore.run(ev.turnCtx, () => terminal(ev))
+    // 唤醒通过才创建 TurnContext；工具入口另行绑定实际已读取输入的上下文。
+    if (prepare) ev.turnCtx = createTurnContext(ev)
+    // Timers and the long-lived agent loop must not inherit a stale input's ALS store.
+    return terminal(ev)
+  }
+
+  async prepare(ev) {
+    for (const s of [...this.stages.get('before-turn')]) {
+      if (ev.stopped) break
+      try { await s.fn(ev) } catch (e) { this._fail(e, 'before-turn', s.pluginId, ev) }
+    }
   }
 }
 
@@ -294,6 +301,7 @@ export function createDeliver({ onebot, log = console, adminQq = null, longForwa
       // 只有"模型通过 send_message 工具发的回复"才允许内核自动挂引用。
       // 命令 / 答应声 / 冷却 / 生图失败提示等出站没有自己的回合上下文，挂引用只会引错人。
       autoQuote: opts.autoQuote === true,
+      conversationReply: opts.fromTool === true || opts.conversationReply === true,
       fromTool: opts.fromTool === true, // 模型经 send_message 发的正文（拆条等"像真人"的加工只对它做）
       // 不套合并转发卡片。设计时留了这个检查（下面 wantForward 里判 noForward），
       // 但一直没从 opts 接进来 —— 于是谁也用不了（2026-10-30 发现）。
@@ -326,7 +334,7 @@ export function createDeliver({ onebot, log = console, adminQq = null, longForwa
         + escapeCq(out.text)
       messageId = await onebot.sendMessage(to, wire)
     }
-    const rec = { target: to, text: out.text, ats: out.ats, replyTo: out.replyTo, mode, messageId, hits: safe.hits, wire, turnCtx: out.turnCtx }
+    const rec = { target: to, text: out.text, ats: out.ats, replyTo: out.replyTo, mode, messageId, hits: safe.hits, wire, turnCtx: out.turnCtx, conversationReply: out.conversationReply }
     // 每条成功出站都留一行 —— 外部脚本/控制台靠它统计出站量，别改静默
     log.info(`[出站] 发送 ${to} (id=${messageId ?? '?'}, ${out.text.length} 字, ${mode}${safe.hits.length ? ', 脱敏 ' + safe.hits.join('/') : ''})`)
     // 留档 + markSent：留档失败绝不反报"发送失败"（话已经发出去了）
@@ -360,7 +368,7 @@ export function createDeliver({ onebot, log = console, adminQq = null, longForwa
     const wire = (cap ? escapeCq(cap) + ' ' : '') + cqBody
     const messageId = await onebot.sendMedia(to, wire)
     // 媒体消息也带上本轮上下文（主动接话统计"已接"、留档排查都要它）；没有上下文时保持 null
-    const rec = { target: to, text: cap, ats: [], replyTo: null, mode: 'media', messageId, hits: safe.hits, wire, turnCtx: turnStore.getStore() ?? null }
+    const rec = { target: to, text: cap, ats: [], replyTo: null, mode: 'media', messageId, hits: safe.hits, wire, turnCtx: turnStore.getStore() ?? null, conversationReply: true }
     if (onAfterSend) {
       try { await onAfterSend(rec) } catch (e) { log.warn(`[出站] 留档失败(忽略): ${e.message}`) }
     }

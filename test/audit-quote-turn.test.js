@@ -16,6 +16,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 function emitTurn(ctx, sessionId, type) {
   ctx.emit('session/event', { id: sessionId }, { type })
+  if (type === 'turn/start') {
+    const request = ctx._prompts.find((r) => r.sessionId === sessionId && !r._testConsumed)
+    request._testConsumed = true
+    ctx.emit('session/event', { id: sessionId }, { type: 'user/message', data: { source: { rpcId: request.requestId } } })
+  }
 }
 
 async function boot(t) {

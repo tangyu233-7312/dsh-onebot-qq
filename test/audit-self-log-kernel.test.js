@@ -13,7 +13,7 @@ import { bootKernel, tmpDir, tapInbound, emitRaw, groupAtEvent, privateEvent, GR
 
 const baseCfg = () => ({
   archive: { enabled: false, dir: 'logs/qq_chat' },
-  pacing: { reply: { enabled: false } },
+  pacing: { merge: { enabled: false }, reply: { enabled: false } },
 })
 
 const findHint = (ev) => (ev?.hint || []).filter((x) => /我今天的经历|我自己的事/.test(x))

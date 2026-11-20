@@ -100,17 +100,6 @@ export function defaultConfig() {
         privateHourlyMax: 1,
         privateMaxPerDay: 3,
         privateMinGapMs: 10800000,
-        // 连续对话（只暴露 3 个可调项，其余是内部闸门；见 kernel/pacing.js 的同名默认值）
-        continuation: {
-          enabled: false,
-          delayMs: 120000,
-          bonus: 1.5,
-          hourlyMax: 5,
-          minGapMs: 300000,
-          maxPerChain: 1,
-          requireNewMessage: true,
-          quoteLastHuman: false,
-        },
         style: {
           splitEnabled: true,
           splitProbability: 0.5,
@@ -394,6 +383,9 @@ export function loadConfig({ dataDir: configuredDataDir = '', configPath = '', e
   const migrated = isLegacyShape(raw)
   const merged = migrated ? migrateLegacyConfig(raw) : deepMerge(defaultConfig(), raw)
   merged.version = CONFIG_VERSION
+  delete merged.pacing?.reply?.continuation
+  delete merged.pacing?.reply?.prompts?.privateContinuation
+  delete merged.pacing?.reply?.prompts?.groupContinuation
   // 迁移态落盘：否则控制台读的是旧结构、写回后又被迁移逻辑覆盖（用户会误以为"改了不生效"）
   if (migrated && createIfMissing) {
     try {

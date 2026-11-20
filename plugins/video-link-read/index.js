@@ -258,7 +258,7 @@ export default {
      * 而**私聊**由 gate-wake 置 `{kind:'private'}`、**主动接话轮**则根本没有 wake 语义。
      * 旧实现一律 `if (!ev.wake) return`，等于"私聊里贴链接永远不看"——现在是按来源判断：
      *   · 私聊（非群）→ 只要对方发了就看
-     *   · 群聊 → @它 / 引用它 / 叫了唤醒词 / 接续补发 都算；主动接话轮（proactive/continuation）不算
+     *   · 群聊 → @它 / 引用它 / 叫了唤醒词 / 接续补发 都算；主动接话轮（proactive）不算
      */
     function isAddressed(ev) {
       if (!ev) return false
@@ -275,7 +275,7 @@ export default {
       // 已经在别处（比如群文件视频）成功塞过帧 = 这一轮已经"看过东西"了，别再看第二段
       if (Array.isArray(ev.imageParts) && ev.imageParts.length) return
       // 「只在被叫到时看」：判据是这条消息**是不是冲它来的**，不是 ev.wake 有没有值。
-      // ⚠️ 内核只在「被叫」时置 ev.wake；主动接话轮（wake.kind=proactive/continuation）没有 wake 语义，
+      // ⚠️ 内核只在「被叫」时置 ev.wake；主动接话轮（wake.kind=proactive）没有 wake 语义，
       //    但它们也不该触发下载（见 isAddressed 的注释）。
       if (cfg().onlyWhenAddressed !== false && !isAddressed(ev)) return
 

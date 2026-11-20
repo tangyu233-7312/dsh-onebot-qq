@@ -356,7 +356,7 @@ test('回归：只对好友开口（privateFriendsOnly=true）时，定时器照
 })
 
 test('回归：私聊冷场关着、群冷场也关时，不装定时器（别空转）', () => {
-  const off = timerInstalled({ privateEnabledOn: false, reply: { silenceEnabled: false, continuation: { enabled: false } } })
+  const off = timerInstalled({ privateEnabledOn: false, reply: { silenceEnabled: false } })
   assert.equal(off.installed, false)
 })
 

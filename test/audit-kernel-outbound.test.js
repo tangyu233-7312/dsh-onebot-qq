@@ -267,7 +267,7 @@ test('管线：pre-gate 抛错 = fail-closed（后续阶段与 terminal 都不�
   assert.equal(terminaled, false)
 })
 
-test('管线：passive-tap / intercept 抛错 = fail-open，后续照跑；terminal 有 ALS TurnContext', async () => {
+test('管线：passive-tap / intercept 抛错 = fail-open，后续照跑；terminal 不继承输入的 ALS', async () => {
   const pipeline = new Pipeline({ log: quietLog() })
   const errored = []
   pipeline.onPluginError((_e, info) => errored.push(info.stage))
@@ -290,7 +290,7 @@ test('管线：passive-tap / intercept 抛错 = fail-open，后续照跑；termi
   await pipeline.run(ev, async (e) => {
     terminaled = true
     assert.ok(e.turnCtx, 'terminal 前已挂 TurnContext')
-    assert.equal(currentTurn(), e.turnCtx, 'terminal 在 ALS 里')
+    assert.equal(currentTurn(), null, 'terminal 不把输入上下文泄漏进长期 agent 循环')
   })
   assert.equal(woken, true)
   assert.equal(terminaled, true)

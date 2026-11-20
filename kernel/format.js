@@ -623,14 +623,13 @@ export function buildPromptText(ev, opts = {}) {
   const wakeMark = ev.wake?.kind === 'keyword' ? `[关键词:${ev.wake.keyword}] `
     : ev.wake?.kind === 'followup' ? '[接上条] '
       : ev.wake?.kind === 'proactive' ? '[主动开口轮] '
-        : ev.wake?.kind === 'continuation' ? '[续聊检查] '
           : ev.wake?.kind === 'welcome' ? '[入群欢迎轮] ' : ''
   // 群里必须带说话人+QQ：同名/近名的人靠号码才能分开（否则会把 A 说的话安到 B 头上）
   // 主动接话轮/入群欢迎轮的"触发"不是某个人发的消息 → 不挂说话人前缀，避免凭空出现一个空名字
   const speakerName = senderNameOf(ev.sender, ev.sender?.qq)
   const speakerQq = Number(ev.sender?.qq)
   const speakerTag = speakerQq > 0 ? `${speakerName}(QQ:${speakerQq})` : speakerName
-  const speaker = ev.isGroup && ev.wake?.kind !== 'proactive' && ev.wake?.kind !== 'continuation' && ev.wake?.kind !== 'welcome'
+  const speaker = ev.isGroup && ev.wake?.kind !== 'proactive' && ev.wake?.kind !== 'welcome'
     ? `[${speakerTag}]: ` : ''
   const quote = opts.quoteText ? `\n\n[引用]\n${opts.quoteText}` : ''
   const fileHint = opts.fileHint ? `\n${opts.fileHint}` : ''
@@ -639,12 +638,12 @@ export function buildPromptText(ev, opts = {}) {
   const ctx = ev.historyBlock ? `\n${ev.historyBlock}` : ''
   const hints = ev.hint?.length ? `\n${ev.hint.join(' ')}` : ''
   // 尾巴：模型读到最后看的正是这一句。
-  //   · 合成轮（主动开口 / 续聊）里，**群聊**要求"不发也要写一行 [不发] 原因"——
+  //   · 合成轮（主动开口）里，**群聊**要求"不发也要写一行 [不发] 原因"——
   //     群里没人点它名，只写正文就等于石沉大海，必须逼它明确表态；
   //   · **私聊**不这么逼：一对一里"这次不想说话"是正常行为，硬要它写 [不发] 反而像客服。
   // 合成轮的收尾句由调用方给（index.js 从控制台的「提示词（可改）」里取，ev._tail）；
   // 没给就退回默认 —— 这样文案可配置，format.js 不用管文案长什么样。
-  const isSynthTurn = ev.wake?.kind === 'proactive' || ev.wake?.kind === 'continuation'
+  const isSynthTurn = ev.wake?.kind === 'proactive'
   const customTail = String(ev._tail || '').trim()
   const tail = isSynthTurn
     // 它自己带了「[提醒: …]」就整句用它，否则补上前缀
@@ -653,7 +652,9 @@ export function buildPromptText(ev, opts = {}) {
       : (ev.isGroup
         ? '\n[提醒: 发到群里必须调 send_message；这轮不打算说话也要在正文写一行 [不发] 原因]'
         : '\n[提醒: 想说话就调 send_message；不想说就不发，不用解释]'))
-    : '\n[提醒:只写正文收不到]'
+    : ev.wake?.kind === 'followup'
+      ? '\n[候选接话：此人刚与你互动，但这条没有再次唤醒你。结合说话人、引用对象和最新群上文，判断是否仍在对你说话。若在和别人聊天、仅表示结束或无需回应，不调任何发送工具，只在内部正文写一行 [不发] 原因。若确实在追问或接话，用 send_message 回复。其他明确唤醒的问题仍须处理，不能被本条的不发决定覆盖。]'
+      : '\n[提醒:只写正文收不到]'
   // 双保险：拼好的 prompt 再兜一道合法化 —— 历史里只要带一个孤立代理，上游就整轮 400
   return toWellFormedText(head + wakeMark + speaker + (ev.text || '') + fileHint + quote + cardHint + imgHint + ctx + hints + tail)
 }

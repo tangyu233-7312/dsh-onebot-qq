@@ -343,7 +343,7 @@ window.__ModuleLoader__.load({
 				onlySection ? null : h('div', { style: S.group, key: 'gt' }, group),
 				// 无 section 的项照常平铺；section 项收进折叠块（顺序按后端声明）
 				list.filter((c) => !c.section).map((c) => ctrlRow(c, api)),
-				// 顺序：没有进阶项的折叠块（如「连续对话」）在前，整块都是进阶项的（如「提示词（可改）」）一律排到最后，
+				// 顺序：没有进阶项的折叠块（如「私聊主动接话」）在前，整块都是进阶项的（如「提示词（可改）」）一律排到最后，
 				// 挨着「高级」—— 2026-11-12 之前按后端声明顺序渲染，它们会插在基础项中间，把常用开关挤下去。
 				...list.filter((c) => c.section).map((c) => c.section)
 					.filter((name, i, arr) => arr.indexOf(name) === i)
@@ -971,17 +971,17 @@ window.__ModuleLoader__.load({
 			const { schema, status, busy, run, call, setBusy, setMsg, setConfirmBox } = props
 			const { useState } = react
 			const [showAdv, setShowAdv] = useState(false)
-			// 「连续对话」这类具名折叠块：每个 section 一个开合状态，默认收起
+			// 「私聊主动接话」这类具名折叠块：每个 section 一个开合状态，默认收起
 			const [openSec, setOpenSec] = useState({})
 			const all = ((schema && schema.controls) || []).filter((c) => c.group === '主动接话')
-			// 三类：普通项 / 具名折叠块（如「连续对话」）/ 进阶项（收进「高级」）
+			// 三类：普通项 / 具名折叠块（如「私聊主动接话」）/ 进阶项（收进「高级」）
 			//
 			// ⚠️ 2026-11-12「点高级什么都没出来」：后端把**全部**进阶项都挂在了具名小节下
 			// （16 项在「提示词（可改）」，语境权重/机会窗口等也各自带 section），而这里以前**先判 section、后判 advanced**，
 			// 于是 advanced 数组永远是空的 —— 按钮能点、下面什么都不渲染，看着像坏了。
 			// 现在的判法：**先进阶项优先**。
 			//   · 进阶项（无论有没有 section）→ 一律进「高级」；带 section 的按小节归拢，在「高级」里各自成块；
-			//   · 其余按 section 收进页面上的具名折叠块（连续对话 / 私聊主动接话 / 静默时段 / 主动接话）。
+			//   · 其余按 section 收进页面上的具名折叠块（私聊主动接话 / 静默时段 / 主动接话）。
 			const sections = []       // 留在页面上的具名折叠块
 			const controls = []       // 平铺的基础项
 			const advanced = []       // 「高级」里平铺的进阶项
@@ -1027,7 +1027,7 @@ window.__ModuleLoader__.load({
 						? `当前：每小时最多 ${reply.hourlyMax} 次 · 实际间隔 ≥ ${Math.round((reply.minGapMs || 0) / 60000)} 分钟 · 语境门槛 ${Math.round((reply.threshold || 0) * 100)} 分`
 						: '当前：主动接话关着（上面「允许主动接话」打开即可）'),
 				...controls.map((c) => ctrlRow(c, props)),
-				// ═══ 具名折叠块（如「连续对话」）：和「高级」一样的按钮，但独立成栏、默认收起 ═══
+				// ═══ 具名折叠块（如「私聊主动接话」）：和「高级」一样的按钮，但独立成栏、默认收起 ═══
 				...sections.map((sec) => {
 					const open = !!openSec[sec.name]
 					return h('div', { key: 'sec:' + sec.name }, [

@@ -25,7 +25,7 @@
  *   1. 判定失败一律 fail-open：超时 / 坏 JSON / HTTP 报错 = 这条不判，照常回话，只记日志。
  *      宁可漏判也别乱判 —— 误判成辱骂会让它莫名其妙骂人，比漏判难看得多。
  *   2. 前两次什么都不加：hint 里一个字符都不出现，模型不可能察觉在被记账。
- *   3. 只算冲它来的：主动接话 / 续聊检查 / 入群欢迎轮一律不判（那是它自己起念，不是别人骂它）。
+ *   3. 只算冲它来的：主动接话 / 入群欢迎轮一律不判（那是它自己起念，不是别人骂它）。
  */
 
 import path from 'node:path'
@@ -33,8 +33,8 @@ import { readJsonFile, writeJsonFileSync } from '../../platform/atomic.js'
 
 const TITLE = '语气守卫'
 const STATE_FILE = 'tone-guard.json'
-/** 只有这几种唤醒才算「这个人冲着它说话」。proactive / continuation / welcome 都是它自己起念，不算。 */
-const COUNTED_WAKES = new Set(['at', 'quote', 'keyword', 'followup', 'private'])
+/** 只有这几种唤醒才算「这个人冲着它说话」。proactive / welcome 都是它自己起念，不算。 */
+const COUNTED_WAKES = new Set(['at', 'quote', 'keyword', 'private'])
 const RECENT_MAX = 6          // 语境缓存条数（给判定看最近聊了什么）
 const RECENT_CLIP = 120       // 每条语境截断（花的是判定的 token）
 const CASE_CLIP = 300         // 待判正文截断

@@ -24,6 +24,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
+import crypto from 'node:crypto'
+import { createConversationWindow } from './kernel/conversation-window.js'
 
 import { CONTRACT_VERSION, STAGES, withDefaults, createEvent, createTurnContext } from './contracts.js'
 import {
@@ -425,7 +427,7 @@ export async function apply(ctx, bundleConfig = {}) {
     pluginErrors: new Map(),
     activeTurns: new Map(), // chatKey → TurnContext（**正在跑**的那一轮：turn/start → turn/end）
     turnBySession: new Map(), // sessionId → TurnContext（同上；工具执行时按 DSH 会话认线）
-    pendingTurns: new Map(), // sessionId → TurnContext[]（prompt 已 admission、等 turn/start 的队列）
+    pendingTurns: new Map(), // sessionId → TurnContext[]（等待 user/message 确认实际读取）
     maintSessionIds: new Set(), // 后台任务会话（runIsolatedTask 起的）：工具入口一个 QQ 工具都不放行（见 MAINT_ALLOWED_TOOLS）
     // 受限会话表：sessionId → { label, tools: Set<toolName> }。
     // 「只做一件事」的系统会话（空间工作区 / 看视频的地方…）都登记在这里，
@@ -438,6 +440,10 @@ export async function apply(ctx, bundleConfig = {}) {
     archive,
     discovered,
   }
+  const conversation = createConversationWindow({
+    config: () => runtime.plugins?.['gate-wake'] === false ? { enabled: false } : runtime.pluginConfig?.['gate-wake'], log,
+  })
+  kernel.conversation = conversation
   kernel.tools = kernel.toolDefs // 兼容旧测试面：工具注册表
 
   // ── 我自己的流水账（跨会话的自我记录，2026-10-30）───────────────
@@ -547,8 +553,7 @@ export async function apply(ctx, bundleConfig = {}) {
       pacing.noteOutbound(rec.target)
       // 主动接话的统计只认"这一轮真的发了"（普通回话不参合）
       if (rec.turnCtx?.wakeKind === 'proactive') pacing.markProactiveSent(rec.target)
-      // 连续对话：普通回话真的发出去了，才从这一刻开始算"隔多久再检查"
-      pacing.noteReplySent(rec.target, rec.turnCtx)
+      conversation.noteReply(rec)
       archive(rec.target, { dir: 'out', ts: Date.now(), messageId: rec.messageId ?? null, text: rec.text, mode: rec.mode })
     },
   })
@@ -563,10 +568,8 @@ export async function apply(ctx, bundleConfig = {}) {
   deliver.onDecorate((out) => {
     const turnCtx = out.turnCtx ?? kernel.activeTurns.get(out.target) ?? null
     const kind = turnCtx?.wakeKind
-    // 主动接话 / 连续对话都是"它自己找的话"：默认不指人、不挂引用
-    if (!turnCtx || (kind !== 'proactive' && kind !== 'continuation')) return
-    // 例外：续聊开了「引用最后一条人类消息」时，只保留这一个引用目标（其余一律清掉）
-    const forceQuote = kind === 'continuation' ? (Number(turnCtx._forceReplyTo) || null) : null
+    if (!turnCtx || kind !== 'proactive') return
+    const forceQuote = null
     if (out.ats?.length || (out.replyTo != null && out.replyTo !== forceQuote)) {
       log.info(`[主动接话] 丢掉 @/引用（${out.target}）：主动接话不指人、不挂引用`)
     }
@@ -579,19 +582,21 @@ export async function apply(ctx, bundleConfig = {}) {
     }
   })
 
-  // ── 内置出站钩子②：自动引用（锚在 turn/start → turn/end 之间有效，取队首＝正在回的那轮） ──
+  // ── 内置出站钩子②：按实际读取输入自动引用，turn/end 后失效 ──
   deliver.onDecorate((out) => {
     // 只有模型经 send_message 发的回复才自动挂引用。命令 / 答应声 / 冷却 / 生图失败
     // 这些出站没有自己的回合上下文，以前回退 activeTurns 会把引用挂到上一个人身上。
     if (!out.autoQuote) return
     const turnCtx = out.turnCtx ?? null
-    // 主动接话/续聊不挂引用（上一道钩子已清掉显式值，这里也不再补）
-    if (!turnCtx || turnCtx.wakeKind === 'proactive' || turnCtx.wakeKind === 'continuation') return
+    // 主动接话不挂引用（上一道钩子已清掉显式值，这里也不再补）
+    if (!turnCtx || turnCtx.wakeKind === 'proactive') return
     if (out.noReply || out.replyTo != null || out.ats?.length) return
     const need = Number(runtime.outbound?.quoteAfterMsgs ?? 3)
     if (need <= 0) return
-    // 锚队列队首 = 正在回的那一轮（turn/start 后才存在，turn/end 就消费掉）
-    const q = state.quoteNeed(out.target, need)
+    // 读取插话后引用最新输入；普通回复遵守本条消息的插话数量门槛。
+    const q = turnCtx._steered
+      ? { allow: true, triggerId: turnCtx.triggerMsgId }
+      : { allow: Number(turnCtx.arrivedDuringTurn) >= need, triggerId: turnCtx.triggerMsgId }
     if (q.allow && q.triggerId != null) out.replyTo = q.triggerId
   })
 
@@ -669,7 +674,7 @@ export async function apply(ctx, bundleConfig = {}) {
   }
   await attachMappedSessionsToQqWorkspace()
 
-  // ── 取当前 TurnContext（优先 ALS store → 按 DSH 会话 id → 按 target）──
+  // ── 取当前 TurnContext（优先 DSH 会话 id → ALS store → target）──
   // ⚠️ 绝不再"兜底取最后一条活跃线"：两条线并发回合时必然认错线
   //    （实测：表情包/生图在别的线回合期间拿错 TurnContext，图会发错群）。
   //    拿不到就返回 null，让需要的工具自己报错让模型重试。
@@ -678,10 +683,10 @@ export async function apply(ctx, bundleConfig = {}) {
     return kernel.turnBySession.get(String(sessionId)) || null
   }
   const resolveCurrentTurn = (target, sessionId) => {
-    const fromStore = turnStore.getStore()
-    if (fromStore) return fromStore
     const bySession = turnOfSession(sessionId)
     if (bySession) return bySession
+    const fromStore = turnStore.getStore()
+    if (fromStore && !fromStore._finished) return fromStore
     if (target && kernel.activeTurns.has(String(target))) return kernel.activeTurns.get(String(target))
     return null
   }
@@ -846,6 +851,7 @@ export async function apply(ctx, bundleConfig = {}) {
     get shared() { return kernel.shared },
     /** 回复节奏能力（合批窗口 / 主动接话调度 + 状态）：插件可读 `config`、`stats()` 做控制台/自检 */
     get pacing() { return kernel.pacing },
+    get conversation() { return conversation },
     get state() { return state },
     on(stage, fn, opts = {}) {
       if (!STAGES.includes(stage)) throw new Error(`未知入站阶段: ${stage}`)
@@ -1059,10 +1065,10 @@ export async function apply(ctx, bundleConfig = {}) {
   })
 
   // ── 轮次上下文：绑定到 DSH 的 turn/start → turn/end ─────────
-  // ⚠️ `sessionController.prompt()` 只是 **admission**（内部是 agent.followup），模型真正
+  // ⚠️ `sessionController.prompt()` 只是 **admission**（内部选择 followup 或 steer），模型真正
   //    开始跑是之后的事。所以：
-  //    · prompt 提交后先放 pendingTurns（等 turn/start）；
-  //    · turn/start 才把这一轮挂到 turnBySession / activeTurns（工具执行时按它认轮）；
+  //    · prompt 提交后先放 pendingTurns（等 turn/start 或 user/message 实际读取）；
+  //    · user/message 实际读取后挂到 turnBySession / activeTurns（工具执行时按它认轮）；
   //    · turn/end 才清上下文 + 消费引用锚（旧桥接 consumeTrigger 的语义）。
   //    以前在 runTurn.finally（admission 时）就 pop 锚/清映射，回复发出时只能猜"最后一轮"，
   //    这正是引用引错人的根因。
@@ -1097,6 +1103,7 @@ export async function apply(ctx, bundleConfig = {}) {
 
   // ── DSH 回合与引用锚的绑定 ──────────────────────────────────
   const boundTurnHooks = new Set()
+  const runningSessions = new Set()
   const pushPendingTurn = (sessionId, turnCtx) => {
     const key = String(sessionId || '')
     if (!key) return
@@ -1129,7 +1136,11 @@ export async function apply(ctx, bundleConfig = {}) {
       const alive = []
       for (const t of q) {
         const born = Number(t?.startedAt || 0)
-        if (born && now - born > ACTIVE_TURN_TTL_MS) continue
+        if (born && now - born > ACTIVE_TURN_TTL_MS) {
+          t._finished = true
+          if (t._hasAnchor) state.consumeTurnAnchor(t.chatKey, t.triggerMsgId)
+          continue
+        }
         alive.push(t)
       }
       if (alive.length !== q.length) {
@@ -1148,29 +1159,28 @@ export async function apply(ctx, bundleConfig = {}) {
     boundTurnHooks.add(key)
     dsh.onTurnStart(key, () => startPendingTurn(key))
     dsh.onTurnEnd(key, () => finishRunningTurn(key))
+    dsh.onInput(key, (requestId) => consumeInput(key, requestId))
   }
   function startPendingTurn(sessionId) {
     const key = String(sessionId || '')
-    const q = kernel.pendingTurns.get(key)
-    const turnCtx = q?.shift()
-    if (q && !q.length) kernel.pendingTurns.delete(key)
-    if (!turnCtx) {
-      log.debug(`turn/start 没有待启动的 QQ 回合 (${key})`)
-      return
-    }
-    turnCtx._turnStarted = true
-    holdTurnSession(key, turnCtx)
-    holdActiveTurn(turnCtx.chatKey, turnCtx)
-    log.debug(`turn/start 绑定 ${key} → ${turnCtx.chatKey}#${turnCtx.triggerMsgId ?? '-'}`)
+    // The first claimed batch can contain steers before a queued input.
+    // Bind attribution only when the durable user/message event names its request.
+    runningSessions.add(key)
   }
+
   function finishRunningTurn(sessionId) {
     const key = String(sessionId || '')
+    runningSessions.delete(key)
     const turnCtx = kernel.turnBySession.get(key) || null
     if (turnCtx) {
       if (kernel.turnBySession.get(key) === turnCtx) kernel.turnBySession.delete(key)
       if (kernel.activeTurns.get(turnCtx.chatKey) === turnCtx) kernel.activeTurns.delete(turnCtx.chatKey)
       // 一轮真正结束才消费锚：一轮发多条也只消费一次
-      if (turnCtx._hasAnchor) state.consumeTurnAnchor(turnCtx.chatKey, turnCtx.triggerMsgId)
+      for (const input of turnCtx._inputs || [turnCtx]) {
+        input._finished = true
+        if (input._hasAnchor) state.consumeTurnAnchor(input.chatKey, input.triggerMsgId)
+      }
+      turnCtx._finished = true
       log.debug(`turn/end 清理 ${key} → ${turnCtx.chatKey}#${turnCtx.triggerMsgId ?? '-'}`)
     }
     const st = turnSessionTimers.get(key)
@@ -1179,6 +1189,34 @@ export async function apply(ctx, bundleConfig = {}) {
       const at = activeTurnTimers.get(turnCtx.chatKey)
       if (at) { clearTimeout(at); activeTurnTimers.delete(turnCtx.chatKey) }
     }
+  }
+  function consumeInput(sessionId, requestId) {
+    if (!requestId) return
+    const input = kernel.pendingTurns.get(sessionId)?.find((t) => t.requestId === requestId)
+    if (!input) return
+    removePendingTurn(sessionId, input)
+    input._turnStarted = true
+    const previous = kernel.turnBySession.get(sessionId)
+    if (!previous) {
+      holdTurnSession(sessionId, input)
+      holdActiveTurn(input.chatKey, input)
+      return
+    }
+    const inputs = [...(previous?._inputs || (previous ? [previous] : [])), input]
+    // A consumed steer is part of the current turn, not another pending turn.
+    // Use a fresh snapshot so an already executing send keeps its original attribution.
+    const combined = { ...input, _inputs: inputs, _steered: true,
+      // Renew only the newest consumed input, not everybody in this turn.
+      participants: input.participants,
+      _triggeredBy: inputs.every((t) => t._triggeredBy === 'master') ? 'master' : 'other',
+      nextImageParts: inputs.flatMap((t) => t.nextImageParts || []),
+    }
+    if (inputs.some((t) => ['at', 'quote', 'keyword', 'private'].includes(t.wakeKind))) {
+      combined.wakeKind = inputs.findLast((t) => t.wakeKind !== 'followup')?.wakeKind || input.wakeKind
+    }
+    holdTurnSession(sessionId, combined)
+    holdActiveTurn(combined.chatKey, combined)
+    log.debug(`插话已读取 ${combined.chatKey}#${input.triggerMsgId}`)
   }
 
   // ── 入站：一条消息走完全部阶段，末端交给 agent ───────────────
@@ -1192,15 +1230,15 @@ export async function apply(ctx, bundleConfig = {}) {
         + `${notice ? ` notice=${notice.type}/${notice.subType}` : ''}（不建会话、不进模型）`)
       return
     }
-    // Pipeline.run 已经创建了 ev.turnCtx 并放入 turnStore
+    // 合批材料准备完成后已创建 ev.turnCtx；工具入口才绑定 turnStore。
     const turnCtx = ev.turnCtx
-    // 连续对话的起点：只有"真人唤醒"才会登记链（pacing 内部还会再按 wake.kind 过滤一次）
-    pacing.noteWake(ev)
     turnCtx.quoteAfterMsgs = Number(runtime.outbound?.quoteAfterMsgs ?? 3)
     // 引用锚：入站事件自带 message_id，记下来；活到这一轮的 DSH turn/end
-    turnCtx._hasAnchor = ev.wake.kind !== 'proactive' && ev.wake.kind !== 'continuation'
+    turnCtx._hasAnchor = ev.wake.kind !== 'proactive' && ev.wake.kind !== 'welcome'
+    turnCtx.isGroup = ev.isGroup
+    turnCtx.participants = [...new Set((ev._scratch.batchEvents || [ev]).map((e) => String(e.sender?.qq || '')).filter(Boolean))]
     // 2026-10-30：给"这一轮是谁起的"一个**机器可读**的标记，别让工具去猜。
-    //   _wakeKind：合成轮（主动接话/续聊）才有的旧标记；
+    //   _wakeKind：主动接话合成轮的标记；
     //   _triggeredBy：'master' = 主人发的消息触发的；'other' = 群友/系统触发的。
     // 踩过的坑：只认 _wakeKind 时，主人正常说话触发的轮它是空的，
     // 工具就把"主人叫它看"当成"它自己起念"，吃了自己的冷却。
@@ -1211,11 +1249,11 @@ export async function apply(ctx, bundleConfig = {}) {
     let sessionId = ''
     try {
       sessionId = await dsh.ensureSession(ev.chatKey, ev.sender?.name || '')
-      const makePrompt = (sid) => buildPromptText(ev, {
-        greeted: greetedSessions.has(sid),
-        quoteText: ev._scratch.quoteText || '',
-        fileHint: ev._scratch.fileHint || '',
-      })
+      const makePrompt = (sid) => (ev._scratch.batchEvents || [ev]).map((item, i) => buildPromptText(item, {
+        greeted: i > 0 || greetedSessions.has(sid),
+        quoteText: item._scratch.quoteText || '',
+        fileHint: item._scratch.fileHint || '',
+      })).join('\n\n')
       const submit = async (sid) => {
         turnCtx.sessionId = sid
         turnCtx.promptText = makePrompt(sid)
@@ -1227,8 +1265,10 @@ export async function apply(ctx, bundleConfig = {}) {
           log.info(`[看视频] 本轮挂上 ${pending.length} 帧（上一轮自己看的）`)
         }
         bindTurnHooks(sid)
+        turnCtx.requestId = crypto.randomUUID()
+        turnCtx.deliveryMode = runningSessions.has(String(sid)) && ev.wake.kind !== 'proactive' ? 'steer' : 'queue'
         pushPendingTurn(sid, turnCtx)
-        await dsh.prompt(sid, turnCtx.promptText, ev.imageParts)
+        await dsh.prompt(sid, turnCtx.promptText, ev.imageParts, { requestId: turnCtx.requestId, mode: turnCtx.deliveryMode })
       }
       try {
         await submit(sessionId)
@@ -1246,6 +1286,7 @@ export async function apply(ctx, bundleConfig = {}) {
       log.debug(`turn 已提交 ${ev.chatKey} → ${sessionId}`)
     } catch (e) {
       // prompt 没提交成功：这一轮不会发生，清掉 pending + 锚（还没到 turn/start）
+      turnCtx._submissionFailed = true
       if (!turnCtx._turnStarted) {
         removePendingTurn(sessionId, turnCtx)
         if (turnCtx._hasAnchor) state.consumeTurnAnchor(ev.chatKey, ev.messageId)
@@ -1260,9 +1301,28 @@ export async function apply(ctx, bundleConfig = {}) {
     //    真正的清理在 turn/end 回调（finishRunningTurn）。
   }
 
+  // Prepare after collection. Each message keeps its own reference, media and identity.
+  const submitBatch = (events) => state.serialize(events[0].chatKey, async () => {
+    const prepared = []
+    for (const item of events) {
+      if (item.wake.kind === 'followup' && !conversation.current(item)) continue
+      await pipeline.prepare(item)
+      if (!item.stopped && (item.wake.kind !== 'followup' || conversation.current(item))) prepared.push(item)
+    }
+    if (!prepared.length) return
+    // Reset/reload may occur while preparing a later item.
+    if (prepared.some((e) => e.wake.kind === 'followup' && !conversation.current(e))) return
+    const base = prepared[prepared.length - 1]
+    base._scratch.batchEvents = prepared
+    base.imageParts = prepared.flatMap((e) => (e.imageParts || []).map((im) => ({ ...im, sourceMessageId: e.messageId })))
+    base.turnCtx = createTurnContext(base)
+    base.sender = { ...base.sender, isMaster: prepared.every((e) => e.sender?.isMaster === true) }
+    await runTurn(base)
+  })
+
   // ── 主动接话：没入站也能起一轮候选（走正规管线语义，出站不 @ 不引用由 decorate 钩子硬挡） ──
-  const runProactiveTurn = async ({ chatKey, groupId, reason, humanMsgs, quoteTo, isGroup }) => {
-    const isContinuation = reason === 'continuation'
+  const runProactiveTurn = async ({ chatKey, groupId, reason, humanMsgs, isGroup }) => {
+    if (conversation.hasOpen(chatKey)) return
     // 群聊 / 私聊都走这里：isGroup 由 pacing 传下来，
     // 缺省时按 chatKey 前缀推断（老的调用点只传 chatKey/groupId）
     const groupChat = isGroup != null ? !!isGroup : String(chatKey).startsWith('group:')
@@ -1277,22 +1337,16 @@ export async function apply(ctx, bundleConfig = {}) {
       sender: { qq: isPrivateChat ? (Number(String(chatKey).slice(8)) || 0) : 0, name: '', card: null, isMaster: false },
       text: '', time: Date.now(),
     })
-    ev.wake = { kind: isContinuation ? 'continuation' : 'proactive', reason }
+    ev.wake = { kind: 'proactive', reason }
     if (isPrivateChat) ev.wake.chatType = 'private'
     ev._scratch.silentFailure = true
     // 合成轮的口径由这里**统一给**（format.js 只留一个极简标签，不再重复写一遍）。
     // 文案本身**不写死**：默认值在 pacing.js 的 REPLY_DEFAULTS.prompts，
-    // 控制台「主动接话 → 提示词（可改）」六个框随便改（{n} 会替换成新消息条数）。
+    // 控制台「主动接话 → 提示词（可改）」四个框随便改（{n} 会替换成新消息条数）。
     const P = { ...REPLY_DEFAULTS.prompts, ...(runtime.pacing?.reply?.prompts || {}) }
     const fill = (tpl) => String(tpl || '').replace(/\{n\}/g, String(Number(humanMsgs) || 0)).trim()
     const tailPrompt = fill(isPrivateChat ? P.tailPrivate : P.tailGroup)
-    ev.hint.push(isContinuation
-      ? fill(isPrivateChat ? P.privateContinuation : P.groupContinuation)
-      : isPrivateChat
-        ? fill(P.private)
-        : reason === 'silence'
-          ? fill(P.group)
-          : fill(P.group))
+    ev.hint.push(fill(isPrivateChat ? P.private : P.group))
     // 收尾提醒交给 format.js 贴到最后一行（合成轮才有；普通回话仍是那句通用的）
     if (tailPrompt) ev._tail = tailPrompt
     // 私聊没有「群上文」可拉（协议端也没有私聊历史接口）：上下文来自 DSH 会话本身，
@@ -1314,15 +1368,12 @@ export async function apply(ctx, bundleConfig = {}) {
     // 工具（watch_now）在调用时把抽好的帧 push 到这里，下一轮 prompt 时由内核取走挂上 ——
     // 这样它是在**自己的会话**里看到画面，而不是被另一个会话代看、再转述给它。
     ev.turnCtx.nextImageParts = []
-    // 续聊可选「引用最后一条人类消息」：把目标 message_id 带进本轮，出站钩子①会用它（其它轮一律清掉）
-    if (isContinuation && quoteTo) ev.turnCtx._forceReplyTo = Number(quoteTo) || null
-    holdActiveTurn(chatKey, ev.turnCtx)
-    log.info(`[${isContinuation ? '连续对话' : '主动接话'}] ${chatKey} 候选入站（${isContinuation ? '续聊检查' : isPrivateChat ? '私聊冷场' : reason === 'silence' ? '冷场找话' : '话题合适'}）→ 交模型判断接不接`)
-    return turnStore.run(ev.turnCtx, () => state.serialize(ev.chatKey, () => runTurn(ev)))
+    log.info('[主动接话] 候选入站 → 交模型判断接不接')
+    return state.serialize(ev.chatKey, () => runTurn(ev))
   }
   pacing.start({
     onProactiveTurn: runProactiveTurn,
-    isBusy: (chatKey) => kernel.activeTurns.has(String(chatKey)) || hasPendingTurn(String(chatKey)),
+    isBusy: (chatKey) => kernel.activeTurns.has(String(chatKey)) || hasPendingTurn(String(chatKey)) || conversation.hasOpen(chatKey),
     // 私聊主动接话的「只对好友开口」：好友名单走白名单视图
     friendList: () => onebot.friendList(),
   })
@@ -1427,10 +1478,13 @@ export async function apply(ctx, bundleConfig = {}) {
     }
 
     try {
-      // 静默合批：同群几百毫秒内的多条唤醒并成一轮（主动接话轮不进来）
-      await pipeline.run(ev, (wokenEv) => pacing.submit(wokenEv, (e) => state.serialize(e.chatKey, () => runTurn(e))))
+      await pipeline.run(ev, (wokenEv) => {
+        if (wokenEv.wake.kind === 'followup') return conversation.submit(wokenEv, submitBatch)
+        // Explicit calls are never downgraded to optional followups.
+        return pacing.submit(wokenEv, (e) => submitBatch(e._scratch.batchEvents || [e]))
+      }, { prepare: false })
       // 没唤醒的群消息 → 交给主动接话：到点了就按语境挑时机（有 wake 的不进来，避免被叫时同时抢话）
-      if (!ev.wake && !ev.stopped) pacing.consider(ev)
+      if (!ev.wake && !ev.stopped && !conversation.hasOpen(ev.chatKey)) pacing.consider(ev)
     } catch (e) {
       log.error(`入站处理异常 (${ev.chatKey}): ${e.stack || e.message}`)
     } finally {
@@ -1537,6 +1591,7 @@ export async function apply(ctx, bundleConfig = {}) {
     refreshKeywordTable()
     refreshPluginDefs()
     pacing.apply(runtime.pacing)
+    conversation.clear()
     deliver.configure({
       adminQq: kernel.adminQq,
       longForward: {
@@ -1769,6 +1824,7 @@ export async function apply(ctx, bundleConfig = {}) {
     }
     try { adminHost?.dispose?.() } catch { /* ignore */ }
     try { compat?.close() } catch { /* ignore */ }
+    try { conversation.stop() } catch { /* ignore */ }
     try { pacing.stop() } catch { /* ignore */ }
     try { onebot.close() } catch { /* ignore */ }
     try { dsh.close?.() } catch { /* ignore */ }

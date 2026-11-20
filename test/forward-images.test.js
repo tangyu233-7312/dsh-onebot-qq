@@ -140,7 +140,7 @@ test('多份候选不猜；明确引用优先，普通聊天及合成轮不会�
     if (ev.replyToId) ev._scratch.replyForwards = []
     await appendForwardContext(ev, { state, onebot: bot }); assert.equal(ev.images.length, 0)
   }
-  const synth = event(); synth.wake.kind = 'continuation'; synth._scratch.forwards = [card([entry(img())])]
+  const synth = event(); synth.wake.kind = 'proactive'; synth._scratch.forwards = [card([entry(img())])]
   await appendForwardContext(synth, { state, onebot: bot }); assert.equal(synth.images.length, 0)
 })
 

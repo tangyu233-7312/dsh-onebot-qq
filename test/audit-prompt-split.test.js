@@ -34,17 +34,12 @@ test('私聊主动开口：不再出现「群里」字样，也不逼它解释�
   assert.match(t, /不想说就不发/)
 })
 
-test('群聊续聊：同样按群聊口径', () => {
-  const t = buildPromptText(ev({ wake: { kind: 'continuation' } }))
-  assert.match(t, /\[续聊检查\]/)
-  assert.match(t, /发到群里必须调 send_message/)
-})
-
-test('私聊续聊：放宽，不逼表态', () => {
-  const t = buildPromptText(ev({ chatKey: 'private:10001', isGroup: false, groupId: null, wake: { kind: 'continuation' } }))
-  assert.match(t, /\[续聊检查\]/)
-  assert.equal(t.includes('群里'), false)
-  assert.equal(t.includes('[不发] 原因'), false)
+test('候选接话：保留说话人并允许内部不发，明确唤醒仍须处理', () => {
+  const t = buildPromptText(ev({ sender: { qq: 10002, name: '甲' }, text: '那这个呢', wake: { kind: 'followup' } }))
+  assert.match(t, /甲\(QQ:10002\)/)
+  assert.match(t, /候选接话/)
+  assert.match(t, /\[不发\] 原因/)
+  assert.match(t, /其他明确唤醒的问题仍须处理/)
 })
 
 test('普通回话（非合成轮）：尾部还是原来那句通用的', () => {
@@ -61,16 +56,16 @@ test('唤醒标记只有极简标签，不再重复写场景说明', () => {
 })
 
 // ── 提示词可配置（2026-10-29）──────────────────────────────
-test('提示词文案不写死在代码里：默认值在 REPLY_DEFAULTS.prompts，控制台有 6 个可改项', async () => {
+test('提示词文案不写死在代码里：默认值在 REPLY_DEFAULTS.prompts，控制台有 4 个可改项', async () => {
   const { REPLY_DEFAULTS } = await import('../kernel/pacing.js')
   const { CORE_CONTROLS } = await import('../admin/schema.js')
-  const keys = ['private', 'privateContinuation', 'group', 'groupContinuation', 'tailPrivate', 'tailGroup']
+  const keys = ['private', 'group', 'tailPrivate', 'tailGroup']
   for (const k of keys) {
     assert.equal(typeof REPLY_DEFAULTS.prompts[k], 'string', '默认值缺 ' + k)
     assert.ok(REPLY_DEFAULTS.prompts[k].length > 5, k + ' 太短，像是占位没填')
   }
   const exposed = CORE_CONTROLS.filter((c) => c.key.startsWith('pacing.reply.prompts.'))
-  assert.equal(exposed.length, 6, '控制台应暴露 6 个提示词项，实际 ' + exposed.length)
+  assert.equal(exposed.length, 4, '控制台应暴露 4 个提示词项，实际 ' + exposed.length)
   for (const c of exposed) assert.equal(c.type, 'text', c.key + ' 应该是多行文本控件')
 })
 
@@ -90,20 +85,13 @@ test('收尾句可被调用方覆盖（ev._tail）', () => {
   assert.match(t2, /\[提醒: 爱说不说\]/)
 })
 
-test('群聊续聊的 {n} 占位符能替换', () => {
-  const t = buildPromptText(ev({ wake: { kind: 'continuation' }, hint: ['你刚回过话，之后群里又有 7 条新消息'] , _tail: '[提醒: x]' }))
-  assert.match(t, /7 条新消息/)
-})
-
-test('控制台那 6 个提示词框一进来就带默认文案（不是空的）', async () => {
+test('控制台那 4 个提示词框一进来就带默认文案（不是空的）', async () => {
   // 用户没改过配置时，面板不该显示空 —— 否则会以为「提示词是空的」或不知道怎么写。
   const { CORE_CONTROLS, readValue } = await import('../admin/schema.js')
   const { REPLY_DEFAULTS } = await import('../kernel/pacing.js')
   const keyMap = {
     'pacing.reply.prompts.private': 'private',
-    'pacing.reply.prompts.privateContinuation': 'privateContinuation',
     'pacing.reply.prompts.group': 'group',
-    'pacing.reply.prompts.groupContinuation': 'groupContinuation',
     'pacing.reply.prompts.tailPrivate': 'tailPrivate',
     'pacing.reply.prompts.tailGroup': 'tailGroup',
   }

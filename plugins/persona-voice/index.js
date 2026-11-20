@@ -309,7 +309,7 @@ export default {
       //      实测（线上群）指令拦不住：55 次里仍引用 47 次，且每次都是刚来的那条。
       //      只有"唤醒之后、回复之前同群又插了 ≥ quoteAfterMsgs 条"才值得挂；没到门槛就抹掉。
       //      引用**更早的其它消息**（用户点名要引用）保留不动；主动接话轮由内核出站钩子强制清（这里不碰）。
-      if (cfg.quoteEnforce !== false && tc && tc.wakeKind !== 'proactive' && out.replyTo != null
+      if (cfg.quoteEnforce !== false && tc && !tc._steered && tc.wakeKind !== 'proactive' && out.replyTo != null
         && Number(out.replyTo) === Number(tc.triggerMsgId)) {
         const need = Number(tc.quoteAfterMsgs ?? 3) // 内核没往 turnCtx 带就按默认 3
         const arrived = Number(tc.arrivedDuringTurn) || 0
@@ -352,7 +352,7 @@ export default {
         const nth = i + 2
         setTimeout(async () => {
           pendingTails.set(out.target, part)
-          try { await bot.deliver(out.target, part, { turnCtx: out.turnCtx || null }) }
+          try { await bot.deliver(out.target, part, { turnCtx: out.turnCtx || null, conversationReply: true }) }
           catch (e) { log.warn(`[拆条] 第 ${nth} 条发送失败 (${out.target}): ${e.message}`) }
           finally { pendingTails.delete(out.target) }
         }, delayMs * nth)

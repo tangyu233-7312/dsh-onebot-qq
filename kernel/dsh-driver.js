@@ -66,6 +66,7 @@ export function createDshDriver(opts) {
   const creating = new Map()      // chatKey -> Promise<sessionId>（同一条线并发时只建一个会话）
   const turnEndFns = new Map()    // sessionId -> Set<fn>
   const turnStartFns = new Map()  // sessionId -> Set<fn>
+  const inputFns = new Map()      // sessionId -> Set<fn> (actual user/message consumption)
   const unsubs = []               // ctx.on(...) 的 disposer
 
   // 会话标题同步的状态（每次 sync 都读写这个小文件，不塞进会话映射里 —— 两者生命周期不同）
@@ -218,6 +219,7 @@ export function createDshDriver(opts) {
     const content = [{ type: 'text', text: promptText }]
     for (const im of Array.isArray(imageParts) ? imageParts : []) {
       if (im?.data && im.mediaType) {
+        if (im.sourceMessageId != null) content.push({ type: 'text', text: '[下一张图片来自 QQ 消息 ID ' + im.sourceMessageId + ']' })
         if (String(im.name || '').startsWith('qq-forward:')) {
           content.push({ type: 'text', text: `[下一张图片对应：${im.name.slice('qq-forward:'.length)}；外部转发材料]` })
         }
@@ -321,25 +323,27 @@ export function createDshDriver(opts) {
   }
 
   /** 统一入口：失败先丢图重发纯文本的降级策略，底层提交走 sessionController。 */
-  async function prompt(sessionId, promptText, imageParts) {
+  async function prompt(sessionId, promptText, imageParts, submission = {}) {
+    submission = { ...submission, requestId: submission.requestId || crypto.randomUUID() }
     const content = contentOf(promptText, imageParts)
+    const imageCount = content.filter((part) => part.type === 'image').length
     try {
-      await submitPrompt(sessionId, content)
+      await submitPrompt(sessionId, content, submission)
     } catch (e) {
-      const kind = content.length > 1 ? classifyImageFailure(e) : ''
+      const kind = imageCount > 0 ? classifyImageFailure(e) : ''
       if (!kind) throw e
       log.warn(`${kind === 'size' ? '图片超出 DSH 限额' : '本会话模型不支持图片'}, 丢图重发纯文本 (${sessionId}): ${e.message}`)
       await submitPrompt(sessionId, [
-        { type: 'text', text: promptText + degradeSuffix(kind, content.length - 1) },
-      ])
+        { type: 'text', text: promptText + degradeSuffix(kind, imageCount) },
+      ], submission)
     }
     return true
   }
 
   /** 提交：唯一正确路径就是 sessionController.prompt（理由见文件头）。 */
-  async function submitPrompt(sessionId, content) {
+  async function submitPrompt(sessionId, content, submission) {
     await ctx.sessionController.prompt(
-      { requestId: crypto.randomUUID(), sessionId, mode: 'queue', content },
+      { requestId: submission.requestId || crypto.randomUUID(), sessionId, mode: submission.mode === 'steer' ? 'steer' : 'queue', content },
       new AbortController().signal,   // 本驱动不主动中断准入阶段；取消走 cancel()
     )
   }
@@ -567,6 +571,11 @@ export function createDshDriver(opts) {
     const type = event?.type
     if (type === 'turn/start' && turnStartFns.has(session.id)) fireTurnStart(session.id, event)
     else if (type === 'turn/end' && turnEndFns.has(session.id)) fireTurnEnd(session.id, event)
+    else if (type === 'user/message') {
+      for (const fn of inputFns.get(session.id) || []) {
+        try { fn(event.data?.source?.rpcId) } catch (e) { log.warn(`input 回调异常: ${e.message}`) }
+      }
+    }
   }))
   // QQ 端没有可点的卡片：选择题会让会话挂起等一个永远不会来的点击，表现就是"卡死"。
   // 只拦 `agent.id` 属于 QQ 会话的请求，其他（网页 / 工作线）必须 return next() ——
@@ -617,6 +626,7 @@ export function createDshDriver(opts) {
     }
     turnEndFns.clear()
     turnStartFns.clear()
+    inputFns.clear()
   }
 
   /**
@@ -645,6 +655,12 @@ export function createDshDriver(opts) {
     runIsolatedTask,
     onTurnStart,
     onTurnEnd,
+    onInput(sessionId, fn) {
+      const set = inputFns.get(sessionId) || new Set()
+      inputFns.set(sessionId, set)
+      set.add(fn)
+      return () => set.delete(fn)
+    },
     fetchGroupContext,
     syncSessionTitles,
     health,

@@ -26,7 +26,7 @@
 
 /** 秘密值的占位符：读 schema 时回显它而不是真值；把它原样写回来 = 不修改。 */
 // 默认文案的唯一真相源在 kernel/pacing.js（REPLY_DEFAULTS.prompts）。
-// 这里 import 过来给控件当 default —— 不让控制台那六个框一进来是空的：
+// 这里 import 过来给控件当 default —— 不让控制台那四个框一进来是空的：
 // 用户没改过就该看到「现在实际在用的那段话」，而不是怀疑「提示词是空的」。
 import fs from 'node:fs'
 import path from 'node:path'
@@ -217,52 +217,6 @@ export const CORE_CONTROLS = [
     scale: 0.01, min: 0, max: 100, step: 5, default: 0.45,
     hint: '先给群消息按语境打分（问句、正在热聊、它很久没说话…分高；@别人、纯表情分低），分够高才接。',
   },
-  // ── 连续对话（2026-10-27）：被真人叫过并回过话之后，隔一会儿把这期间的新消息塞回模型再判一次 ──
-  // 控制台：8 项全部暴露，但不平铺在页面上——`section:'连续对话'` 让前端收进「主动接话」页里
-  // 一个独立的折叠块（和「高级」按钮同一种交互），默认收起，免得把常用项挤下去。
-  {
-    key: 'pacing.reply.continuation.enabled', group: '主动接话', section: '连续对话', type: 'bool', label: '连续对话（回完话后再看要不要补一句）', default: false,
-    hint: '开 = 被真人叫过、它回过话之后，等「回完话后等多久检查」这么久，把这期间群里新说的话再看一遍：'
-      + '想补就补一句，不想补就什么都不发。\n'
-      + '防自转：只有真人唤醒才会开这条链，一次唤醒只检查一次，且必须有人类新消息才会检查。'
-      + '总开关（允许主动接话）关掉时它也不工作。',
-  },
-  {
-    key: 'pacing.reply.continuation.delayMs', group: '主动接话', section: '连续对话', type: 'int', label: '回完话后等多久检查', unit: '秒',
-    scale: 1000, min: 30, max: 300, step: 10, default: 120000,
-    hint: '从它**发出回复**那一刻开始计时。到点时如果没人再叫它 → 看这期间有没有新的人类消息，再决定要不要补一句。',
-  },
-  {
-    key: 'pacing.reply.continuation.bonus', group: '主动接话', section: '连续对话', type: 'float', label: '情境加分', min: 0, max: 3, step: 0.1, default: 1.5,
-    hint: '和「主动接话」共用同一套语境权重与门槛，这里只是给"刚聊过"这个情境加的分（直接加到分数上）。\n'
-      + '0 = 完全按原权重（续聊几乎永远过不了门槛）；调高 = 更容易补这一句。默认 1.5。',
-  },
-  {
-    key: 'pacing.reply.continuation.hourlyMax', group: '主动接话', section: '连续对话', type: 'int', label: '每群每小时最多补几次', unit: '次',
-    min: 1, max: 20, step: 1, default: 5,
-    hint: '防话痨：每个群每小时最多起几次续聊检查。和下面的「两次续聊最小间隔」一起，两个都满足才会触发。',
-  },
-  {
-    key: 'pacing.reply.continuation.minGapMs', group: '主动接话', section: '连续对话', type: 'int', label: '两次续聊最小间隔', unit: '分钟',
-    scale: 60000, min: 1, max: 60, step: 1, default: 300000,
-    hint: '两次续聊检查之间至少隔这么久，防止"刚补完又补"。默认 5 分钟。',
-  },
-  {
-    key: 'pacing.reply.continuation.maxPerChain', group: '主动接话', section: '连续对话', type: 'int', label: '一次唤醒最多检查几次', unit: '次',
-    min: 1, max: 3, step: 1, default: 1,
-    hint: '**防自转的核心**：一次真人唤醒最多只走 1 次续聊检查（默认 1）。'
-      + '调成 2~3 会让它在一段对话里多回看几次，也更容易显得"黏人"，建议先保持 1。',
-  },
-  {
-    key: 'pacing.reply.continuation.requireNewMessage', group: '主动接话', section: '连续对话', type: 'bool', label: '必须有人类新消息才检查', default: true,
-    hint: '开（推荐）：它回完之后，群里必须有人再说话，才会做续聊检查；没人说话就彻底不触发。\n'
-      + '关：即使没人接话也会隔一会儿自己回看一次——容易变成"自问自答"，不建议关。',
-  },
-  {
-    key: 'pacing.reply.continuation.quoteLastHuman', group: '主动接话', section: '连续对话', type: 'bool', label: '续聊时引用最后一条人类消息', default: false,
-    hint: '开 = 补的那一句会挂在"最后一条人类消息"下面（引用），视觉上更像在接话；关 = 普通发言。\n'
-      + '注意：主动接话/续聊默认不 @ 任何人，这里只控制引用（挂哪条消息）。',
-  },
   {
     key: 'pacing.reply.maxChars', group: '主动接话', type: 'int', label: '主动接话最多多少字', unit: '字',
     min: 20, max: 500, step: 10, default: 140,
@@ -368,7 +322,7 @@ export const CORE_CONTROLS = [
     min: 0, max: 24, step: 1, default: 7,
     hint: '几点恢复主动说话（0~24）。默认 7 点。起止相同 = 不启用静默。',
   },
-  // 主动开口 / 续聊的提示词（2026-10-29）：从代码里搬出来，方便改口味而不动代码。
+  // 主动开口的提示词（2026-10-29）：从代码里搬出来，方便改口味而不动代码。
   // {n} = 这期间新消息条数，拼接时替换。
   {
     key: 'pacing.reply.prompts.private', group: '主动接话', section: '提示词（可改）', type: 'text',
@@ -379,22 +333,10 @@ export const CORE_CONTROLS = [
       + '**「今天我做过什么、还剩多少额度」不在这段里** —— 那是内核每轮按流水账实时拼的，改这里改不到它。',
   },
   {
-    key: 'pacing.reply.prompts.privateContinuation', group: '主动接话', section: '提示词（可改）', type: 'text',
-    default: REPLY_DEFAULTS.prompts.privateContinuation,
-    label: '私聊续聊时给它的提示',
-    hint: '它刚在私聊回过话、对方又说了几句时用这段。{n} 会替换成新消息条数。',
-  },
-  {
     key: 'pacing.reply.prompts.group', group: '主动接话', section: '提示词（可改）', type: 'text',
     default: REPLY_DEFAULTS.prompts.group,
     label: '群聊主动开口时给它的提示',
     hint: '群里没人叫它、它自己准备接一句时用这段。群聊默认要求「不发也在正文写一行 [不发] 原因」—— 因为群里没人点它名，只写正文等于石沉大海。私聊没有这个要求。',
-  },
-  {
-    key: 'pacing.reply.prompts.groupContinuation', group: '主动接话', section: '提示词（可改）', type: 'text',
-    default: REPLY_DEFAULTS.prompts.groupContinuation,
-    label: '群聊续聊时给它的提示',
-    hint: '{n} 会替换成这期间的新消息条数。',
   },
   {
     key: 'pacing.reply.prompts.tailPrivate', group: '主动接话', section: '提示词（可改）', type: 'text',
@@ -727,7 +669,7 @@ function coreEntries() {
     secret: c.secret === true,
     // 进阶项：控制台折叠显示（如「主动接话」页的「高级」按钮）
     advanced: c.advanced === true,
-    // 具名折叠块：同一标签页里再分小组（如「连续对话」），前端按 section 渲染成独立折叠块
+    // 具名折叠块：同一标签页里再分小组（如「私聊主动接话」），前端按 section 渲染成独立折叠块
     section: c.section || '',
   }))
 }
@@ -1114,7 +1056,7 @@ function controlView(entry, rawConfig, kernel) {
   if (entry.secret) view.secret = true
   // 进阶项：控制台默认折叠在「高级」按钮里（比如主动接话的语境权重）
   if (entry.advanced) view.advanced = true
-  // 具名折叠块：前端据此在同一个标签页里额外渲染一个独立折叠区（如「连续对话」）
+  // 具名折叠块：前端据此在同一个标签页里额外渲染一个独立折叠区（如「私聊主动接话」）
   if (entry.section) view.section = String(entry.section)
   // str 控件的输入建议（前端渲染 <datalist>）
   if (Array.isArray(entry.suggestions) && entry.suggestions.length) view.suggestions = entry.suggestions
@@ -1192,7 +1134,7 @@ export function collectSchema(kernel, rawConfig) {
   // ① 分组归并（2026-11-09）：权限/门禁/文件/发图/头像 →「其他」；消息设置/唤醒/语气守卫/句池/人设版本 →「人设与语气」；
   //    入群欢迎 →「群聊」；看自己 →「空间日记（看自己）」；OneBot 连接 →「运维」；记忆（高级）→「记忆」。
   //    配置路径一个都不变，只是换面板入口与小节名。
-  //    ⚠️ section 只在**旧分组名**上现算：已经是自身小节的项（如「主动接话」里的「私聊主动接话」「连续对话」）
+  //    ⚠️ section 只在**旧分组名**上现算：已经是自身小节的项（如「主动接话」里的「私聊主动接话」）
   //       必须原样保留 —— 覆盖它们会把 50 多个高级项全平铺出来。
   const entries = allControls(kernel).map((e) => {
     const merged = mergedGroupOf(e.group)

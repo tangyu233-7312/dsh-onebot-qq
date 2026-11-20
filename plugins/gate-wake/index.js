@@ -10,7 +10,7 @@
  *    不在 setup 开头算死。本插件只认实例配置，**没有旧配置文件回落**。
  *
  * 唤醒行为约束（都是线上踩出来的，改之前先看手册 §2 / §4 / §7）：
- *   · 唤醒顺序：**@本机 → 引用本机 → 接续窗口 → 关键词**。@ 优先，因为"@ 了还带正文"是最明确的呼叫。
+ *   · 唤醒顺序：**@本机 → 引用本机 → 关键词 → 候选接话窗口**。@ 优先，因为"@ 了还带正文"是最明确的呼叫。
  *   · 判"是不是在叫本机"看**内容**，不看 @ 的是谁（模型侧纪律见 QQ 线指令文件）——
  *     所以这里只做代码能判的：@ 段、被引发送者、唤醒词，不猜语义。
  *   · 纯 @ / 纯呼名 / 只引用但无正文 → **先回一句罐头话（callAck）+ 开接续窗口，不进模型、零 token**
@@ -71,12 +71,16 @@ const configSchema = {
   },
   groupAtRequired: { type: 'bool', default: true, group: '唤醒', label: '群聊必须被叫才回', hint: '开：群里必须 @ 它或叫到唤醒词才回；关：没人叫也会接话（容易吵，一般保持开）。' },
   groupFollowUpMs: {
-    type: 'int', default: 20000, unit: '秒', scale: 1000, group: '唤醒', label: '接续窗口',
-    hint: '值按毫秒存（旧配置 40000 = 40 秒）；也认小于 1000 的"秒"值。0 = 关闭接续窗口。',
+    type: 'int', default: 10000, unit: '秒', scale: 1000, group: '唤醒', label: '回复后接话窗口',
+    hint: '回复发出或纯呼名应答后，同一人在窗口内无需再次唤醒，由模型判断是否在接话；不发不续期。独立于主动接话。0 = 关闭。',
+  },
+  followUpDebounceMs: {
+    type: 'int', default: 1000, min: 0, max: 3000, unit: '毫秒', group: '唤醒', label: '接话连发收集时间',
+    hint: '同一人分条发出的候选接话短暂合并，默认 1 秒，连续收集最多 3 秒。',
   },
   keywordCooldownMs: {
     type: 'int', default: 60000, unit: '秒', scale: 1000, group: '唤醒', label: '关键词冷却',
-    hint: '同群命中唤醒词后这段时间内再命中只记日志（防刷屏）；纯呼名不参与冷却。',
+    hint: '同群同一人命中唤醒词后这段时间内再命中只记日志；接话窗口内放行（防刷屏）；纯呼名不参与冷却。',
   },
   callAck: { type: 'bool', default: true, group: '唤醒', label: '被叫但没正文时先答应一声', hint: '开：有人只叫了它名字却没接着说事，先回一声「在」再等下文；关：安静等对方把话说完。' },
   pokeBack: {
@@ -277,32 +281,14 @@ async function ackCall(bot, ev, why) {
   const line = pickLine(bot, 'callAck', DEFAULT_ACK)
   bot.log.debug(`${why}: 先答应一声「${line}」`)
   // ⚠️ 必须走 deliver（唯一出站口）：脱敏/留档/引用定夺都在里面
-  await bot.deliver(ev.chatKey, line, { replyTo: ev.messageId })
-}
-
-/**
- * 开"等同一人补发正文"的窗口（groupFollowUpMs；0 = 关闭）。
- * ⚠️ 挂起时必须把这条消息的**引用/图一起存下来**：常见用法是"引用一张图 + 只 @ 一下"，
- *    补发正文时若丢掉引用，图永远不会被反查/识图（线上踩过）。
- */
-function openFollowUp(bot, ev, why) {
-  const ms = msOf(effective(bot, 'groupFollowUpMs'))
-  if (ms <= 0) return
-  const st = bot.state?.get?.(ev.chatKey)
-  if (!st) return
-  st.followUpUntil = Date.now() + ms
-  st.followUpCache = {
-    userId: String(ev.sender?.qq ?? ''),
-    replyToId: ev.replyToId ?? null,
-    images: Array.isArray(ev.images) ? ev.images.slice() : [], // 纯呼名时自带的图也别丢
-  }
-  bot.log.debug(`${why}: 等同一人补发内容, 窗口 ${ms}ms${ev.replyToId ? '（带引用, 已挂起）' : ''}`)
+  await bot.deliver(ev.chatKey, line, { replyTo: ev.messageId, turnCtx: null })
 }
 
 /** 答应一声 + 开窗口 + 这条到此为止（不进模型） */
 async function ackAndWait(bot, ev, why) {
+  // Register before awaiting the send, so a quick supplement cannot slip through.
+  bot.conversation.open(ev.chatKey, ev.sender?.qq, { replyToId: ev.replyToId, images: [...ev.images] })
   await ackCall(bot, ev, why)
-  openFollowUp(bot, ev, why)
   ev.stopped = true
   ev.stopReason = `gate-wake:followup(${why})`
 }
@@ -493,7 +479,7 @@ export default {
       }
     })
 
-    // ── wake：唤醒判定（顺序:@ → 引用本机 → 接续窗口 → 关键词） ──
+    // ── wake：唤醒判定（顺序:@ → 引用本机 → 关键词 → 候选接话窗口） ──
     bot.on('wake', async (ev) => {
       if (ev.stopped || ev.wake) return // 别的插件（/history、自发接话）已经定了就不抢
       // notice 永远不是"聊天正文"（戳一戳/撤回/入群/点赞通知…）：绝不进模型。
@@ -530,21 +516,7 @@ export default {
         return
       }
 
-      // ③ 接续窗口：同一人在窗口内补发正文 = "接上条"，**只接一次**（答完就关，不顺延）
-      const st = bot.state?.get?.(ev.chatKey)
-      if (st && st.followUpUntil > Date.now() && String(st.followUpCache?.userId) === String(ev.sender?.qq)) {
-        const cache = st.followUpCache || {}
-        st.followUpUntil = 0
-        st.followUpCache = null
-        // 把"只 @ 那条"里挂起的引用/图并进来（引用图靠它才能被反查/识图）
-        if (cache.replyToId && !ev.replyToId) ev.replyToId = cache.replyToId
-        if (Array.isArray(cache.images) && cache.images.length) ev.images.push(...cache.images)
-        bot.log.debug(`接续上条(同一人补发, 一次性) user=${ev.sender?.qq}`)
-        ev.wake = { kind: 'followup' }
-        return
-      }
-
-      // ④ 关键词（支持人设热读词表；取不到 = 不启用，回落由 persona-voice 负责）
+      // ③ 关键词（支持人设热读词表；取不到 = 不启用，回落由 persona-voice 负责）
       const keyword = matchKeyword(bot, ev)
       if (keyword) {
         // 纯呼名：复用"纯 @"那套（开窗口等补正文），且**在冷却之前**、**不点冷却** ——
@@ -553,18 +525,21 @@ export default {
           return ackAndWait(bot, ev, `纯呼名「${keyword}」(不参与冷却)`)
         }
         const scratch = scratchOf(bot, ev.chatKey)
-        const cdMs = msOf(effective(bot, 'keywordCooldownMs'))
-        if (Date.now() - (scratch.keywordWakeAt || 0) < cdMs) {
+        const cdMs = bot.conversation.hasOpen(ev.chatKey) ? 0 : msOf(effective(bot, 'keywordCooldownMs'))
+        if (Date.now() - (scratch['keywordWakeAt:' + ev.sender?.qq] || 0) < cdMs) {
           // 冷却中：只记日志不回复，也绝不点新时间戳（冷却窗口不因被挡而延长）；不设 stopped 以免堵死下游主动接话
           bot.log.debug(`关键词「${keyword}」命中但冷却中(${cdMs}ms), 忽略`)
           ev.stopReason = 'gate-wake:keyword-cooldown'
           return
         }
-        scratch.keywordWakeAt = Date.now()
+        scratch['keywordWakeAt:' + ev.sender?.qq] = Date.now()
         bot.log.debug(`关键词唤醒「${keyword}」 user=${ev.sender?.qq}`)
         ev.wake = { kind: 'keyword', keyword }
         return
       }
+
+      // ④ Candidate only: the model decides whether this is still addressed to it.
+      if (bot.conversation.capture(ev)) return
 
       // ⑤ groupAtRequired=false = 整群当对话态（旧 groupConversationTtlMs 的宽松分支，新契约没有 TTL）
       if (bot.cfg.groupAtRequired === false) {

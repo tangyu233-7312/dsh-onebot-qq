@@ -265,10 +265,10 @@ test('TONE-GUARD 判定失败 → fail-open：不记账、照常回话', async (
   assert.equal(guard.judgeInfo().calls.fail >= 1, true, '控制台能看到失败次数')
 })
 
-test('TONE-GUARD 主动接话 / 续聊检查 / 入群欢迎轮一律不判', async (t) => {
+test('TONE-GUARD 主动接话 / 入群欢迎轮一律不判', async (t) => {
   const { h, llm } = await boot(t, { llm: INS })
   const hooks = hooksOf(h.kernel, 'tone-guard')
-  for (const kind of ['proactive', 'continuation', 'welcome']) {
+  for (const kind of ['proactive', 'welcome', 'followup']) {
     await drive(hooks, fakeEv({ wake: { kind }, messageId: 100 }))
   }
   assert.equal(llm.calls.length, 0, '这三种唤醒是它自己起念，不是别人骂它')

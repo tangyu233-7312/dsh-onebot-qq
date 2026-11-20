@@ -298,9 +298,9 @@ export function tapInbound(kernel) {
   const events = []
   const pipeline = kernel.pipeline
   const original = pipeline.run.bind(pipeline)
-  pipeline.run = async (ev, terminal) => {
+  pipeline.run = async (ev, terminal, opts) => {
     events.push(ev)
-    return original(ev, terminal)
+    return original(ev, terminal, opts)
   }
   return { events, last: () => events[events.length - 1] }
 }

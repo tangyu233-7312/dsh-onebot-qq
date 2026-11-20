@@ -442,7 +442,7 @@ export default {
       if (!turn) return { channel: 'master', turn: null }
       const kind = String(turn._wakeKind || '')
       // ① 合成轮（pacing 自己起念）→ self
-      if (kind === 'proactive' || kind === 'continuation') return { channel: 'self', turn }
+      if (kind === 'proactive') return { channel: 'self', turn }
       // ② 内核贴的 _triggeredBy：主人发的话触发的轮 → master（不受冷却、不占额度）
       const by = String(turn._triggeredBy || '')
       if (by === 'master' || by === 'other') return { channel: 'master', turn }

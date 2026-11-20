@@ -124,8 +124,7 @@ export default {
     function clearLineState(chatKey) {
       const st = bot.state?.get?.(chatKey)
       if (!st) return
-      st.followUpUntil = 0
-      st.followUpCache = null
+      bot.conversation.clear(chatKey)
       st.lastContextId = null
       if (st._scratch) delete st._scratch['long-memory:injected']
     }

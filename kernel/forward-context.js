@@ -98,7 +98,7 @@ export async function collectForwardMaterial(items, { onebot, sourceId = '-', li
 }
 
 const FOLLOWUP = /转发|(?:这|那|刚才|上面|前面|第[一二三四五六七八九十\d]+).{0,20}(?:张|图)|(?:图片|图).{0,15}(?:看不|看得|能看|里面|上面)|看不见|看不到/
-const SYNTHETIC = new Set(['proactive', 'continuation', 'welcome'])
+const SYNTHETIC = new Set(['proactive', 'welcome'])
 
 /** 索引归 ChatState 所有，不保存图像字节/转发全文，也不跨群或跨发送者查找。 */
 export async function appendForwardContext(ev, { onebot, state, limits = {}, now = Date.now } = {}) {
