@@ -1294,7 +1294,7 @@ window.__ModuleLoader__.load({
 		 * 三类数据分开取，别混：
 		 *   · 配置（存储范围 / 整理模型 / 参数）→ schema 里的控件，用 ctrlRow 直接渲染并热写 config.json；
 		 *   · 状态（条数/水位/接口是否通）→ RPC `mem` 的 `status`；
-		 *   · 记忆库（列表/搜索/详情/删除/导出/导入）→ RPC `mem` 的 `list|get|forget|restore|purge|export|import`。
+		 *   · 记忆库（列表/搜索/编辑/删除/导出/导入）→ RPC `mem` 的 `list|get|edit|forget|restore|purge|export|import`。
 		 *
 		 * 为什么单独一个组件：旧页是「每群一篇 md」的形态，新库是「一条条带分数的记忆」，
 		 * 渲染逻辑完全不同；硬塞进旧组件只会让两边都变难读。旧页在新插件跑通后整体移除。
@@ -1312,7 +1312,6 @@ window.__ModuleLoader__.load({
 		  const [local, setLocal] = useState('')    // 本页自己的消息（装卸数据/操作的反馈）
 		  const [busy2, setBusy2] = useState(false)
 		  const [showForgotten, setShowForgotten] = useState(false)
-		  const [importText, setImportText] = useState('')
 		  const [exportText, setExportText] = useState('')
 		  const [previewScope, setPreviewScope] = useState('')
 		  const [previewOut, setPreviewOut] = useState(null)
