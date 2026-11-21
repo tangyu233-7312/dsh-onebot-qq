@@ -41,18 +41,15 @@ async function download(url, maxBytes, timeoutMs, fetchImpl) {
 }
 
 export async function loadIncomingImages(ev, { onebot, tmp, shrink = async (buf) => buf, log = console,
-  limits = {}, fetchImpl = fetch, now = Date.now } = {}) {
+  readGif, limits = {}, fetchImpl = fetch, now = Date.now } = {}) {
   const cap = { ...FORWARD_IMAGE_LIMITS, ...limits }
   const deadline = now() + cap.totalMs
   let usedBytes = 0
   const hasEarlierParts = ev.imageParts.length > 0
   for (const im of ev.images || []) {
-    // gif-read 成功后，原始 GIF 已经由侧车展开成多张帧；不要再把 GIF 容器重复送给模型。
-    const consumedGif = ev._scratch?.['gif-read:consumed']
-    if (im._gifReadConsumed || [im.file, im.url].filter(Boolean).some((key) => consumedGif?.has?.(String(key)))) continue
     const forwarded = !!im._forwardLabels?.length
-    // GIF 展开时同消息里的普通图片仍可继续加载；视频插件未标记时保持原有优先级。
-    if (hasEarlierParts && !forwarded && ev._scratch?.['gif-read:expanded'] !== true) continue
+    // 视频插件已提供画面时保持优先级；本次加载的 GIF 帧不影响同消息其他图片。
+    if (hasEarlierParts && !forwarded) continue
     if (forwarded && now() >= deadline) { im._forwardResult = { reason: '图片处理超时' }; continue }
     const maxBytes = forwarded ? Math.min(cap.perImageBytes, cap.totalBytes - usedBytes) : Infinity
     if (maxBytes <= 0) { im._forwardResult = { reason: '图片总量超限' }; continue }
@@ -100,15 +97,34 @@ export async function loadIncomingImages(ev, { onebot, tmp, shrink = async (buf)
       if (!buf?.length) throw failure(reason)
       // 按下载原始字节计预算，压缩后变小也不返还；不重复下载大图绕过总量上限。
       if (forwarded) usedBytes += buf.length
+      const name = forwarded ? 'qq-forward:' + im._forwardLabels.join('、') : 'qq-image'
+      let gifPath = ''
+      if (/^GIF8[79]a$/.test(buf.subarray(0, 6).toString('latin1')) && typeof readGif === 'function') {
+        // QQ 即使把 GIF 叫作 .jpg，也以真实文件头为准；在任何缩图/转码前保存原图。
+        gifPath = tmp.file('incoming', '.gif')
+        fs.writeFileSync(gifPath, buf)
+        ev.imagePaths.push(gifPath)
+        let frames
+        try { frames = await readGif(ev, { file: gifPath, bytes: buf, name }) }
+        catch {
+          log.warn?.('入站 GIF 抽帧异常，保留原图')
+          ev.hint.push('[系统提示: GIF 后续帧未获取，请仅按静态画面理解，不要猜动画变化]')
+        }
+        if (forwarded && now() >= deadline) throw failure('图片处理超时')
+        if (frames?.length) {
+          ev.imageParts.push(...frames)
+          if (forwarded) im._forwardResult = { ok: true }
+          continue
+        }
+      }
       buf = await shrink(buf)
       if (forwarded && now() >= deadline) throw failure('图片处理超时')
       const mediaType = detectImageMediaType(buf)
       const ext = mediaType === 'image/png' ? 'png' : mediaType === 'image/gif' ? 'gif' : mediaType === 'image/webp' ? 'webp' : 'jpg'
-      const tmpPath = tmp.file('incoming', `.${ext}`)
-      fs.writeFileSync(tmpPath, buf)
-      const name = forwarded ? `qq-forward:${im._forwardLabels.join('、')}` : 'qq-image'
+      const tmpPath = gifPath || tmp.file('incoming', '.' + ext)
+      if (!gifPath) fs.writeFileSync(tmpPath, buf)
       ev.imageParts.push({ mediaType, data: buf.toString('base64'), name })
-      ev.imagePaths.push(tmpPath)
+      if (!gifPath) ev.imagePaths.push(tmpPath)
       if (forwarded) im._forwardResult = { ok: true }
     } catch (error) {
       if (forwarded) im._forwardResult = { reason: error.imageReason || '图片处理失败' }

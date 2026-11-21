@@ -2,44 +2,40 @@
  * gif-read — 把 QQ 图片段里的 GIF 抽成多帧，按时间顺序交给 DSH。
  *
  * GIF 不是可靠的多模态动画输入：模型通常只会看到容器的一张静态图。
- * 这里复用 video-read 的侧车 /read 接口，插件只负责识别图片、解析文件把手、
- * 读取侧车生成的帧并填入 ev.imageParts；ffmpeg 仍由侧车负责。
+ * 在普通图片下载完成后按真实 GIF 字节判断，不依赖 QQ 的 .jpg 文件名或 URL。
+ * 复用 video-read 的侧车 /read 接口；ffmpeg 仍由侧车负责。
  */
 import fs from 'node:fs'
 import { createHash } from 'node:crypto'
 
-const GIF_EXPANDED = 'gif-read:expanded'
-const GIF_CONSUMED = 'gif-read:consumed'
-
-function pick(value, ...names) {
-  for (const name of names) {
-    const v = value?.[name]
-    if (typeof v === 'string' && v.trim()) return v.trim()
-    if (typeof v === 'number' && v > 0) return String(v)
+/** 遍历 GIF 数据块而非搜索字节标记；单帧 GIF 不必送侧车。 */
+function animatedGif(buf) {
+  if (!buf || buf.length < 13 || !/^GIF8[79]a$/.test(buf.subarray(0, 6).toString('latin1'))) return false
+  let pos = 13 + ((buf[10] & 0x80) ? 3 * (2 ** ((buf[10] & 7) + 1)) : 0)
+  let frames = 0
+  const skipBlocks = () => {
+    while (pos < buf.length) {
+      const size = buf[pos++]
+      if (!size) return true
+      pos += size
+    }
+    return false
   }
-  return ''
-}
-
-function gifSegsOf(rawSegments) {
-  const out = []
-  for (const seg of Array.isArray(rawSegments) ? rawSegments : []) {
-    if (String(seg?.type || '') !== 'image') continue
-    const d = seg?.data ?? seg ?? {}
-    const file = pick(d, 'file', 'filename', 'name')
-    const fileId = pick(d, 'file_id', 'fileId', 'fid')
-    const url = pick(d, 'url', 'file_url')
-    const local = pick(d, 'path', 'file_path', 'local_path')
-    const mime = pick(d, 'mime_type', 'mimetype', 'content_type', 'media_type')
-    const summary = pick(d, 'summary')
-    const looksGif = /image\/gif/i.test(mime)
-      || [file, url, local].some((v) => /\.gif(?:[?#].*)?$/i.test(v))
-      || /\bgif\b/i.test(summary)
-    if (!looksGif) continue
-    const keys = Object.entries({ file, fileId, url, local })
-      .filter(([, v]) => v).map(([key]) => key)
-    if (keys.length) out.push({ file, fileId, url, local, keys })
+  while (pos < buf.length) {
+    const tag = buf[pos++]
+    if (tag === 0x3b) return false
+    if (tag === 0x21) { pos++; if (!skipBlocks()) return false }
+    else if (tag === 0x2c) {
+      if (pos + 9 > buf.length) return false
+      const packed = buf[pos + 8]
+      pos += 9 + ((packed & 0x80) ? 3 * (2 ** ((packed & 7) + 1)) : 0)
+      if (pos >= buf.length) return false
+      pos++ // LZW 最小码长；后面是图像数据子块。
+      if (!skipBlocks()) return false
+      if (++frames >= 2) return true
+    } else return false
   }
-  return out
+  return false
 }
 
 function mediaTypeOf(buf) {
@@ -120,39 +116,17 @@ export default {
       return n >= 1000 ? Math.round(n) : Math.round(n * 1000)
     }
 
-    bot.on('before-turn', async (ev) => {
+    // 图片加载器已完成一次溯源/下载，并在缩图前保存原始 GIF。
+    bot.shared.readIncomingGif = async (ev, { file, bytes, name }) => {
       if (cfg().enabled === false || !sidecarUrl() || !shouldLook(ev, cfg())) return
-      let gifs = gifSegsOf(ev.rawSegments)
-      if (!gifs.length && ev.replyToId) {
-        try {
-          const msg = await bot.onebot.msgById(ev.replyToId)
-          gifs = gifSegsOf(msg?.message ?? msg?.raw_message)
-        } catch (e) {
-          bot.log.debug?.('[看动图] 引用反查失败: ' + String(e?.message || e))
-        }
-      }
-      if (!gifs.length) return
-
+      if (!animatedGif(bytes)) return
       const max = Math.max(1, Math.min(4, Number(cfg().maxPerMessage) || 2))
-      const selected = gifs.slice(0, max)
-      if (gifs.length > selected.length) {
-        ev.hint.push('[系统提示: 这条消息有 ' + gifs.length + ' 个 GIF，当前最多读取 ' + selected.length + ' 个]')
-      }
-      for (const seg of selected) await readOneGif(ev, seg)
-    })
-
-    async function readOneGif(ev, seg) {
-      const req = await mediaRequest(ev, seg)
-      if (!req) {
-        bot.log.warn?.('[看动图] 拿不到 GIF 文件：keys=[' + (seg.keys || []).join(',') + ']')
-        tell(ev, '这张动图我没拿到原文件')
+      const count = ev._scratch['gif-read:count'] || 0
+      if (count >= max) {
+        tell(ev, '本条消息最多抽帧 ' + max + ' 个 GIF，其余只按静态图处理')
         return
       }
-      if (req.localPath && !(await hasGifHeader(req.localPath))) {
-        bot.log.info?.('[看动图] 文件扩展名像 GIF，但文件头不是 GIF；按普通图片处理')
-        ev.hint.push('[系统提示: 这条图片的文件内容不是 GIF，按普通静态图片理解]')
-        return
-      }
+      ev._scratch['gif-read:count'] = count + 1
       const frames = Math.max(2, Math.min(24, Number(cfg().frames) || 8))
       let data
       try {
@@ -160,7 +134,7 @@ export default {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            url: req.url, platform: 'file', subtitle: false,
+            url: file, platform: 'file', subtitle: false,
             frames, framesLong: frames, framesSplitSec: 600,
             maxSide: Number(cfg().maxSide) || 1024,
             maxSeconds: Number(cfg().maxSeconds) || 120,
@@ -182,7 +156,7 @@ export default {
       const parts = []
       const seenFrames = new Set()
       const times = []
-      for (const [index, frame] of (Array.isArray(data.frames) ? data.frames : []).entries()) {
+      for (const frame of (Array.isArray(data.frames) ? data.frames : []).slice(0, frames)) {
         try {
           const buf = await fs.promises.readFile(String(frame.path || ''))
           if (!buf.length) continue
@@ -192,7 +166,8 @@ export default {
           parts.push({
             mediaType: mediaTypeOf(buf),
             data: buf.toString('base64'),
-            name: 'gif-frame-' + (index + 1) + '@' + (Number(frame.sec) || 0) + 's',
+            name: (name?.startsWith('qq-forward:') ? name + '/' : '')
+              + 'gif-' + (count + 1) + '-frame-' + (parts.length + 1) + '@' + (Number(frame.sec) || 0) + 's',
           })
           times.push((Number(frame.sec) || 0) + 's')
         } catch (e) {
@@ -208,17 +183,9 @@ export default {
         bot.log.info?.('[看动图] ' + ev.chatKey + ' → 仅一个不同画面，按静态图处理')
         return
       }
-      ev.imageParts.push(...parts)
-      markConsumed(ev, seg)
-      ev.hint.push('[GIF 动图：已按时间顺序抽取 ' + parts.length + ' 个不同画面（' + times.join('/') + '）。这些图片来自同一段动图，可据此描述动作变化；看不清处如实说明]')
-      bot.log.info?.('[看动图] ' + ev.chatKey + ' → ' + parts.length + ' 帧')
-    }
-
-    function markConsumed(ev, seg) {
-      const keys = new Set([seg.file, seg.fileId, seg.url, seg.local].filter(Boolean).map(String))
-      const consumed = (ev._scratch[GIF_CONSUMED] ||= new Set())
-      for (const key of keys) consumed.add(key)
-      ev._scratch[GIF_EXPANDED] = true
+      ev.hint.push('[GIF 动图' + (count + 1) + '：已按时间顺序抽取 ' + parts.length + ' 个不同画面（' + times.join('/') + '）。这些图片来自同一段动图的抽样，不代表每一帧；可据此描述动作变化，看不清处如实说明]')
+      bot.log.info?.('[看动图] ' + ev.chatKey + ' 消息=' + ev.messageId + ' GIF' + (count + 1) + ' → ' + parts.length + ' 帧')
+      return parts
     }
 
     function tell(ev, message) {
@@ -226,45 +193,5 @@ export default {
       ev.hint.push('[系统提示: ' + message + '（动图后续帧未获取）请如实说明，只能参考已收到的静态图，不要猜动画变化]')
     }
 
-    async function mediaRequest(ev, seg) {
-      const locals = [seg.local, seg.file].filter(Boolean)
-      for (const candidate of locals) {
-        try {
-          if (/^[A-Za-z]:[\\/]|^\//.test(candidate) && fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
-            return { url: candidate, platform: 'file', localPath: candidate }
-          }
-        } catch { /* 尝试下一个把手 */ }
-      }
-      for (const id of [seg.fileId, seg.file].filter(Boolean)) {
-        if (typeof bot.onebot?.getFile !== 'function') break
-        try {
-          const info = await bot.onebot.getFile(id)
-          const local = String(info?.file || '')
-          if (local && fs.existsSync(local) && fs.statSync(local).isFile()) return { url: local, platform: 'file', localPath: local }
-          const url = String(info?.url || '')
-          if (/^https?:\/\//i.test(url)) return { url, platform: 'qq' }
-        } catch (e) { bot.log.debug?.('[看动图] getFile 失败：' + String(e?.message || e)) }
-      }
-      if (seg.fileId && typeof bot.onebot?.getFileUrl === 'function') {
-        try {
-          const url = await bot.onebot.getFileUrl(seg.fileId, {
-            groupId: ev.isGroup ? ev.groupId : null, userId: ev.sender?.qq ?? null,
-          })
-          if (/^https?:\/\//i.test(String(url || ''))) return { url, platform: 'qq' }
-        } catch (e) { bot.log.debug?.('[看动图] getFileUrl 失败：' + String(e?.message || e)) }
-      }
-      if (/^https?:\/\//i.test(seg.url || '')) return { url: seg.url, platform: 'qq' }
-      return null
-    }
-
-    async function hasGifHeader(file) {
-      let handle
-      try {
-        handle = await fs.promises.open(file, 'r')
-        const header = Buffer.alloc(6)
-        const { bytesRead } = await handle.read(header, 0, header.length, 0)
-        return bytesRead === 6 && /^GIF8[79]a$/.test(header.toString('latin1'))
-      } catch { return false } finally { await handle?.close().catch(() => {}) }
-    }
   },
 }

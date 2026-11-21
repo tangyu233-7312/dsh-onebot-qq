@@ -1005,7 +1005,7 @@ export async function apply(ctx, bundleConfig = {}) {
     // 2.5 内联优先展开转发，同时保留条目/图片归属；短期追问只关联同群同人。
     await appendForwardContext(ev, { onebot, state })
     // 3. 普通图、被引图、转发图复用溯源下载及缩图流程，加载后报告实际状态。
-    await loadIncomingImages(ev, { onebot, tmp, shrink: shrinkImageForModel, log })
+    await loadIncomingImages(ev, { onebot, tmp, shrink: shrinkImageForModel, log, readGif: kernel.shared.readIncomingGif })
   }, { order: 50, pluginId: 'kernel:context' })
 
   // ── 原生工具注册：必须 inject 后再注册（受限 ctx 的坑，见文件头纪律 3） ──

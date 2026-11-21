@@ -436,8 +436,8 @@ async function extractFrames(file, { frames, framesLong, framesSplitSec, maxSide
   const side = Math.max(256, Math.min(2048, Number(maxSide) || 1024))
   const out = []
   for (let i = 0; i < n; i++) {
-    // 均匀取帧、避开首尾黑帧；不足 n 秒的视频退化成逐秒
-    const t = duration < n ? i : duration * (i + 0.5) / n
+    // 长短媒体都按时长均匀采样；短 GIF 不能退化为逐秒，否则时间点会超出片尾。
+    const t = Math.min(Math.max(0, duration - 0.001), duration * (i + 0.5) / n)
     const dest = path.join(outDir, `${String(i).padStart(2, '0')}.jpg`)
     const r = await run(FFMPEG, [
       '-ss', String(Math.max(0, t).toFixed(3)),
@@ -450,7 +450,7 @@ async function extractFrames(file, { frames, framesLong, framesSplitSec, maxSide
     if (!r.ok) { log(`抽第 ${i} 帧失败: ${String(r.stderr).slice(0, 120)}`); continue }
     try {
       const st = await fsp.stat(dest)
-      if (st.size > 0) out.push({ path: dest, sec: Math.round(t), bytes: st.size })
+      if (st.size > 0) out.push({ path: dest, sec: Math.floor(t * 1000) / 1000, bytes: st.size })
     } catch { /* 跳过 */ }
   }
   if (!out.length) return { ok: false, code: 'no_frames', error: '一帧都没抽出来' }

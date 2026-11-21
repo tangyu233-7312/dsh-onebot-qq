@@ -6,13 +6,17 @@ test('HTTP /read 根据实际时长选帧数，遵守阈值和硬上限', async 
   const s = await startSidecar(t)
   const rule = { frames: 8, framesLong: 11, framesSplitSec: 600 }
   for (const [seconds, overrides, expected] of [
-    [30, rule, 8], [600, rule, 8], [601, rule, 11],
+    [2, { ...rule, frames: 6 }, 6], [30, rule, 8], [600, rule, 8], [601, rule, 11],
     [3600, { ...rule, framesLong: 999 }, 24],
     [100, {}, 12],
   ]) {
     const result = await s.request('/read', { url: s.file(seconds), ...overrides })
     assert.equal(result.ok, true, JSON.stringify(result))
     assert.equal(result.frames.length, expected, 'duration=' + seconds)
+    for (const [i, frame] of result.frames.entries()) {
+      assert.ok(frame.sec >= 0 && frame.sec < seconds, '采样不能越过片尾')
+      assert.ok(Math.abs(frame.sec - seconds * (i + 0.5) / expected) < 0.002, '短媒体也须均匀采样')
+    }
   }
   const rejected = await s.request('/read', { url: s.file(601), maxSeconds: 600 })
   assert.equal(rejected.code, 'too_long')
