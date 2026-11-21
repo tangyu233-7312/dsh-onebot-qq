@@ -117,17 +117,23 @@ export default {
     }
 
     // 图片加载器已完成一次溯源/下载，并在缩图前保存原始 GIF。
-    bot.shared.readIncomingGif = async (ev, { file, bytes, name }) => {
-      if (cfg().enabled === false || !sidecarUrl() || !shouldLook(ev, cfg())) return
+    bot.shared.readIncomingGif = async (ev, { file, bytes, name, cache, hash, history, frameLimit }) => {
+      if (cfg().enabled === false || !sidecarUrl() || (!history && !shouldLook(ev, cfg()))) return
       if (!animatedGif(bytes)) return
-      const max = Math.max(1, Math.min(4, Number(cfg().maxPerMessage) || 2))
-      const count = ev._scratch['gif-read:count'] || 0
+      const max = history ? history.maxMedia : Math.max(1, Math.min(4, Number(cfg().maxPerMessage) || 2))
+      const countKey = history ? 'gif-read:history-count' : 'gif-read:count'
+      const count = ev._scratch[countKey] || 0
       if (count >= max) {
         tell(ev, '本条消息最多抽帧 ' + max + ' 个 GIF，其余只按静态图处理')
         return
       }
-      ev._scratch['gif-read:count'] = count + 1
-      const frames = Math.max(2, Math.min(24, Number(cfg().frames) || 8))
+      ev._scratch[countKey] = count + 1
+      if (history && frameLimit < 2) { tell(ev, '历史画面预算不足，本图仅按静态画面理解'); return }
+      const frames = history ? Math.min(history.gifFrames, frameLimit) : Math.max(2, Math.min(24, Number(cfg().frames) || 8))
+      const params = { version: 1, frames, maxSide: Number(cfg().maxSide) || 1024,
+        maxSeconds: Number(cfg().maxSeconds) || 120, sidecar: sidecarUrl() }
+      const cached = hash && cache?.getFrames?.(ev.chatKey, hash, params)
+      if (cached?.length) return finish(cached)
       let data
       try {
         const res = await fetch(sidecarUrl().replace(/\/+$/, '') + '/read', {
@@ -136,10 +142,9 @@ export default {
           body: JSON.stringify({
             url: file, platform: 'file', subtitle: false,
             frames, framesLong: frames, framesSplitSec: 600,
-            maxSide: Number(cfg().maxSide) || 1024,
-            maxSeconds: Number(cfg().maxSeconds) || 120,
+            maxSide: params.maxSide, maxSeconds: params.maxSeconds,
           }),
-          signal: AbortSignal.timeout(timeoutMs()),
+          signal: AbortSignal.timeout(history ? Math.min(timeoutMs(), Math.max(1, Math.ceil(history.timeoutMs))) : timeoutMs()),
         })
         data = await res.json()
       } catch (e) {
@@ -155,7 +160,6 @@ export default {
 
       const parts = []
       const seenFrames = new Set()
-      const times = []
       for (const frame of (Array.isArray(data.frames) ? data.frames : []).slice(0, frames)) {
         try {
           const buf = await fs.promises.readFile(String(frame.path || ''))
@@ -166,10 +170,8 @@ export default {
           parts.push({
             mediaType: mediaTypeOf(buf),
             data: buf.toString('base64'),
-            name: (name?.startsWith('qq-forward:') ? name + '/' : '')
-              + 'gif-' + (count + 1) + '-frame-' + (parts.length + 1) + '@' + (Number(frame.sec) || 0) + 's',
+            sec: Number(frame.sec) || 0,
           })
-          times.push((Number(frame.sec) || 0) + 's')
         } catch (e) {
           bot.log.warn?.('[看动图] 读帧失败：' + String(e?.message || e))
         }
@@ -183,9 +185,17 @@ export default {
         bot.log.info?.('[看动图] ' + ev.chatKey + ' → 仅一个不同画面，按静态图处理')
         return
       }
-      ev.hint.push('[GIF 动图' + (count + 1) + '：已按时间顺序抽取 ' + parts.length + ' 个不同画面（' + times.join('/') + '）。这些图片来自同一段动图的抽样，不代表每一帧；可据此描述动作变化，看不清处如实说明]')
-      bot.log.info?.('[看动图] ' + ev.chatKey + ' 消息=' + ev.messageId + ' GIF' + (count + 1) + ' → ' + parts.length + ' 帧')
-      return parts
+      if (hash) cache?.saveFrames?.(ev.chatKey, hash, params, parts)
+      return finish(parts)
+
+      function finish(pictures) {
+        const prefix = /^(qq-forward:|qq-history:)/.test(name || '') ? name + '/' : ''
+        ev.hint.push('[GIF 动图' + (count + 1) + '：已按时间顺序抽取 ' + pictures.length + ' 个不同画面（'
+          + pictures.map((p) => p.sec + 's').join('/') + '）。这些图片来自同一段动图的抽样，不代表每一帧；可据此描述动作变化，看不清处如实说明]')
+        bot.log.info?.('[看动图] ' + ev.chatKey + ' 消息=' + ev.messageId + ' → ' + pictures.length + ' 帧' + (cached ? '（缓存）' : ''))
+        return pictures.map((p, i) => ({ mediaType: p.mediaType, data: p.data,
+          name: prefix + 'gif-' + (count + 1) + '-frame-' + (i + 1) + '@' + p.sec + 's' }))
+      }
     }
 
     function tell(ev, message) {

@@ -377,6 +377,10 @@ test('工作区会话里调别的工具会被入口拒掉', async () => {
     // 空间三件套仍然放行
     const status = await tool('qzone_status').execute({}, { agent: { session: { id: deskSessionId } } })
     assert.equal(status.ok, true)
+    await assert.rejects(
+      () => tool('get_current_time').execute({}, { agent: { session: { id: deskSessionId } } }),
+      /「空间工作区」只允许调用/,
+    )
   } finally {
     env.dispose()
   }

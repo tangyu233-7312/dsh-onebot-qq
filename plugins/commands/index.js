@@ -320,6 +320,7 @@ export default {
           return
         }
         ev.historyBlock = `[群历史: 最近 ${n} 条(旧→新; 来自 OneBot get_group_msg_history)]\n${block}`
+        ev._scratch['media:historyMessages'] = list.filter((m) => String(m.message_id) !== String(ev.messageId)).slice(-n)
         ev.text = extra // 正题交回正文，命令本身别再进 prompt
         ev.hint.push(extra
           ? `[主人命令] 拉本群最近 ${n} 条聊天记录（记录在下面）。主人的要求：「${extra}」——**先照他这句回答**，记录只是素材。`

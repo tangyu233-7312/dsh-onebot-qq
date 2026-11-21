@@ -32,7 +32,9 @@ import {
   normalizeEvent, buildPromptText, extractText, senderNameOf, parseKeywordLines,
 } from './kernel/format.js'
 import { appendForwardContext } from './kernel/forward-context.js'
-import { loadIncomingImages } from './kernel/incoming-images.js'
+import { loadIncomingImages, readIncomingImage } from './kernel/incoming-images.js'
+import { createMediaCache } from './kernel/media-cache.js'
+import { appendHistoryImages } from './kernel/history-images.js'
 
 import { OneBotAdapter } from './kernel/onebot-adapter.js'
 import { ChatState, Pipeline, createDeliver, turnStore } from './kernel/state-pipeline.js'
@@ -439,6 +441,16 @@ export async function apply(ctx, bundleConfig = {}) {
     configPath,
     archive,
     discovered,
+  }
+  const mediaCfg = discovered.find((entry) => entry.id === 'media-context')?.cfg || {}
+  const mediaConfig = () => ({ ...mediaCfg, enabled: runtime.plugins?.['media-context'] !== false && mediaCfg.enabled !== false })
+  const mediaCache = createMediaCache({ dir: path.join(dataDir, 'media-cache'), config: mediaConfig, log: logFor('media-cache') })
+  kernel.shared.mediaCache = mediaCache
+  const appendHistory = async (ev) => {
+    const result = await appendHistoryImages(ev, { config: mediaConfig(), cache: mediaCache, onebot, tmp, shrink: shrinkImageForModel, log,
+      messages: ev._scratch['media:historyMessages'],
+      count: Number(runtime.outbound?.groupContextCount ?? runtime.groupContextCount ?? 5), readGif: kernel.shared.readIncomingGif })
+    if (result) kernel.shared.historyImageStatus = result
   }
   const conversation = createConversationWindow({
     config: () => runtime.plugins?.['gate-wake'] === false ? { enabled: false } : runtime.pluginConfig?.['gate-wake'], log,
@@ -927,6 +939,9 @@ export async function apply(ctx, bundleConfig = {}) {
   pipeline.use('passive-tap', (ev) => {
     archive(ev.chatKey, { dir: 'in', ts: ev.time, sender: ev.sender, messageId: ev.messageId, text: ev.text })
   }, { order: 0, pluginId: 'kernel:archive' })
+  pipeline.use('passive-tap', (ev) => {
+    mediaCache.enqueue(ev, (image) => readIncomingImage(image, { onebot, ev, validOnly: true }))
+  }, { order: 1, pluginId: 'kernel:media-cache' })
 
   // ── 内置管线钩子 1：斜杠命令分发（intercept 阶段，order 5 最先跑） ──
   pipeline.use('intercept', async (ev) => {
@@ -993,7 +1008,9 @@ export async function apply(ctx, bundleConfig = {}) {
           const qSender = senderNameOf(qMsg.sender, qMsg.sender?.user_id ?? qMsg.user_id)
           const imgTag = parsed.images?.length ? ` [被引图×${parsed.images.length}]` : ''
           ev._scratch.quoteText = `[${qSender}(QQ:${qMsg.sender?.user_id ?? qMsg.user_id ?? '?'})]: ${parsed.text || '[媒体/富文本]'}${imgTag}`
-          if (parsed.images?.length) ev.images.push(...parsed.images)
+          if (parsed.images?.length) ev.images.push(...parsed.images.map((image, index) => ({ ...image,
+            _mediaSource: { messageId: ev.replyToId, index, at: Number(qMsg.time) * 1000 || ev.time,
+              who: qSender, qq: qMsg.sender?.user_id ?? qMsg.user_id ?? '' } })))
           // 顺手把被引消息的**原始段**留给插件：文本化之后视频/文件段就没了，
           // 而 video-read 要靠它去抽帧（QQ 里"发视频"和"@它"必然是两条消息，第二条只能引用）。
           // 这里已经调过 msgById，插件不必再打一次同一个接口。
@@ -1005,7 +1022,8 @@ export async function apply(ctx, bundleConfig = {}) {
     // 2.5 内联优先展开转发，同时保留条目/图片归属；短期追问只关联同群同人。
     await appendForwardContext(ev, { onebot, state })
     // 3. 普通图、被引图、转发图复用溯源下载及缩图流程，加载后报告实际状态。
-    await loadIncomingImages(ev, { onebot, tmp, shrink: shrinkImageForModel, log, readGif: kernel.shared.readIncomingGif })
+    await loadIncomingImages(ev, { onebot, tmp, shrink: shrinkImageForModel, log, cache: mediaCache, readGif: kernel.shared.readIncomingGif })
+    await appendHistory(ev)
   }, { order: 50, pluginId: 'kernel:context' })
 
   // ── 原生工具注册：必须 inject 后再注册（受限 ctx 的坑，见文件头纪律 3） ──
@@ -1238,6 +1256,7 @@ export async function apply(ctx, bundleConfig = {}) {
   // ── 入站：一条消息走完全部阶段，末端交给 agent ───────────────
   const runTurn = async (ev) => {
     if (!ev.wake) return
+    for (const item of ev._scratch.batchEvents || [ev]) kernel.shared.appendTimeHint?.(item)
     // 第二道防线：chatKey 必须是 group:<数字> / private:<数字>。异常事件（如无身份的 notice）
     // 曾造出 `private:undefined` 会话；到这里一律丢弃并留一行错误日志，绝不建会话。
     if (!/^(group|private):\d{1,12}$/.test(String(ev.chatKey || ''))) {
@@ -1330,7 +1349,7 @@ export async function apply(ctx, bundleConfig = {}) {
     if (prepared.some((e) => e.wake.kind === 'followup' && !conversation.current(e))) return
     const base = prepared[prepared.length - 1]
     base._scratch.batchEvents = prepared
-    base.imageParts = prepared.flatMap((e) => (e.imageParts || []).map((im) => ({ ...im, sourceMessageId: e.messageId })))
+    base.imageParts = prepared.flatMap((e) => (e.imageParts || []).map((im) => ({ ...im, sourceMessageId: im.sourceMessageId ?? e.messageId })))
     base.turnCtx = createTurnContext(base)
     base.sender = { ...base.sender, isMaster: prepared.every((e) => e.sender?.isMaster === true) }
     await runTurn(base)
@@ -1374,6 +1393,7 @@ export async function apply(ctx, bundleConfig = {}) {
         if (block) ev.historyBlock = block.replace(/^\n+/, '')
       } catch (e) { log.warn(`[主动接话] 拉取群上文失败: ${e.message}`) }
     }
+    if (groupChat) await appendHistory(ev)
     ev.turnCtx = createTurnContext(ev)
     // 2026-10-30：给工具留一个"这一轮是谁起的"的标记。
     // watch_video 靠它区分「它自己起的念头（占额度）」和「主人叫的（不占额度）——
@@ -1595,6 +1615,7 @@ export async function apply(ctx, bundleConfig = {}) {
       const nextCfg = buildPluginCfg(entry.plugin, runtime, dataDir)
       replaceInPlace(entry.cfg, nextCfg)
     }
+    mediaCache.scheduleCleanup()
     refreshKeywordTable()
     refreshPluginDefs()
     pacing.apply(runtime.pacing)
@@ -1835,6 +1856,7 @@ export async function apply(ctx, bundleConfig = {}) {
     try { pacing.stop() } catch { /* ignore */ }
     try { onebot.close() } catch { /* ignore */ }
     try { dsh.close?.() } catch { /* ignore */ }
+    mediaCache.close()
     tmp.cleanup()
     kernel.activeTurns.clear()
     kernel.turnBySession.clear()

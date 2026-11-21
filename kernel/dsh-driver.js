@@ -223,6 +223,9 @@ export function createDshDriver(opts) {
         if (String(im.name || '').startsWith('qq-forward:')) {
           content.push({ type: 'text', text: `[下一张图片对应：${im.name.slice('qq-forward:'.length)}；外部转发材料]` })
         }
+        if (String(im.name || '').startsWith('qq-history:')) {
+          content.push({ type: 'text', text: '[下一张图片对应群聊历史：' + im.name.slice('qq-history:'.length) + ']' })
+        }
         content.push({ type: 'image', mediaType: im.mediaType, data: im.data, name: im.name || 'qq-image' })
       }
     }
@@ -387,6 +390,10 @@ export function createDshDriver(opts) {
     try {
       const list = await onebot.groupHistory(ev.groupId, count + 2)
       if (!Array.isArray(list) || !list.length) return ''
+      ev._scratch ||= {}
+      // 图片使用完整最近窗口，独立于文字增量水位；旧图本轮仍可重新附给模型。
+      ev._scratch['media:historyMessages'] = list.filter((m) => String(m.message_id) !== String(ev.messageId))
+        .filter((m) => Date.now() - Number(m.time) * 1000 <= GROUP_CONTEXT_MAX_AGE_MS).slice(-count)
       const state = opts.state?.get(ev.chatKey)
       let start = 0
       if (state?.lastContextId != null) {

@@ -7,7 +7,7 @@ import path from 'node:path'
 
 import { bootKernel, emitRaw, groupAtEvent, tapInbound, waitFor } from './helpers.mjs'
 
-const mergeOff = { pacing: { merge: { enabled: false } } }
+const mergeOff = { pacing: { merge: { enabled: false } }, outbound: { groupContextCount: 0 } }
 const STILL_GIF = Buffer.from('47494638396101000100800000000000ffffff21f904000a0000002c00000000010001000002024401003b', 'hex')
 const ANIMATED_GIF = Buffer.concat([STILL_GIF.subarray(0, -1), STILL_GIF.subarray(19)])
 
@@ -94,8 +94,8 @@ test('GIF 抽帧按控制台帧数送入 DSH，并保留同消息的普通图片
     assert.equal(tap.last().imageParts.length, 3, '直发和被引 GIF 均应展开')
     assert.deepEqual(fs.readFileSync(tap.last().imagePaths[0]), ANIMATED_GIF, '图生图仍保留原始 GIF')
   }
-  assert.equal(downloads, 2, '每条图片消息只下载一次')
-  assert.equal(sidecar.requests.length, 3)
+  assert.equal(downloads, 1, '重复引用的原件从24小时缓存读取')
+  assert.equal(sidecar.requests.length, 1, '相同帧数画质的同图跨轮复用抽帧，但每轮仍提交图片')
 })
 
 test('GIF 抽帧失败时保留原始图片并提示模型不能推断动作', async (t) => {
@@ -144,7 +144,7 @@ test('静态图片不抽帧；静态 GIF 的重复抽样会退回单张原图', 
   let count = 0
   for (const [file, type] of [[png, 'image/png'], [jpeg, 'image/jpeg'], [mislabeled, 'image/png'], [gif, 'image/gif']]) {
     const raw = imageEvent([file], '看看图片' + count)
-    raw.messageId = 6300 + count
+    raw.message_id = 6300 + count
     await emitRaw(h.kernel, raw)
     count += 1
     await waitFor(() => h.ctx._prompts.length === count, { label: '静态图片进入 DSH' })

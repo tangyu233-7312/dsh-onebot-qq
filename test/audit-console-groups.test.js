@@ -22,6 +22,10 @@ test('控制台导航：关键设置能在对应业务页找到，旧独立页�
     ['file-transfer.uploadDir', '文件与图片', '开关与收件目录'],
     ['file-transfer.imageWhitelist', '文件与图片', '发图'],
     ['file-read.uploadDir', '文件与图片', '读文件（read_file）'],
+    ['media-context.groupEnabled', '文件与图片', '群聊历史图片'],
+    ['media-context.cacheHours', '文件与图片', '图片缓存（群聊与私聊）'],
+    ['media-context.cacheCleanupTime', '文件与图片', '图片缓存（群聊与私聊）'],
+    ['device-time.enabled', '其他', '设备时间'],
     ['credentials.gptImage.apiKey', '生图'],
   ]
   for (const [key, group, section] of locations) {
