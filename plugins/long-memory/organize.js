@@ -19,7 +19,7 @@ import { chatComplete, parseMemoryJson } from './relay.js'
 /** 默认整理提示词（控制台可整段改写；`{scopeLabel}` 之类占位符由 buildPrompt 替换）。 */
 export const DEFAULT_ORGANIZE_PROMPT = [
   '你在帮一个 QQ 机器人整理「长期记忆」。下面是它和对方最近的一段聊天记录。',
-  '请从中提炼**值得长期记住**的事，写成 JSON 数组，最多 {maxMemories} 条。',
+  '请从中提炼值得长期记住的事。默认输出 JSON 对象，可同时包含 add 和 update；也兼容直接输出 JSON 数组。最多新增 {maxMemories} 条。',
   '',
   '记什么：对方自己说的事实/计划/承诺/喜好/忌讳/强烈情绪/重要的人和事（工作、学业、健康、感情、日期、约定）。',
   '不记什么：寒暄客套、机器人自己说过的话、一时兴起的闲聊、没头没尾的追问、能随便查到的公共信息。',
@@ -32,8 +32,13 @@ export const DEFAULT_ORGANIZE_PROMPT = [
   '- type：commitment | plan | preference | event | emotion | fact 之一',
   '- tags：2~4 个短标签（如「面试」「火锅」）',
   '- entities：提到的人，形如 [{"qq":"10086","name":"主人"}]；qq 用聊天记录里的号码，不知道就省掉这项',
+  '- relatedIds：与哪条已有记忆确实是同一件事或后续进展；只填下方现有计划 ID，不能因同属一个人就关联',
+  '- plan/commitment 可加 state：active | completed | cancelled | superseded；有明确截止时间才填 dueAt（ISO 日期或毫秒时间戳）',
   '',
-  '只输出 JSON 数组本身，不要解释、不要 Markdown 代码块。没有值得记的就输出 []。',
+  '已有计划状态：{activePlans}',
+  '若聊天明确显示某条已有计划已开始、完成、取消或被后续计划替代，放入 update 数组，每项含 id 和 state。只依据聊天明说的事实更新；没有证据就不更新。',
+  '',
+  '只输出 JSON 对象或数组本身，不要解释、不要 Markdown 代码块。没有值得记的就输出空 add 和 update。',
   '',
   '--- 聊天记录（{scopeLabel}）---',
   '{transcript}',
@@ -102,15 +107,19 @@ export function pendingRows(rows, watermark) {
 
 /**
  * 拼整理提示词。
- * @param {{scope:string, scopeLabel?:string, rows:object[], promptTemplate?:string, maxMemories?:number}} o
+ * @param {{scope:string, scopeLabel?:string, rows:object[], promptTemplate?:string, maxMemories?:number, activePlans?:object[]}} o
  */
-export function buildPrompt({ scope, scopeLabel = '', rows = [], promptTemplate = '', maxMemories = 5 } = {}) {
+export function buildPrompt({ scope, scopeLabel = '', rows = [], promptTemplate = '', maxMemories = 5, activePlans = [] } = {}) {
   const tpl = String(promptTemplate || '').trim() || DEFAULT_ORGANIZE_PROMPT
   const label = scopeLabel || String(scope || '').replace(/^group:/, '群 ').replace(/^private:/, '私聊 ')
   // 用函数替换：聊天正文里出现 `$&` / `$1` 之类不会被 String.replace 当成组引用改写
+  const planText = (Array.isArray(activePlans) ? activePlans : []).slice(-20)
+    .map((m) => `${m.id}: ${String(m.text || '').replace(/\s+/g, ' ').trim()}`)
+    .join('\n') || '（无待更新计划）'
   return tpl
     .replace(/\{maxMemories\}/g, () => String(maxMemories))
     .replace(/\{scopeLabel\}/g, () => label)
+    .replace(/\{activePlans\}/g, () => planText)
     .replace(/\{transcript\}/g, () => toTranscript(rows))
 }
 
@@ -130,15 +139,25 @@ export function normalizeMemory(raw, { scope, key, sourceMsgIds = [], now = Date
       : { qq: '', name: String(e || '').trim() }))
     .filter((e) => e.qq || e.name)
     .slice(0, 8)
+  const type = types.includes(String(raw.type || raw.memoryType || '')) ? String(raw.type || raw.memoryType) : 'fact'
+  const states = ['active', 'completed', 'cancelled', 'superseded', 'expired', 'stale']
+  const dueAt = typeof raw.dueAt === 'string'
+    ? (Number.isFinite(Number(raw.dueAt)) ? Number(raw.dueAt) : Date.parse(raw.dueAt))
+    : Number(raw.dueAt)
   return {
     key: String(key || scope),
     scope: String(scope),
     kind: String(scope).startsWith('group:') ? 'group' : 'private',
     text: text.slice(0, maxChars),
     importance: Number.isFinite(imp) ? Math.max(0, Math.min(1, imp)) : 0.6,
-    memoryType: types.includes(String(raw.type || raw.memoryType || '')) ? String(raw.type || raw.memoryType) : 'fact',
+    memoryType: type,
+    ...(type === 'plan' || type === 'commitment' ? {
+      state: states.includes(String(raw.state || '')) ? String(raw.state) : 'active',
+      ...(Number.isFinite(dueAt) && dueAt > 0 ? { dueAt } : {}),
+    } : {}),
     tags,
     entities,
+    relatedIds: (Array.isArray(raw.relatedIds) ? raw.relatedIds : []).map((id) => String(id || '').trim()).filter(Boolean).slice(0, 12),
     sourceMsgIds: sourceMsgIds.slice(0, 40),
     createdAt: now,
   }
@@ -239,11 +258,18 @@ export function createOrganizer({ store, cfgOf, archiveDirOf, log = () => {}, in
     if (!transcript.trim()) return { ok: true, scope, added: 0, reason: '新消息里没有可读文本' }
     // 水位候选：本轮**实际喂给模型**的最新一条消息（不是现在的时间 —— 整理期间新来的消息必须留到下一轮）
     const newestTs = fresh.reduce((a, r2) => Math.max(a, Number(r2.ts) || 0), 0)
+    const activePlans = store.all().filter((m) => {
+      if (String(m.scope || '') !== String(scope) || !['plan', 'commitment'].includes(String(m.memoryType || ''))) return false
+      if (['completed', 'cancelled', 'superseded', 'expired', 'stale'].includes(String(m.state || ''))) return false
+      const dueAt = Number(m.dueAt)
+      return !(Number.isFinite(dueAt) && dueAt > 0 && dueAt <= Date.now())
+    })
     const prompt = buildPrompt({
       scope,
       rows: fresh,
       promptTemplate: promptOverride || cfg.organizePrompt,
       maxMemories: num(cfg.maxMemoriesPerRound, 5, 1, 20),
+      activePlans,
     })
     // 接口配置走扁平字段（configSchema 一条一条渲染，别套嵌套对象 —— 控制台只认扁平键）
     const r = await chatComplete({
@@ -262,13 +288,34 @@ export function createOrganizer({ store, cfgOf, archiveDirOf, log = () => {}, in
     const maxCharsMem = num(cfg.maxCharsPerMemory, 240, 40, 800)
     const srcIds = fresh.map((x) => Number(x.messageId)).filter((n) => Number.isFinite(n))
     const picked = []
-    for (const item of parsed.list.slice(0, maxPer * 2)) {
+    const activePlanById = new Map(activePlans.map((m) => [String(m.id), m]))
+    const planUpdates = []
+    const updateCandidates = [...parsed.updates]
+    for (const item of parsed.list) {
+      if (item && String(item.op || '') === 'update_plan') updateCandidates.push(item)
+    }
+    for (const item of updateCandidates) {
+      const id = String(item?.id || '').trim()
+      const state = String(item?.state || '').trim()
+      if (activePlanById.has(id) && ['active', 'completed', 'cancelled', 'superseded', 'stale'].includes(state)) {
+        planUpdates.push({ id, state })
+      }
+    }
+    const uniqueUpdates = [...new Map(planUpdates.map((item) => [item.id, item])).values()]
+    for (const item of parsed.list.slice(0, maxPer * 4 + 40)) {
+      if (item && String(item.op || '') === 'update_plan') continue
+      if (picked.length >= maxPer) continue
       const m = normalizeMemory(item, { scope, sourceMsgIds: srcIds, maxChars: maxCharsMem })
-      if (m) picked.push(m)
-      if (picked.length >= maxPer) break
+      if (!m) continue
+      m.relatedIds = m.relatedIds.filter((id) => activePlanById.has(id))
+      picked.push(m)
     }
     if (dryRun) {
-      return { ok: true, scope, dryRun: true, wouldAdd: picked.length, items: picked.map((m) => ({ text: m.text, importance: m.importance, tags: m.tags, type: m.memoryType })), ms: r.ms }
+      return { ok: true, scope, dryRun: true, wouldAdd: picked.length, updates: uniqueUpdates, items: picked.map((m) => ({ text: m.text, importance: m.importance, tags: m.tags, type: m.memoryType })), ms: r.ms }
+    }
+    let updated = 0
+    for (const change of uniqueUpdates) {
+      try { if (store.setState(change.id, change.state, { scope })) updated += 1 } catch (e) { log('[long-memory] 计划状态更新失败 ' + scope + ': ' + e.message) }
     }
     const ids = []
     for (const m of picked) {
@@ -279,10 +326,10 @@ export function createOrganizer({ store, cfgOf, archiveDirOf, log = () => {}, in
         log(`[long-memory] 落库失败 ${scope}: ${e.message}`)
       }
     }
-    // 水位：模型给了**能解析的数组**（哪怕是空数组）就把水位推到“实际喂进去的最新一条”，
+    // 水位：模型给了能解析的数组/对象（哪怕是空结果）就推进到“实际喂进去的最新一条”，
     // 这样同一批消息不会每轮重复烧 token；接口报错/坏 JSON 则不推进，下次重试。
     if (parsed.ok) store.setWatermark(scope, newestTs)
-    return { ok: true, scope, added: ids.length, ids, items: picked.map((m) => m.text), ms: r.ms }
+    return { ok: true, scope, added: ids.length, ids, updated, updates: uniqueUpdates, items: picked.map((m) => m.text), ms: r.ms }
   }
 
   /** 跑一轮（定时器/手动）。force=true 忽略「新消息门槛」。 */

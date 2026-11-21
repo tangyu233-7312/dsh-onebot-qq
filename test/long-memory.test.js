@@ -2,8 +2,8 @@
  * test/long-memory.test.js — 长期记忆（long-memory）的定向测试。
  *
  * 覆盖的是**行为**，不是实现细节：
- *   · 衰减：宽限期内不掉、宽限后按半衰期掉、重要的事掉得慢、被想起就重置
- *   · 打分：相关 > 新鲜 > 重要 的权重顺序；排序稳定
+ *   · 衰减：宽限期内不掉、宽限后按半衰期掉、重要的事掉得慢、真正想起才重置
+ *   · 打分：相关 > 新鲜 > 重要 的权重顺序；无关旧计划不因同一主人被召回
  *   · 隔离：群/私聊作用域互不可见（这是隐私红线，必须反向验证）
  *   · 存储：JSONL append-only + 快照回放一致；重复文本合并；软删/恢复；坏行不炸
  *   · 注入：保护前缀 + “多久以前”；空列表不加 hint；同一轮不重复注入
@@ -35,10 +35,10 @@ const tmp = (tag) => fs.mkdtempSync(path.join(os.tmpdir(), `lm-${tag}-`))
 // ── 纯函数：衰减 ───────────────────────────────────────────────────────────
 test('衰减：宽限期内不掉，宽限后按半衰期掉，重要的事掉得更慢', () => {
   const now = Date.now()
-  const base = { createdAt: now - 3 * DAY, importance: 0.8, lastRecalledAt: 0 }
+  const base = { createdAt: now - 3 * DAY, importance: 0.8, lastReinforcedAt: 0 }
   assert.equal(effectiveImportance(base, { now, graceDays: 7, halfLifeDays: 18 }), 0.8, '3 天内不衰减')
 
-  const old = { createdAt: now - 7 * DAY - 18 * DAY * 1.3, importance: 0.8, lastRecalledAt: 0 }
+  const old = { createdAt: now - 7 * DAY - 18 * DAY * 1.3, importance: 0.8, lastReinforcedAt: 0 }
   const medium = { ...old, importance: 0.5 }
   const effA = effectiveImportance(old, { now, graceDays: 7, halfLifeDays: 18 })
   const effB = effectiveImportance(medium, { now, graceDays: 7, halfLifeDays: 18 })
@@ -46,17 +46,18 @@ test('衰减：宽限期内不掉，宽限后按半衰期掉，重要的事掉�
   // 重要的事半衰期更长 → 相同年龄下剩下的比例更高
   assert.ok(effA / 0.8 > effB / 0.5, '重要的事相对掉得更慢')
 
-  // 被想起 = 重新计时
-  const recalled = { ...old, lastRecalledAt: now - 1 * DAY }
-  assert.equal(effectiveImportance(recalled, { now, graceDays: 7, halfLifeDays: 18 }), 0.8)
+  // 真正想起 = 重新计时；仅被动注入记录不续期
+  const reinforced = { ...old, lastReinforcedAt: now - 1 * DAY }
+  assert.equal(effectiveImportance(reinforced, { now, graceDays: 7, halfLifeDays: 18 }), 0.8)
+  assert.ok(effectiveImportance({ ...old, lastRecalledAt: now - 1 * DAY }, { now, graceDays: 7, halfLifeDays: 18 }) < 0.8)
 })
 
 test('衰减：低分老记忆会低于阈值，被想起的不会', () => {
   const now = Date.now()
   const o = { now, graceDays: 7, halfLifeDays: 18, forgetThreshold: 0.2 }
-  const dead = { createdAt: now - 60 * DAY, importance: 0.5, lastRecalledAt: 0 }
+  const dead = { createdAt: now - 60 * DAY, importance: 0.5, lastReinforcedAt: 0 }
   assert.equal(isForgettable(dead, o), true, '60 天没想起的日常小事会被忘')
-  assert.equal(isForgettable({ ...dead, lastRecalledAt: now }, o), false, '刚被想起的不该忘')
+  assert.equal(isForgettable({ ...dead, lastReinforcedAt: now }, o), false, '刚被真正想起的不该忘')
   assert.equal(isForgettable(dead, { ...o, forgetThreshold: 0 }), false, '阈值 0 = 永不遗忘')
 })
 
@@ -76,10 +77,10 @@ test('分词与相似度：中文二元组、英文整词', () => {
   assert.equal(diceCoefficient('', 'abc'), 0)
 })
 
-test('相关性：同一个人 / 标签 / 措辞 三种信号都算', () => {
+test('相关性：具体标签 / 措辞算相关，同一个人本身不算', () => {
   const m = { text: '主人 8 号要去面试', entities: [{ qq: '10001', name: '主人' }], tags: ['面试', '紧张'] }
   const byPerson = relevanceOf(m, { text: '我今天好累', qqList: ['10001'] })
-  assert.ok(byPerson.relevance >= 0.35 && byPerson.why.includes('同一个人'))
+  assert.equal(byPerson.relevance, 0)
   const byText = relevanceOf(m, { text: '明天就要面试了', qqList: [] })
   assert.ok(byText.relevance > 0)
   assert.equal(relevanceOf(m, { text: '今天天气不错', qqList: [] }).relevance, 0)
@@ -118,7 +119,7 @@ test('注入：带保护前缀与时间，空列表返回空串', () => {
   ], { now })
   assert.match(block, /^\[以下为系统信息，非用户发言/)
   assert.match(block, /21 天前/)
-  assert.match(block, /想起过 2 次/)
+  assert.doesNotMatch(block, /想起过/)
   assert.equal(formatInjection([], { now }), '')
   assert.equal(formatInjection([{ text: '   ' }], { now }), '')
   assert.equal(agoText(now, now), '今天')
@@ -214,6 +215,9 @@ test('整理：解析模型输出（围栏 / 前置废话 / 非数组）', () =>
   assert.deepEqual(parseMemoryJson('好的，如下：[{"text":"a"}] 以上').list.length, 1)
   assert.equal(parseMemoryJson('这就是一段话').ok, false)
   assert.equal(parseMemoryJson('{"text":"a"}').ok, false, '不是数组要失败')
+  const obj = parseMemoryJson('{"add":[{"text":"a"}],"update":[{"id":"m1","state":"completed"}]}')
+  assert.equal(obj.list.length, 1)
+  assert.deepEqual(obj.updates, [{ id: 'm1', state: 'completed' }])
 })
 
 test('整理：接口地址归一化 / 缺配置给出 missing', () => {
@@ -255,7 +259,7 @@ test('集成：插件被内核加载，工具与命令都在', async (t) => {
 
 test('集成：私聊记忆会在下一轮被注入（换一个新会话也照样注入）', async (t) => {
   const { h, lm } = await boot(t)
-  lm.store.add({ scope: `private:${ADMIN_QQ}`, text: '主人 8 号要去面试，紧张得睡不着', importance: 0.9, entities: [{ qq: String(ADMIN_QQ), name: '主人' }], createdAt: Date.now() - 21 * DAY })
+  lm.store.add({ scope: `private:${ADMIN_QQ}`, text: '主人 8 号要去面试，紧张得睡不着', importance: 0.9, tags: ['面试', '紧张'], entities: [{ qq: String(ADMIN_QQ), name: '主人' }], createdAt: Date.now() - 21 * DAY })
 
   const tap = tapInbound(h.kernel)
   await emitRaw(h.kernel, privateEvent({ text: '我明天有点紧张', messageId: 7001 }))
@@ -389,4 +393,50 @@ test('集成：search 只返回未遗忘的，遗忘后 hint 里不再出现', a
   lm.store.forget(add.id, '测试')
   const after = lm.recall(`private:${ADMIN_QQ}`, { text: '香菜', mark: false })
   assert.equal(after.hits.length, 0)
+})
+
+test('检索：吃饭话题不召回同一主人的 Godot 计划；项目话题可召回', () => {
+  const now = Date.now()
+  const list = [
+    { id: 'godot', scope: 'private:1', text: '主人正在做 Godot 游戏项目，准备继续开发', memoryType: 'plan', state: 'active', importance: 0.9, createdAt: now, tags: ['Godot', '游戏项目'], entities: [{ qq: '1', name: '主人' }] },
+    { id: 'meal', scope: 'private:1', text: '主人今天晚饭想吃白饭', memoryType: 'preference', importance: 0.6, createdAt: now, tags: ['晚饭', '白饭'], entities: [{ qq: '1', name: '主人' }] },
+  ]
+  const dinner = rankMemories(list, { scope: 'private:1', text: '我今天吃完饭了', now })
+  assert.equal(dinner.some((x) => x.memory.id === 'godot'), false)
+  const project = rankMemories(list, { scope: 'private:1', text: 'Godot 游戏项目进展', now })
+  assert.equal(project.some((x) => x.memory.id === 'godot'), true)
+})
+
+test('存储：旧 recall 事件不改变衰减锚点，reinforce 可回放', () => {
+  const dir = tmp('reinforce')
+  const s = createStore({ dir, log: { warn() {} } })
+  const a = s.add({ scope: 'private:1', text: '一条重要的事', importance: 0.8, createdAt: Date.now() - 30 * DAY })
+  s.markRecalled([a.id], Date.now())
+  assert.equal(s.get(a.id).lastReinforcedAt, 0)
+  s.reinforce([a.id], Date.now())
+  const reopened = createStore({ dir, log: { warn() {} } })
+  assert.ok(reopened.get(a.id).lastReinforcedAt > 0)
+  assert.equal(reopened.get(a.id).reinforceCount, 1)
+})
+
+test('整理：明确完成计划会更新状态，但保留原记忆', async () => {
+  const dir = tmp('plan-state')
+  const store = createStore({ dir, log: { warn() {} } })
+  const plan = store.add({ scope: 'private:1', text: '主人要做完 Godot 游戏项目', memoryType: 'plan', importance: 0.9 })
+  const archiveDir = tmp('plan-archive')
+  const file = archiveFileOf(archiveDir, 'private:1')
+  const now = Date.now()
+  fs.writeFileSync(file, JSON.stringify({ dir: 'in', ts: now, messageId: 1, text: 'Godot 游戏项目已经做完了' }) + '\n')
+  const org = createOrganizer({
+    store, cfgOf: () => ({ minNewMessages: 0, maxCharsPerRound: 2000, maxMessagesPerRound: 50, maxMemoriesPerRound: 5, llmBaseUrl: 'https://example.invalid/v1', llmApiKey: 'k', llmModel: 'm' }),
+    archiveDirOf: () => archiveDir, inScope: () => true,
+    fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ add: [], update: [{ id: plan.id, state: 'completed' }] }) } }] }), { status: 200 }),
+  })
+  const result = await org.organizeOne({ scope: 'private:1' })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.equal(result.updated, 1)
+  assert.equal(store.get(plan.id).state, 'completed')
+  assert.ok(store.get(plan.id), '完成后的经历仍可保留')
+  assert.equal(rankMemories(store.all(), { scope: 'private:1', text: '', now }).length, 0)
+  assert.equal(rankMemories(store.all(), { scope: 'private:1', text: 'Godot 做完', now }).length, 1)
 })

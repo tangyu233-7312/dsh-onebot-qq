@@ -134,24 +134,40 @@ export async function chatComplete(cfg, { system = '', prompt = '' } = {}) {
 }
 
 /**
- * 剥掉模型为了好看而加的外壳：```json 围栏、前后废话。只认数组。
- * @returns {{ok:boolean, list:any[], reason:string}}
+ * 剥掉模型输出外壳，兼容旧数组和 add/update 对象。
+ * @returns {{ok:boolean, list:any[], updates:any[], reason:string}}
  */
 export function parseMemoryJson(text) {
   const raw = String(text || '').trim()
-  if (!raw) return { ok: false, list: [], reason: '模型返回空' }
+  if (!raw) return { ok: false, list: [], updates: [], reason: '模型返回空' }
   const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)
-  let body = fence ? fence[1] : raw
-  // 从第一个 [ 到最后一个 ]（模型常在前面写“好的，如下：”）
-  const lb = body.indexOf('[')
-  const rb = body.lastIndexOf(']')
-  if (lb >= 0 && rb > lb) body = body.slice(lb, rb + 1)
-  body = body.trim()
-  if (!body) return { ok: false, list: [], reason: '模型返回里没有 JSON 数组' }
-  let parsed
-  try { parsed = JSON.parse(body) } catch (e) {
-    return { ok: false, list: [], reason: `JSON 解析失败：${String(e?.message || e).slice(0, 120)}` }
+  const body = String(fence ? fence[1] : raw).trim()
+  if (!body) return { ok: false, list: [], updates: [], reason: '模型返回里没有 JSON 数组或对象' }
+  const candidates = [body]
+  const firstObject = body.indexOf('{')
+  const lastObject = body.lastIndexOf('}')
+  const firstArray = body.indexOf('[')
+  const lastArray = body.lastIndexOf(']')
+  const extracted = []
+  if (firstObject >= 0 && lastObject > firstObject) extracted.push({ at: firstObject, value: body.slice(firstObject, lastObject + 1) })
+  if (firstArray >= 0 && lastArray > firstArray) extracted.push({ at: firstArray, value: body.slice(firstArray, lastArray + 1) })
+  candidates.push(...extracted.sort((a, b) => a.at - b.at).map((x) => x.value))
+
+  let parseError = null
+  for (const candidate of [...new Set(candidates)]) {
+    let parsed
+    try { parsed = JSON.parse(candidate) } catch (e) { parseError = e; continue }
+    if (Array.isArray(parsed)) return { ok: true, list: parsed, updates: [], reason: '' }
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const hasShape = Array.isArray(parsed.add) || Array.isArray(parsed.memories)
+        || Array.isArray(parsed.update) || Array.isArray(parsed.updates)
+      if (hasShape) {
+        const list = Array.isArray(parsed.add) ? parsed.add : (Array.isArray(parsed.memories) ? parsed.memories : [])
+        const updates = Array.isArray(parsed.update) ? parsed.update : (Array.isArray(parsed.updates) ? parsed.updates : [])
+        return { ok: true, list, updates, reason: '' }
+      }
+    }
   }
-  if (!Array.isArray(parsed)) return { ok: false, list: [], reason: '模型返回的不是数组（可能写成了一篇文字）' }
-  return { ok: true, list: parsed, reason: '' }
+  if (parseError) return { ok: false, list: [], updates: [], reason: `JSON 解析失败：${String(parseError?.message || parseError).slice(0, 120)}` }
+  return { ok: false, list: [], updates: [], reason: '模型返回的不是记忆数组或更新对象（可能写成了一篇文字）' }
 }

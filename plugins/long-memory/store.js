@@ -85,6 +85,13 @@ export function createStore({ dir, log = console, maxEventsBeforeCompact = 5000 
       row.recallCount += 1
       row.memory.lastRecalledAt = row.recallAt
       row.memory.recallCount = row.recallCount
+    } else if (ev.op === 'reinforce') {
+      row.memory.lastReinforcedAt = Math.max(Number(row.memory.lastReinforcedAt) || 0, at)
+      row.memory.reinforceCount = (Number(row.memory.reinforceCount) || 0) + 1
+      row.recallAt = Math.max(row.recallAt, at)
+      row.recallCount += 1
+      row.memory.lastRecalledAt = row.recallAt
+      row.memory.recallCount = row.recallCount
     } else if (ev.op === 'forget') {
       row.forgottenAt = at || Date.now()
       row.forgetReason = String(ev.reason || '')
@@ -99,6 +106,12 @@ export function createStore({ dir, log = console, maxEventsBeforeCompact = 5000 
       const v = Number(ev.importance)
       if (Number.isFinite(v)) row.memory.importance = Math.max(0, Math.min(1, v))
       if (Array.isArray(ev.tags) && ev.tags.length) row.memory.tags = ev.tags.slice(0, 12).map(String)
+    } else if (ev.op === 'state') {
+      const states = ['active', 'completed', 'cancelled', 'superseded', 'expired', 'stale']
+      if (states.includes(String(ev.state || ''))) row.memory.state = String(ev.state)
+      row.memory.stateUpdatedAt = at
+      if (Number.isFinite(Number(ev.dueAt))) row.memory.dueAt = Number(ev.dueAt)
+      if (Array.isArray(ev.relatedIds)) row.memory.relatedIds = [...new Set(ev.relatedIds.map(String))].slice(0, 12)
     }
   }
 
@@ -303,18 +316,25 @@ export function createStore({ dir, log = console, maxEventsBeforeCompact = 5000 
         sourceMsgIds: Array.isArray(m.sourceMsgIds) ? m.sourceMsgIds.slice(0, 40) : [],
         createdAt: at,
         lastRecalledAt: 0,
+        lastReinforcedAt: Number(m.lastReinforcedAt) || 0,
         recallCount: 0,
         forgottenAt: 0,
         forgetReason: '',
         origin: String(m.origin || 'organize'), // organize（自动整理）| manual（模型 remember）| user（控制台/命令）
       }
+      if (['plan', 'commitment'].includes(memory.memoryType)) {
+        memory.state = ['active', 'completed', 'cancelled', 'superseded', 'expired', 'stale'].includes(String(m.state || ''))
+          ? String(m.state) : 'active'
+        if (Number.isFinite(Number(m.dueAt)) && Number(m.dueAt) > 0) memory.dueAt = Number(m.dueAt)
+      }
+      if (Array.isArray(m.relatedIds)) memory.relatedIds = [...new Set(m.relatedIds.map(String))].slice(0, 12)
       if (!memory.text) throw new Error('记忆正文为空')
       append({ op: 'add', at: Date.now(), memory })
       applyEvent({ op: 'add', memory, at: Date.now() })
       return { ok: true, merged: false, id }
     },
 
-    /** 记账“这条被想起过”（重置宽限）。批量传 id 数组。 */
+    /** 记账“这条被真正想起过”（重置宽限）。调用方先完成话题/关系网筛选。 */
     markRecalled(ids, at = Date.now()) {
       const out = []
       for (const id of ids || []) {
@@ -325,6 +345,33 @@ export function createStore({ dir, log = console, maxEventsBeforeCompact = 5000 
         out.push(String(id))
       }
       return out
+    },
+
+    /** 真正沿当前话题想起：记录统计，并延长衰减计时。 */
+    reinforce(ids, at = Date.now()) {
+      const out = []
+      for (const id of ids || []) {
+        if (!view.has(String(id))) continue
+        const ev = { op: 'reinforce', id: String(id), at }
+        append(ev); applyEvent(ev)
+        out.push(String(id))
+      }
+      return out
+    },
+
+    /** 更新计划/承诺状态；只记录状态变化，不删除原始经历。 */
+    setState(id, state, { scope = '', dueAt, relatedIds = [] } = {}) {
+      const row = view.get(String(id))
+      const allowed = ['active', 'completed', 'cancelled', 'superseded', 'expired', 'stale']
+      if (!row || !['plan', 'commitment'].includes(String(row.memory.memoryType || '')) || !allowed.includes(String(state))) return false
+      if (scope && String(row.memory.scope || '') !== String(scope)) return false
+      const ev = {
+        op: 'state', id: String(id), state: String(state), at: Date.now(),
+        ...(Number.isFinite(Number(dueAt)) && Number(dueAt) > 0 ? { dueAt: Number(dueAt) } : {}),
+        ...(Array.isArray(relatedIds) && relatedIds.length ? { relatedIds: [...new Set(relatedIds.map(String))].slice(0, 12) } : {}),
+      }
+      append(ev); applyEvent(ev)
+      return true
     },
 
     forget(id, reason = '衰减') {

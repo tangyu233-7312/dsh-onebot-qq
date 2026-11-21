@@ -333,6 +333,8 @@ export default {
       const gone = []
       for (const m of store.all()) {
         if (Number(m.forgottenAt) > 0) continue
+        // 计划本身是历史事件：过时后停止作为待办召回，但仍可在相关话题中查询。
+        if (['plan', 'commitment'].includes(String(m.memoryType || ''))) continue
         if (isForgettable(m, o)) {
           try { if (store.forget(m.id, '清晰度低于遗忘阈值')) gone.push(m.id) } catch { /* ignore */ }
         }
@@ -353,10 +355,10 @@ export default {
       const hits = rankMemories(store.all(), o)
       const picked = hits.map((h) => h.memory)
       const block = formatInjection(picked, { now, maxChars: num(cfg.injectMaxChars, 600, 80, 4000) })
-      // 只有真进了提示词的那几条才算“被想起”（重置宽限、+1 次数）
+      // 只有真进了提示词的那几条才算“被想起”；无关候选不会续期。
       if (mark && block) {
-        const included = picked.filter((m) => block.includes(String(m.text).slice(0, 30)))
-        try { store.markRecalled(included.map((m) => m.id), now) } catch (e) { log.warn?.(`[long-memory] 记账失败: ${e.message}`) }
+        const included = picked.filter((m) => block.includes(String(m.text).replace(/\s+/g, ' ').trim()))
+        try { store.reinforce(included.map((m) => m.id), now) } catch (e) { log.warn?.(`[long-memory] 记账失败: ${e.message}`) }
       }
       return { hits, block }
     }
