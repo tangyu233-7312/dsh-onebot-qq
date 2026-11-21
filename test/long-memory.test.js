@@ -308,6 +308,7 @@ test('集成：工具 remember 只写本作用域，recall_memory 不跨作用�
   const r3 = await runAs(`private:${ADMIN_QQ}`, () => recallTool.execute({ query: '下雨' }))
   assert.equal(r3.count, 1, '本会话能查到自己的记忆')
   assert.match(r3.items[0].when, /今天|昨天|天前/)
+  assert.ok(lm.store.get(rows[0].id).lastReinforcedAt > 0, '用户主动追问的召回会强化记忆')
 })
 
 test('集成：整理→落库→水位推进；接口报错时不写也不推水位', async (t) => {
@@ -399,12 +400,24 @@ test('检索：吃饭话题不召回同一主人的 Godot 计划；项目话题�
   const now = Date.now()
   const list = [
     { id: 'godot', scope: 'private:1', text: '主人正在做 Godot 游戏项目，准备继续开发', memoryType: 'plan', state: 'active', importance: 0.9, createdAt: now, tags: ['Godot', '游戏项目'], entities: [{ qq: '1', name: '主人' }] },
+    { id: 'progress', scope: 'private:1', text: '主人把第一关的碰撞问题修好了', memoryType: 'event', importance: 0.7, createdAt: now, tags: ['碰撞问题'], relatedIds: ['godot'] },
+    { id: 'foreign', scope: 'private:9', text: 'Godot 项目进展', memoryType: 'event', importance: 1, createdAt: now, tags: ['Godot'], relatedIds: ['godot'] },
     { id: 'meal', scope: 'private:1', text: '主人今天晚饭想吃白饭', memoryType: 'preference', importance: 0.6, createdAt: now, tags: ['晚饭', '白饭'], entities: [{ qq: '1', name: '主人' }] },
+    { id: 'done', scope: 'private:1', text: '主人已经完成旧 Godot 游戏项目', memoryType: 'plan', state: 'completed', importance: 0.8, createdAt: now, tags: ['Godot'] },
+    { id: 'past-due', scope: 'private:1', text: '主人有一个星标计划', memoryType: 'plan', state: 'active', dueAt: now - DAY, importance: 0.8, createdAt: now, tags: ['星标计划'] },
   ]
   const dinner = rankMemories(list, { scope: 'private:1', text: '我今天吃完饭了', now })
   assert.equal(dinner.some((x) => x.memory.id === 'godot'), false)
   const project = rankMemories(list, { scope: 'private:1', text: 'Godot 游戏项目进展', now })
   assert.equal(project.some((x) => x.memory.id === 'godot'), true)
+  assert.equal(project.some((x) => x.memory.id === 'progress'), true, '显式关联的后续进展可以扩展召回')
+  assert.equal(project.some((x) => x.memory.id === 'foreign'), false, '关联 ID 不能穿过作用域')
+  assert.equal(rankMemories(list, { scope: 'private:1', text: '', now }).some((x) => ['done', 'past-due'].includes(x.memory.id)), false, '终态与过期计划不进入无查询待办')
+  const historical = rankMemories(list, { scope: 'private:1', text: 'Godot', now })
+  assert.equal(historical.some((x) => x.memory.id === 'done'), true, '相关追问仍可回忆完成的计划')
+  assert.match(formatInjection(historical.map((x) => x.memory), { now }), /已完成/)
+  const overdue = rankMemories(list, { scope: 'private:1', text: '星标计划', now })
+  assert.match(formatInjection(overdue.map((x) => x.memory), { now }), /已过截止时间/)
 })
 
 test('存储：旧 recall 事件不改变衰减锚点，reinforce 可回放', () => {
@@ -439,4 +452,17 @@ test('整理：明确完成计划会更新状态，但保留原记忆', async ()
   assert.ok(store.get(plan.id), '完成后的经历仍可保留')
   assert.equal(rankMemories(store.all(), { scope: 'private:1', text: '', now }).length, 0)
   assert.equal(rankMemories(store.all(), { scope: 'private:1', text: 'Godot 做完', now }).length, 1)
+  assert.equal(createStore({ dir, log: { warn() {} } }).get(plan.id).state, 'completed', '重开后状态事件仍在')
+})
+
+test('集成：长期计划不会被自动遗忘，无关话题不提，相关追问仍可回忆', async (t) => {
+  const { lm } = await boot(t)
+  const now = Date.now()
+  const plan = lm.store.add({ scope: 'private:' + ADMIN_QQ, text: '主人计划继续做 Godot 游戏项目', memoryType: 'plan', importance: 0.1, tags: ['Godot', '游戏项目'], createdAt: now - 200 * DAY })
+  const unrelated = lm.recall('private:' + ADMIN_QQ, { text: '我吃完饭了', mark: true })
+  assert.equal(unrelated.hits.some((x) => x.memory.id === plan.id), false)
+  assert.equal(lm.store.get(plan.id).forgottenAt, 0, '计划作为历史保留')
+  const related = lm.recall('private:' + ADMIN_QQ, { text: 'Godot 游戏项目进展', mark: true })
+  assert.equal(related.hits.some((x) => x.memory.id === plan.id), true)
+  assert.ok(lm.store.get(plan.id).lastReinforcedAt > 0, '真正命中话题才强化')
 })

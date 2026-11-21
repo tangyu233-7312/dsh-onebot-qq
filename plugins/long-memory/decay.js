@@ -252,7 +252,7 @@ export function rankMemories(memories, o = {}) {
   const directFloor = Math.max(0, Number(o.relevanceFloor ?? (hasQuery ? 0.15 : 0)))
   const terminal = (m) => {
     if (!['plan', 'commitment'].includes(String(m?.memoryType || ''))) return false
-    if (['completed', 'cancelled', 'superseded', 'expired'].includes(String(m?.state || ''))) return true
+    if (['completed', 'cancelled', 'superseded', 'expired', 'stale'].includes(String(m?.state || ''))) return true
     const dueAt = Number(m?.dueAt)
     return Number.isFinite(dueAt) && dueAt > 0 && dueAt <= nowOf(o)
   }

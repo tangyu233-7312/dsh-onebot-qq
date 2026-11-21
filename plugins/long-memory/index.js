@@ -463,7 +463,7 @@ export default {
           if (!scope) return { ok: false, reason: '拿不到当前会话（请重试一次）' }
           if (!scopeAllowed(scope)) return { ok: false, count: 0, items: [], reason: '这个会话不在「存储范围」里' }
           const limit = num(a.limit, 5, 1, 20)
-          const { hits } = recall(scope, { text: String(a.query || ''), qqList: [String(a.qq || adminQq())], topK: limit, mark: false })
+          const { hits } = recall(scope, { text: String(a.query || ''), qqList: [String(a.qq || adminQq())], topK: limit, mark: true })
           return {
             ok: true,
             count: hits.length,
