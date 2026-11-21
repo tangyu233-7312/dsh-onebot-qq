@@ -174,6 +174,39 @@ test('存储：半行 / 坏行不炸整个库', () => {
   assert.equal(s3.size(), 2)
 })
 
+test('存储：编辑正文、标签和结构化字段后事件回放一致；换类型/作用域清理无效关联', () => {
+  const dir = tmp('edit')
+  const store = createStore({ dir, log: { warn() {} } })
+  const related = store.add({ scope: 'private:1', text: '同一会话中的关联经历', importance: 0.5 })
+  const other = store.add({ scope: 'group:2', text: '另一个会话的经历', importance: 0.5 })
+  const item = store.add({ scope: 'private:1', text: '旧正文', importance: 0.4, tags: ['旧标签'] })
+
+  assert.equal(store.edit(item.id, {
+    text: '修正后的正文', tags: ['新标签', '项目'], entities: [{ qq: '10001', name: '主人' }],
+    importance: 0.9, memoryType: 'plan', state: 'active', dueAt: Date.now() + 86400000,
+    relatedIds: [related.id],
+  }), true)
+  const edited = store.get(item.id)
+  assert.equal(edited.text, '修正后的正文')
+  assert.deepEqual(edited.tags, ['新标签', '项目'])
+  assert.deepEqual(edited.entities, [{ qq: '10001', name: '主人' }])
+  assert.equal(edited.memoryType, 'plan')
+  assert.equal(edited.relatedIds[0], related.id)
+
+  assert.throws(() => store.edit(item.id, { relatedIds: [other.id] }), /同一会话/)
+  assert.throws(() => store.edit(item.id, { entities: [{ qq: '12', name: '坏号' }] }), /4~12 位/)
+
+  const replayed = createStore({ dir, log: { warn() {} } }).get(item.id)
+  assert.deepEqual(replayed, edited, '追加式编辑事件重启后应还原同一视图')
+  store.edit(item.id, { memoryType: 'fact', scope: 'group:3' })
+  const moved = store.get(item.id)
+  assert.equal(moved.scope, 'group:3')
+  assert.equal(moved.key, 'group:3')
+  assert.deepEqual(moved.relatedIds, [])
+  assert.equal('state' in moved, false)
+  assert.equal('dueAt' in moved, false)
+})
+
 test('存储：导出 md / json，导入去重', () => {
   const dir = tmp('exp')
   const s = createStore({ dir, log: { warn() {} } })

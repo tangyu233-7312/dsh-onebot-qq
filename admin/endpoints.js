@@ -922,6 +922,7 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
         .slice(0, limit)
         .map((m) => ({
           id: m.id, scope: m.scope, text: m.text, importance: m.importance, tags: m.tags,
+          memoryType: m.memoryType, state: m.state, dueAt: m.dueAt, relatedIds: m.relatedIds, entities: m.entities,
           createdAt: m.createdAt, forgottenAt: m.forgottenAt, recallCount: m.recallCount,
           // 清晰度：已经低于遗忘阈值就显示 0（下一轮扫描会把它标成已遗忘）
           effective: expired(m) ? 0 : Math.round(Number(m.importance) * 100) / 100,
@@ -938,6 +939,42 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
         score,
         why: score ? score.why : undefined,
       }
+    }
+    if (op === 'edit') {
+      const current = safe(() => api.store.get(id), null)
+      if (!current) return { ok: false, error: `没有这条记忆：${id}` }
+      const nextScope = toStr(payload.scope) || String(current.scope || '')
+      // 已存在的旧作用域可以原地修正文案；只有迁移作用域时，才要求目标仍在当前存储范围内
+      if (nextScope !== String(current.scope || '') && !api.scopeAllowed(nextScope)) {
+        return { ok: false, error: `目标会话不在长期记忆存储范围内：${nextScope}` }
+      }
+      const patch = {}
+      for (const key of ['text', 'importance', 'memoryType', 'state', 'dueAt', 'scope']) {
+        if (Object.prototype.hasOwnProperty.call(payload, key)) patch[key] = payload[key]
+      }
+      if (Object.prototype.hasOwnProperty.call(payload, 'tags')) {
+        patch.tags = Array.isArray(payload.tags)
+          ? payload.tags
+          : String(payload.tags || '').split(/[,，\s]+/).map((tag) => tag.trim()).filter(Boolean)
+      }
+      if (Object.prototype.hasOwnProperty.call(payload, 'relatedIds')) {
+        patch.relatedIds = Array.isArray(payload.relatedIds)
+          ? payload.relatedIds
+          : String(payload.relatedIds || '').split(/[,，\s]+/).map((value) => value.trim()).filter(Boolean)
+      }
+      if (Object.prototype.hasOwnProperty.call(payload, 'entities')) {
+        if (Array.isArray(payload.entities)) patch.entities = payload.entities
+        else patch.entities = String(payload.entities || '').split(String.fromCharCode(10)).map((line) => {
+          const value = line.trim()
+          if (!value) return null
+          const index = value.search(/[:：]/)
+          return index < 0
+            ? { qq: '', name: value }
+            : { qq: value.slice(0, index).trim(), name: value.slice(index + 1).trim() }
+        }).filter(Boolean)
+      }
+      const ok = api.store.edit(id, patch)
+      return ok ? { ok: true, item: api.store.get(id), message: `记忆已更新` } : { ok: false, error: `没有这条记忆：${id}` }
     }
     if (op === 'forget') {
       const ok = api.store.forget(id, toStr(payload.reason) || '控制台手动忘掉')
@@ -982,7 +1019,7 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
       const r = await api.testLlm()
       return { ...r, message: r.ok ? `接口通了（${r.ms}ms）` : `接口不通：${r.reason}` }
     }
-    throw new Error(`未知操作：${op}（可用：status / list / get / forget / restore / boost / purge / export / import / organize / preview / testLlm）`)
+    throw new Error(`未知操作：${op}（可用：status / list / get / edit / forget / restore / boost / purge / export / import / organize / preview / testLlm）`)
   }
 
 

@@ -23,6 +23,7 @@ function makeShellReact({ shell, page = [] }) {
   let pageStore = page.slice()
   let pageIdx = 0
   const components = new Map()
+  let seededPage = page.slice()
   const mk = {
     createElement(type, props, ...children) {
       const p = { ...(props || {}) }
@@ -48,7 +49,10 @@ function makeShellReact({ shell, page = [] }) {
   mk.__other = () => { mode = 'other' }
   mk.__component = (key, render) => {
     const saved = { mode, pageStore, pageIdx }
-    if (!components.has(key)) components.set(key, [])
+    if (!components.has(key)) {
+      components.set(key, seededPage)
+      seededPage = []
+    }
     mode = 'page'; pageStore = components.get(key); pageIdx = 0
     try { return render() } finally {
       mode = saved.mode; pageStore = saved.pageStore; pageIdx = saved.pageIdx

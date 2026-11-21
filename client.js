@@ -1317,8 +1317,40 @@ window.__ModuleLoader__.load({
 		  const [previewScope, setPreviewScope] = useState('')
 		  const [previewOut, setPreviewOut] = useState(null)
 		  const [cfgOpen, setCfgOpen] = useState(false)
+		  const [editDraft, setEditDraft] = useState(null)
 
 		  const say = (t) => setLocal(String(t || ''))
+		  const splitList = (value) => String(value || '').split(/[,，\s]+/).map((x) => x.trim()).filter(Boolean)
+		  const openEditor = (m) => setEditDraft({
+		    id: String(m.id || ''),
+		    originalScope: String(m.scope || ''),
+		    text: String(m.text || ''),
+		    tags: Array.isArray(m.tags) ? m.tags.join(', ') : '',
+		    entities: Array.isArray(m.entities) ? m.entities.map((e) => e.qq ? String(e.qq) + ': ' + String(e.name || '') : String(e.name || '')).join('\n') : '',
+		    scope: String(m.scope || ''),
+		    importance: String(m.importance ?? 0.5),
+		    memoryType: String(m.memoryType || 'fact'),
+		    state: String(m.state || 'active'),
+		    dueAt: Number(m.dueAt) > 0
+		      ? new Date(Number(m.dueAt) - new Date(Number(m.dueAt)).getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+		      : '',
+		    relatedIds: Array.isArray(m.relatedIds) ? m.relatedIds.join(', ') : '',
+		  })
+		  const updateDraft = (key, value) => setEditDraft((d) => d ? { ...d, [key]: value } : d)
+		  const saveDraft = () => {
+		    if (!editDraft) return
+		    const patch = {
+		      op: 'edit', id: editDraft.id, text: editDraft.text,
+		      tags: splitList(editDraft.tags), entities: editDraft.entities,
+		      scope: editDraft.scope, importance: Number(editDraft.importance), memoryType: editDraft.memoryType,
+		    }
+		    if (['plan', 'commitment'].includes(editDraft.memoryType)) {
+		      patch.state = editDraft.state
+		      patch.dueAt = editDraft.dueAt ? Date.parse(editDraft.dueAt) : ''
+		    }
+		    if (editDraft.scope === editDraft.originalScope) patch.relatedIds = splitList(editDraft.relatedIds)
+		    return act('保存记忆', patch, async () => { setEditDraft(null); await loadList(); await loadStatus() })
+		  }
 
 		  // 取数的两道保险（2026-11-10：卡片显示「一条记忆 / 未配置 / 还没跑过」但「测试接口 ✓」，
 		  // 说明这一页的 call 没真正拿到返回值 —— 要么宿主包了一层 {ok:true,value}，要么根本没调成）。
@@ -1437,6 +1469,46 @@ window.__ModuleLoader__.load({
 
 		  // ── 记忆库 ──────────────────────────────────────────────────────────
 		  const items = (list && list.items) || []
+		  const editBox = editDraft ? h('div', { style: S.card, key: 'edit-memory' }, [
+		    h('div', { style: S.title, key: 'title' }, '编辑记忆'),
+		    h('label', { key: 'text-label', style: { display: 'block', fontSize: 12, marginTop: 8 } }, '正文'),
+		    h('textarea', { key: 'text', value: editDraft.text, rows: 3, disabled: busy2,
+		      style: Object.assign({}, S.input, { width: '100%', minHeight: 72, boxSizing: 'border-box', fontFamily: 'inherit', color: 'inherit', resize: 'vertical' }),
+		      onChange: (e) => updateDraft('text', e.target.value) }),
+		    h('div', { style: S.row, key: 'meta1' }, [
+		      h('label', { key: 'tags-label', style: { fontSize: 12 } }, '标签'),
+		      h('input', { key: 'tags', style: Object.assign({}, S.input, { width: 240 }), value: editDraft.tags, disabled: busy2, placeholder: '逗号分隔', onChange: (e) => updateDraft('tags', e.target.value) }),
+		      h('label', { key: 'scope-label', style: { fontSize: 12 } }, '会话'),
+		      h('input', { key: 'scope', style: Object.assign({}, S.input, { width: 190 }), value: editDraft.scope, disabled: busy2, onChange: (e) => updateDraft('scope', e.target.value) }),
+		      h('label', { key: 'importance-label', style: { fontSize: 12 } }, '重要性'),
+		      h('input', { key: 'importance', type: 'number', min: 0, max: 1, step: 0.05, style: S.input, value: editDraft.importance, disabled: busy2, onChange: (e) => updateDraft('importance', e.target.value) }),
+		    ]),
+		    h('div', { style: S.row, key: 'meta2' }, [
+		      h('label', { key: 'type-label', style: { fontSize: 12 } }, '类型'),
+		      h('select', { key: 'type', style: Object.assign({}, S.input, { width: 150 }), value: editDraft.memoryType, disabled: busy2, onChange: (e) => updateDraft('memoryType', e.target.value) }, [
+		        ...[['fact', '事实'], ['preference', '偏好'], ['event', '经历'], ['emotion', '情绪'], ['plan', '计划'], ['commitment', '承诺']].map(([v, label]) => h('option', { key: v, value: v }, label)),
+		      ]),
+		      ['plan', 'commitment'].includes(editDraft.memoryType) ? h('span', { key: 'plan-fields', style: { display: 'contents' } }, [
+		        h('label', { key: 'state-label', style: { fontSize: 12 } }, '状态'),
+		        h('select', { key: 'state', style: Object.assign({}, S.input, { width: 150 }), value: editDraft.state, disabled: busy2, onChange: (e) => updateDraft('state', e.target.value) }, [
+		          ...[['active', '进行中'], ['completed', '已完成'], ['cancelled', '已取消'], ['superseded', '已替代'], ['expired', '已过期'], ['stale', '待确认']].map(([v, label]) => h('option', { key: v, value: v }, label)),
+		        ]),
+		        h('label', { key: 'due-label', style: { fontSize: 12 } }, '截止时间'),
+		        h('input', { key: 'due', type: 'datetime-local', style: S.input, value: editDraft.dueAt, disabled: busy2, onChange: (e) => updateDraft('dueAt', e.target.value) }),
+		      ]) : null,
+		      h('label', { key: 'related-label', style: { fontSize: 12 } }, '关联 ID'),
+		      h('input', { key: 'related', style: Object.assign({}, S.input, { width: 220 }), value: editDraft.relatedIds, disabled: busy2 || editDraft.scope !== editDraft.originalScope, placeholder: '逗号分隔', onChange: (e) => updateDraft('relatedIds', e.target.value) }),
+		    ]),
+		    h('label', { key: 'entities-label', style: { display: 'block', fontSize: 12, marginTop: 8 } }, '关联人物（每行一个；可写 QQ:名字）'),
+		    h('textarea', { key: 'entities', value: editDraft.entities, rows: 2, disabled: busy2,
+		      style: Object.assign({}, S.input, { width: '100%', minHeight: 48, boxSizing: 'border-box', fontFamily: 'inherit', color: 'inherit', resize: 'vertical' }),
+		      onChange: (e) => updateDraft('entities', e.target.value) }),
+		    h('div', { style: S.row, key: 'actions' }, [
+		      h('button', { key: 'save', style: S.btn, disabled: busy2 || !editDraft.text.trim() || !editDraft.importance.trim(), onClick: saveDraft }, '保存'),
+		      h('button', { key: 'cancel', style: S.btn, disabled: busy2, onClick: () => setEditDraft(null) }, '取消'),
+		      h('span', { key: 'id', style: { fontSize: 11, opacity: .5 } }, editDraft.id),
+		    ]),
+		  ]) : null
 		  const scopes = (st.scopes || []).map((s) => s.scope)
 		  const lib = h('div', { style: S.card, key: 'lib' }, [
 		    h('div', { style: S.title, key: 't' }, `记忆库${list ? `（${list.total ?? items.length ?? 0} 条${list.filtered ? `，筛出 ${items.length}` : ''}）` : ''}`),
@@ -1489,6 +1561,7 @@ window.__ModuleLoader__.load({
 		        h('div', { key: 'b', style: { marginTop: 2 } }, String(m.text || '')),
 		        h('div', { key: 'c', style: S.row }, [
 		          h('button', { key: 'd', style: S.btn, disabled: busy2, onClick: () => act('查看', { op: 'get', id: m.id }, (r) => setDetail(r.item || r)) }, '为什么会被想起来'),
+		          h('button', { key: 'edit', style: S.btn, disabled: busy2, onClick: () => openEditor(m) }, '编辑'),
 		          Number(m.forgottenAt) > 0
 		            ? h('button', { key: 'r', style: S.btn, disabled: busy2, onClick: () => act('恢复', { op: 'restore', id: m.id }, loadList) }, '恢复')
 		            : h('button', { key: 'f', style: S.btn, disabled: busy2, onClick: () => act('忘掉', { op: 'forget', id: m.id }, loadList) }, '忘掉'),
@@ -1542,7 +1615,7 @@ window.__ModuleLoader__.load({
 		        : `失败：${previewOut.code || ''} ${previewOut.reason || ''}`) : null,
 		  ])
 
-		  return h('div', {}, [top, cfgOpen ? cfgBlock : null, detailBox, lib, previewBox])
+		  return h('div', {}, [top, cfgOpen ? cfgBlock : null, editBox, detailBox, lib, previewBox])
 		}
 
 

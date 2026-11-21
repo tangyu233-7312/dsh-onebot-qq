@@ -79,6 +79,28 @@ test('mem：status / list / get / forget / restore / boost / export / import 全
   assert.equal(lm.store.size(), 2)
 })
 
+test('mem.edit：控制台能改正文、标签和类型字段，并拒绝越界作用域', async (t) => {
+  const { api, lm } = await boot(t)
+  const scope = 'private:' + ADMIN_QQ
+  const add = lm.store.add({ scope, text: '旧内容', importance: 0.5, tags: ['旧'] })
+  const edited = await api.handle('mem', {
+    op: 'edit', id: add.id, text: '新内容', tags: '游戏, Godot', importance: 0.8,
+    memoryType: 'plan', state: 'active', dueAt: Date.now() + 3600000,
+    entities: String(ADMIN_QQ) + ': 主人',
+  })
+  assert.equal(edited.ok, true, String(edited.error || ''))
+  assert.equal(edited.item.text, '新内容')
+  assert.deepEqual(edited.item.tags, ['游戏', 'Godot'])
+  assert.equal(edited.item.memoryType, 'plan')
+  assert.deepEqual(edited.item.entities, [{ qq: String(ADMIN_QQ), name: '主人' }])
+
+  const bad = await api.handle('mem', { op: 'edit', id: add.id, scope: 'group:99999' })
+  assert.equal(bad.ok, false)
+  assert.match(String(bad.error || ''), /不在长期记忆存储范围/)
+  const sameScope = await api.handle('mem', { op: 'edit', id: add.id, scope })
+  assert.equal(sameScope.ok, true)
+})
+
 test('mem：purge 先备份；organize 要 confirm；没配接口时 organize 如实失败', async (t) => {
   const { api, lm } = await boot(t)
   const scope = `private:${ADMIN_QQ}`

@@ -24,6 +24,8 @@ const SNAPSHOT = 'memories.json'
 const REVISIONS = '.revisions'
 /** 快照最多保留多少份（每次 purge / import 前备份）。 */
 const KEEP_REVISIONS = 10
+const MEMORY_TYPES = new Set(['commitment', 'plan', 'preference', 'event', 'emotion', 'fact'])
+const MEMORY_STATES = new Set(['active', 'completed', 'cancelled', 'superseded', 'expired', 'stale'])
 
 const rid = () => Math.random().toString(36).slice(2, 6)
 
@@ -106,6 +108,10 @@ export function createStore({ dir, log = console, maxEventsBeforeCompact = 5000 
       const v = Number(ev.importance)
       if (Number.isFinite(v)) row.memory.importance = Math.max(0, Math.min(1, v))
       if (Array.isArray(ev.tags) && ev.tags.length) row.memory.tags = ev.tags.slice(0, 12).map(String)
+    } else if (ev.op === 'edit') {
+      if (ev.changes && typeof ev.changes === 'object' && !Array.isArray(ev.changes)) Object.assign(row.memory, ev.changes)
+      for (const key of Array.isArray(ev.unset) ? ev.unset : []) delete row.memory[String(key)]
+      row.memory.updatedAt = at
     } else if (ev.op === 'state') {
       const states = ['active', 'completed', 'cancelled', 'superseded', 'expired', 'stale']
       if (states.includes(String(ev.state || ''))) row.memory.state = String(ev.state)
@@ -394,6 +400,117 @@ export function createStore({ dir, log = console, maxEventsBeforeCompact = 5000 
       if (!Number.isFinite(v)) return false
       const ev = { op: 'boost', id: String(id), importance: v, at: Date.now() }
       append(ev); applyEvent(ev)
+      return true
+    },
+
+    /** 完整编辑可维护字段；scope 变更只允许调用方再做作用域策略校验。 */
+    edit(id, patch) {
+      const row = view.get(String(id))
+      if (!row) return false
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('编辑内容必须是对象')
+      const allowed = new Set(['text', 'tags', 'importance', 'memoryType', 'state', 'dueAt', 'relatedIds', 'entities', 'scope'])
+      const unknown = Object.keys(patch).filter((key) => !allowed.has(key))
+      if (unknown.length) throw new Error('不能编辑字段：' + unknown.join(', '))
+
+      const changes = {}
+      const unset = new Set()
+      const old = row.memory
+      const nextScope = Object.prototype.hasOwnProperty.call(patch, 'scope') ? String(patch.scope || '').trim() : String(old.scope || '')
+      if (!/^(private|group):\d{1,12}$/.test(nextScope)) throw new Error('会话必须是 private:QQ 或 group:群号')
+      if (nextScope !== String(old.scope || '')) {
+        changes.scope = nextScope
+        changes.key = nextScope
+        changes.kind = nextScope.startsWith('group:') ? 'group' : 'private'
+        changes.relatedIds = []
+      }
+
+      if (Object.prototype.hasOwnProperty.call(patch, 'text')) {
+        const text = String(patch.text || '').replace(/\s+/g, ' ').trim()
+        if (!text) throw new Error('记忆正文不能为空')
+        if (text.length > 2000) throw new Error('记忆正文不能超过 2000 字')
+        changes.text = text
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'tags')) {
+        if (!Array.isArray(patch.tags)) throw new Error('标签必须是数组')
+        if (patch.tags.length > 12) throw new Error('标签最多 12 个')
+        const tags = [...new Set(patch.tags.map((tag) => String(tag || '').trim()).filter(Boolean))]
+        if (tags.some((tag) => tag.length > 32)) throw new Error('单个标签不能超过 32 字')
+        changes.tags = tags
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'entities')) {
+        if (!Array.isArray(patch.entities)) throw new Error('关联人物必须是数组')
+        if (patch.entities.length > 8) throw new Error('关联人物最多 8 个')
+        changes.entities = patch.entities.map((entity) => {
+          const row = typeof entity === 'object' && entity ? entity : { name: entity }
+          const qq = String(row.qq || '').trim()
+          const name = String(row.name || '').trim()
+          if (qq && !/^\d{4,12}$/.test(qq)) throw new Error('关联人物 QQ 必须是 4~12 位数字')
+          if (!qq && !name) throw new Error('关联人物必须填写 QQ 或名字')
+          if (name.length > 64) throw new Error('关联人物名字不能超过 64 字')
+          return { qq, name }
+        })
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'importance')) {
+        const importance = Number(patch.importance)
+        if (!Number.isFinite(importance) || importance < 0 || importance > 1) throw new Error('重要性要在 0~1 之间')
+        changes.importance = importance
+      }
+
+      const nextType = Object.prototype.hasOwnProperty.call(patch, 'memoryType')
+        ? String(patch.memoryType || '') : String(old.memoryType || 'fact')
+      if (Object.prototype.hasOwnProperty.call(patch, 'memoryType')) {
+        if (!MEMORY_TYPES.has(nextType)) throw new Error('记忆类型不合法')
+        changes.memoryType = nextType
+        if (['plan', 'commitment'].includes(nextType) && !['plan', 'commitment'].includes(String(old.memoryType || ''))) {
+          changes.state = 'active'
+        }
+        if (!['plan', 'commitment'].includes(nextType)) {
+          unset.add('state')
+          unset.add('dueAt')
+          unset.add('stateUpdatedAt')
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'state')) {
+        if (!['plan', 'commitment'].includes(nextType)) throw new Error('只有计划或承诺可以设置状态')
+        const state = String(patch.state || '')
+        if (!MEMORY_STATES.has(state)) throw new Error('计划状态不合法')
+        changes.state = state
+        changes.stateUpdatedAt = Date.now()
+        unset.delete('state')
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'dueAt')) {
+        if (!['plan', 'commitment'].includes(nextType)) throw new Error('只有计划或承诺可以设置截止日期')
+        const rawDue = patch.dueAt
+        if (rawDue == null || rawDue === '') {
+          unset.add('dueAt')
+        } else {
+          const numeric = Number(rawDue)
+          const dueAt = Number.isFinite(numeric) && numeric > 0 ? numeric : Date.parse(String(rawDue))
+          if (!Number.isFinite(dueAt) || dueAt <= 0) throw new Error('截止日期无效')
+          changes.dueAt = dueAt
+          unset.delete('dueAt')
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'relatedIds')) {
+        if (!Array.isArray(patch.relatedIds)) throw new Error('关联 ID 必须是数组')
+        if (patch.relatedIds.length > 12) throw new Error('关联记忆最多 12 条')
+        const relatedIds = [...new Set(patch.relatedIds.map((value) => String(value || '').trim()).filter(Boolean))]
+        for (const relatedId of relatedIds) {
+          const target = view.get(relatedId)
+          if (!target || relatedId === String(id)) throw new Error('关联记忆不存在或不能关联自身：' + relatedId)
+          if (String(target.memory.scope || '') !== nextScope) throw new Error('关联记忆必须属于同一会话：' + relatedId)
+        }
+        changes.relatedIds = relatedIds
+      }
+
+      if (nextScope !== String(old.scope || '') && !Object.prototype.hasOwnProperty.call(patch, 'relatedIds')) changes.relatedIds = []
+      const unsetList = [...unset].filter((key) => !Object.prototype.hasOwnProperty.call(changes, key) && Object.prototype.hasOwnProperty.call(old, key))
+      const changed = Object.entries(changes).some(([key, value]) => JSON.stringify(old[key]) !== JSON.stringify(value)) || unsetList.length > 0
+      if (!changed) return true
+
+      const ev = { op: 'edit', id: String(id), at: Date.now(), changes, ...(unsetList.length ? { unset: unsetList } : {}) }
+      append(ev)
+      applyEvent(ev)
       return true
     },
 
