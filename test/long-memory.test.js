@@ -201,6 +201,17 @@ test('整理：提示词占位符替换，正文里的 $& 不被当组引用', (
   assert.match(DEFAULT_ORGANIZE_PROMPT, /\{transcript\}/)
 })
 
+test('整理：过截止日期的计划仍提供给状态更新，但标为待确认', () => {
+  const prompt = buildPrompt({
+    scope: 'private:1',
+    rows: [],
+    promptTemplate: '{activePlans}',
+    activePlans: [{ id: 'p1', state: 'active', dueAt: Date.now() - DAY, text: '完成 Godot 项目' }],
+  })
+  assert.match(prompt, /p1: \[stale，已过截止时间\]/)
+  assert.match(prompt, /完成 Godot 项目/)
+})
+
 test('整理：归一化拒绝空正文 / 抄回来的长文，接受正常条目', () => {
   assert.equal(normalizeMemory({ text: '' }), null)
   assert.equal(normalizeMemory({ text: 'x'.repeat(600) }, { maxChars: 240 }), null)

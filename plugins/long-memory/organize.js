@@ -114,7 +114,12 @@ export function buildPrompt({ scope, scopeLabel = '', rows = [], promptTemplate 
   const label = scopeLabel || String(scope || '').replace(/^group:/, '群 ').replace(/^private:/, '私聊 ')
   // 用函数替换：聊天正文里出现 `$&` / `$1` 之类不会被 String.replace 当成组引用改写
   const planText = (Array.isArray(activePlans) ? activePlans : []).slice(-20)
-    .map((m) => `${m.id}: ${String(m.text || '').replace(/\s+/g, ' ').trim()}`)
+    .map((m) => {
+      const dueAt = Number(m.dueAt)
+      const overdue = Number.isFinite(dueAt) && dueAt > 0 && dueAt <= Date.now()
+      const state = overdue ? 'stale，已过截止时间' : String(m.state || 'active')
+      return String(m.id || '') + ': [' + state + '] ' + String(m.text || '').replace(/\s+/g, ' ').trim()
+    })
     .join('\n') || '（无待更新计划）'
   return tpl
     .replace(/\{maxMemories\}/g, () => String(maxMemories))
@@ -258,12 +263,9 @@ export function createOrganizer({ store, cfgOf, archiveDirOf, log = () => {}, in
     if (!transcript.trim()) return { ok: true, scope, added: 0, reason: '新消息里没有可读文本' }
     // 水位候选：本轮**实际喂给模型**的最新一条消息（不是现在的时间 —— 整理期间新来的消息必须留到下一轮）
     const newestTs = fresh.reduce((a, r2) => Math.max(a, Number(r2.ts) || 0), 0)
-    const activePlans = store.all().filter((m) => {
-      if (String(m.scope || '') !== String(scope) || !['plan', 'commitment'].includes(String(m.memoryType || ''))) return false
-      if (['completed', 'cancelled', 'superseded', 'expired', 'stale'].includes(String(m.state || ''))) return false
-      const dueAt = Number(m.dueAt)
-      return !(Number.isFinite(dueAt) && dueAt > 0 && dueAt <= Date.now())
-    })
+    const activePlans = store.all().filter((m) => String(m.scope || '') === String(scope)
+      && ['plan', 'commitment'].includes(String(m.memoryType || ''))
+      && !['completed', 'cancelled', 'superseded', 'expired'].includes(String(m.state || '')))
     const prompt = buildPrompt({
       scope,
       rows: fresh,
