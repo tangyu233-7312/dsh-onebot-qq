@@ -17,7 +17,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { bootKernel, emitRaw, tapInbound, waitFor, ADMIN_QQ, MEMBER_QQ, GROUP_ID, privateEvent, groupAtEvent } from './helpers.mjs'
+import { bootKernel, emitRaw, tapInbound, waitFor, ADMIN_QQ, GROUP_ID, privateEvent, groupAtEvent } from './helpers.mjs'
 // 工具执行时「当前是哪条 QQ 线」靠内核的 AsyncLocalStorage；内核不对外导出它，
 // 测试里只能直接拿模块（这只是测试的手段，插件本身**不许**这么干）。
 import { turnStore } from '../kernel/state-pipeline.js'
@@ -26,7 +26,7 @@ import {
   scoreMemory, rankMemories, formatInjection, agoText,
 } from '../plugins/long-memory/decay.js'
 import { createStore } from '../plugins/long-memory/store.js'
-import { createOrganizer, buildPrompt, toTranscript, normalizeMemory, archiveFileOf, DEFAULT_ORGANIZE_PROMPT } from '../plugins/long-memory/organize.js'
+import { createOrganizer, buildPrompt, normalizeMemory, archiveFileOf, DEFAULT_ORGANIZE_PROMPT } from '../plugins/long-memory/organize.js'
 import { parseMemoryJson, completionsUrl, normalizeLlmConfig, extractText } from '../plugins/long-memory/relay.js'
 
 const DAY = 86400 * 1000

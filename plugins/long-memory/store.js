@@ -16,7 +16,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { stripBom, atomicWriteFileSync, writeJsonFileSync, backupFileSync } from '../../platform/atomic.js'
+import { stripBom, writeJsonFileSync, backupFileSync } from '../../platform/atomic.js'
 import { ensureDir } from '../../platform/paths.js'
 
 const EVENT_FILE = 'memories.jsonl'

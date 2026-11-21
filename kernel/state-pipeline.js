@@ -11,12 +11,8 @@ import {
   escapeCq, extractAtMarkers, sanitizeSensitive, toWellFormedText, splitLongText, clipChars,
 } from './format.js'
 
-/** 本轮 TurnContext 的 AsyncLocalStorage：工具执行时 `currentTurn()` 靠它取（契约 bot.currentTurn） */
+/** 工具执行时的本轮上下文；bot.currentTurn 由内核按DSH会话身份解析。 */
 export const turnStore = new AsyncLocalStorage()
-
-export function currentTurn() {
-  return turnStore.getStore() ?? null
-}
 
 // ============================================================
 // 会话状态

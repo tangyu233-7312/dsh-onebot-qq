@@ -14,7 +14,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { createAdminEndpoints } from '../admin/endpoints.js'
-import { defaultConfig } from '../kernel/config-store.js'
 import { bootKernel, createMockCtx, emitRaw, waitFor, groupAtEvent } from './helpers.mjs'
 
 const quiet = () => ({ info() {}, warn() {}, error() {}, debug() {} })

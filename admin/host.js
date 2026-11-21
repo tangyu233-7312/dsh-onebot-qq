@@ -11,7 +11,7 @@
  *   · 绝不在这里直读 `ctx.qqBotKernel` —— 真 Cordis Proxy 会抛
  *     `cannot get property "..." without inject`；内核由 index.js 显式传进来。
  *
- * 另导出 `handleAdminRpc(endpoint,payload)` 供内核/compat-server 直调（无需浏览器）。
+ * 返回绑定到本实例的 handle，内核与兼容网关共用该入口。
  */
 import os from 'node:os'
 import { createAdminEndpoints, ENDPOINTS } from './endpoints.js'
@@ -19,9 +19,6 @@ import { loadOpsProvider } from '../ops/provider.js'
 
 /** 浏览器 → host 的 RPC 通道名（前端 client.js 的 CHANNEL 必须一致）。 */
 export const CHANNEL = '/qq-console'
-
-/** 最近一次创建的控制面（给 handleAdminRpc 直调用；多实例时以最后一个为准）。 */
-let active = null
 
 function warn(log, message) {
   try { log?.warn?.(`[qq-console] ${message}`) } catch { /* ignore */ }
@@ -231,7 +228,6 @@ export async function createAdminHost({ ctx, kernel, configPath = '', dataDir = 
     }
     try { childFiber?.dispose?.() } catch { /* 父 fiber 先销毁时这里可能已失效 */ }
     childFiber = null
-    if (active && active.api === api) active = null
   }
 
   // 清理挂到宿主 effect 上：插件卸载时自动 dispose（连接服务自己也有 effect，这里幂等兜底）
@@ -243,7 +239,6 @@ export async function createAdminHost({ ctx, kernel, configPath = '', dataDir = 
     }
   }
 
-  active = { api, ops: opsProvider }
   return {
     handle: api.handle,
     handleRpc,
@@ -253,18 +248,5 @@ export async function createAdminHost({ ctx, kernel, configPath = '', dataDir = 
     channel: CHANNEL,
     /** 注册结果可能异步到齐（ctx.inject 子 fiber 等 connection/webServer），用 getter 读实时值。 */
     get mode() { return mode },
-  }
-}
-
-/**
- * 内核/compat-server 直调入口（不经过浏览器 RPC）：返回端点 value（业务失败形如 `{ok:false,error}`）。
- * 需先调用过 `createAdminHost()`；未初始化时返回明确的错误对象，不抛。
- */
-export async function handleAdminRpc(endpoint, payload = {}) {
-  if (!active) return { ok: false, error: '控制台未初始化（createAdminHost 尚未调用）' }
-  try {
-    return await active.api.handle(endpoint, payload)
-  } catch (e) {
-    return { ok: false, error: String(e?.message || e) }
   }
 }

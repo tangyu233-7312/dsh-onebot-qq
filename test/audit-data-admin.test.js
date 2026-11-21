@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { collectSchema, readValue, writeValue, collectModules } from '../admin/schema.js'
+import { readValue, writeValue, collectModules } from '../admin/schema.js'
 import { runDiagnostics, maskQq, sanitizeUrl, formatTime } from '../admin/diagnostics.js'
 import { createConfigStore } from '../admin/store.js'
 import { createAdminEndpoints } from '../admin/endpoints.js'

@@ -23,7 +23,6 @@
  * 平台边界：会话映射/标题状态的落盘走 `platform/atomic.js`（剥 BOM + 原子写），
  * 工作区路径比较走 `platform/paths.js` 的 `normForCompare()`（Windows 忽略大小写）。
  */
-import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 

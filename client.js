@@ -318,8 +318,6 @@ window.__ModuleLoader__.load({
 			// 具名折叠块（c.section）：同一页里再分小节，默认收起 —— 如生图页的「备用接口 1/2」
 			const { useState } = react
 			const [openSec, setOpenSec] = useState({})
-			// 是否把某个 section 单独列到普通项之后（保持后端声明顺序）
-			const secOrder = []
 			const showSection = (name) => {
 				const open = !!openSec[name]
 				return h('div', { key: 'sec:' + name }, [
@@ -378,17 +376,6 @@ window.__ModuleLoader__.load({
 			const { useState } = react
 			const [promptBox, setPromptBox] = useState(null)
 			const [pv, setPv] = useState({ busy: false, result: null, error: '', values: {} })
-			// 打开弹窗：字段初值 → ① valueFrom（取 schema 里某个控件的当前值）② 显式 value ③ 空
-			const openPrompt = (a) => {
-				const fields = (a.prompt && a.prompt.fields) || []
-				const values = {}
-				for (const f of fields) {
-					const ctrl = f.valueFrom ? (props.schema.controls || []).find((c) => c.key === f.valueFrom) : null
-					values[f.name] = String(ctrl && ctrl.value != null ? ctrl.value : (f.value ?? ''))
-				}
-				setPv({ busy: false, result: null, error: '', values })
-				setPromptBox(a)
-			}
 			const submitPrompt = async (a) => {
 				const fields = (a.prompt && a.prompt.fields) || []
 				const payload = { id: a.id }
@@ -1449,7 +1436,6 @@ window.__ModuleLoader__.load({
 		    } catch (e) { say(`${label} ✗ ${e.message}`) } finally { setBusy2(false) }
 		  }
 
-		  const kb = (n) => (n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB')
 		  const when = (ts) => {
 		    if (!ts) return '—'
 		    const d = Math.floor((Date.now() - ts) / 86400000)

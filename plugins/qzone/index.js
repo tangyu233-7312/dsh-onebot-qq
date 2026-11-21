@@ -386,21 +386,15 @@ export default {
     // ── 工具 ②：今天不写（绝不发任何东西）──────────────────────
     bot.registerTool('skip_qzone', {
       description: '今天不写说说。**这个工具不会往空间发任何内容**，只记下「我考虑过了，今天没有想写的」。'
-        + '在群/私聊里调用只表示这段对话不用写，不影响晚上的回顾；只有在空间工作区里调才算「今天不写」。',
+        + '从允许的群聊、私聊或空间工作区调用，都会记录当天全局跳过，晚间回顾据此不再发布。',
       parameters: {
-        target: { type: 'string', description: '留空 = 当前对话；desk = 空间工作区；也接受 group:<群号> / private:<QQ号>' },
+        target: { type: 'string', description: '兼容旧调用的目标字段；跳过决定对当天全局生效' },
         reason: { type: 'string', description: '为什么不想写（只记日志，不会发到空间）' },
       },
       async execute(args = {}) {
-        // 2026-10-30：target 可选 —— 它现在可以在私聊里直接说「今天不写」。
-        // 以前必须传 desk 才真的生效，等于「家里说的不算」，正是要解决的割裂。
+        // 从任意允许的会话决定当天不写，结果按日期全局生效。
         const a = args || {}
-        const target = String(a.target || '').trim() || (() => {
-          const turn = (() => { try { return bot.currentTurn?.() || null } catch { return null } })()
-          return String(turn?.chatKey || '') || DESK_CHAT_KEY
-        })()
         const why = String(a.reason ?? '').trim() || '(没说原因)'
-        const inDesk = target === 'desk' || target === DESK_CHAT_KEY
         withState((all) => {
           const d = dayOf(all, localDateOf(Date.now()))
           d.skipped = true

@@ -18,11 +18,10 @@
  *
  * 它不依赖：dcp、向量库、宿主 llm 服务、group-memory 的任何共享槽或工具名。
  */
-import fs from 'node:fs'
 import path from 'node:path'
 import { resolveDataPath } from '../../platform/paths.js'
 import { createStore } from './store.js'
-import { createOrganizer, DEFAULT_ORGANIZE_PROMPT, readArchiveLines, archiveFileOf } from './organize.js'
+import { createOrganizer, DEFAULT_ORGANIZE_PROMPT } from './organize.js'
 import { rankMemories, formatInjection, effectiveImportance, isForgettable, scoreMemory, agoText } from './decay.js'
 import { chatComplete, normalizeLlmConfig } from './relay.js'
 
@@ -445,7 +444,6 @@ export default {
         },
       })
     }
-    const currentScope = () => String(bot.currentTurn?.()?.chatKey || '')
     // 默认开：只有显式关掉（false）才不注册。热改开关要重启插件才生效 —— 控制台提示里写明。
     if (cfgOf().toolRecall !== false) {
       bot.registerTool('recall_memory', {

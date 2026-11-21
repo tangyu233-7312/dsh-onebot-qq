@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import http from 'node:http'
-import { bootKernel, emitRaw, groupAtEvent, privateEvent, waitFor, GROUP_ID } from './helpers.mjs'
+import { bootKernel, emitRaw, groupAtEvent, privateEvent, GROUP_ID } from './helpers.mjs'
 
 const STILL = Buffer.from('47494638396101000100800000000000ffffff21f904000a0000002c00000000010001000002024401003b', 'hex')
 const GIF = Buffer.concat([STILL.subarray(0, -1), STILL.subarray(19)])

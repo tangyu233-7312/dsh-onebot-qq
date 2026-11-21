@@ -54,6 +54,8 @@ dsh plugin --profile web add github:tangyu233-7312/dsh-onebot-qq#custom
 | **语音 / 唱歌** | `ttsEnabled`、`singEnabled` 分别默认关闭；语音插件本身正常加载 | 可接外部 PC 算力网关，或在机器人所在机器准备 TTS、RVC、音色和转码环境 |
 | **曲库收集** | `autoLibrary` 默认开启，与语音、唱歌开关独立 | 可写的曲库目录；不需要自动收音频时关闭此项 |
 | **看视频 / B 站链接与 BV 号** | 视频理解功能默认开启；定时自己找视频看默认关闭 | 解析侧车、ffmpeg/ffprobe、按需安装 yt-dlp，以及能处理图片的模型；当前链接平台以 B 站为主，抖音支持已下线 |
+| **GIF 与群历史看图** | GIF识别、普通群聊及主动接话历史附图默认开启，均可调整 | 支持图片的聊天模型；GIF抽帧复用视频侧车，普通静图不抽帧；见[用法](docs/使用说明书.md#513-gif与历史图片) |
+| **图片缓存 / 设备时间** | 群与私聊图片保存到独立磁盘目录，按每日计划清理；设备时间工具默认开启 | 可写数据目录；设备系统时钟，不需联网校时 |
 | **链接媒体搬运** | `link-parser.enabled` 默认关闭 | 同一套解析侧车，将下载的媒体发送到 QQ |
 | **侧车自动启动** | `sidecar-control.autoStart` 默认关闭 | 配好侧车目录后，可用控制台或主人命令 `/sidecar start` 手动启动，也可开启自动拉起 |
 | **生图 / 图生图** | 配置好至少一个生图来源才可用 | 本机或远端 ComfyUI，或兼容的生图 API；可配置备用来源 |
@@ -72,7 +74,8 @@ dsh plugin --profile web add github:tangyu233-7312/dsh-onebot-qq#custom
 | 唤醒与权限 | `gate-wake`、`commands`、`private-friend-gate` | @、引用、唤醒词、基础命令、好友准入 |
 | 发言节奏 | `anti-repeat`、`tone-guard` | 重复消息冷却、按语境处理辱骂与垃圾消息 |
 | 人设与表达 | `persona-voice`、`persona-version` | 固定句池、回复拆条、人设读取与版本管理 |
-| 媒体与图片 | `file-transfer`、`file-read`、`imagegen`、`stickers` | 收取媒体、读取收件箱文本/ZIP、发送图片、生图/改图、头像和表情库 |
+| 媒体与图片 | `file-transfer`、`file-read`、`gif-read`、`media-context`、`imagegen`、`stickers` | 收件箱、GIF抽帧、带来源的历史图片、磁盘缓存、生图/改图、头像和表情库 |
+| 设备时间 | `device-time` | 只读当前设备系统时间，供日期、问候和时间间隔判断 |
 | 视频理解 | `video-read`、`video-link-read`、`video-wander` | 看视频附件、B 站链接/BV 号、按需或定时观看 |
 | 侧车与解析 | `sidecar-control`、`link-parser` | 侧车状态与启动管理、下载链接媒体 |
 | 语音与唱歌 | `voice` | 语音输出、曲库管理、RVC 翻唱、本机或 PC 网关计算 |
@@ -100,12 +103,14 @@ B 站视频可同时读取画面与可用字幕；字幕开关、Cookie 获取�
 ## 开发与发布检查
 
 ~~~sh
-npm run verify
+# 根据实际改动选择相关测试；此处仅为示例
+node --test test/history-images.test.js
+npm run check
 node scripts/check-no-secrets.mjs --tracked
 node scripts/check-doc-links.mjs
 ~~~
 
-`verify` 包含测试、语法、发布文件脱敏和打包检查。`--tracked` 补查所有 Git 跟踪文件；新增文件先精确暂存，待推送的历史提交另行审查。检查范围和多处安装核验流程见 [维护与交接](docs/维护与交接.md)。
+默认先列测试计划，只跑改动相关套件；跨多个核心模块且相关覆盖不足，或用户明确要求时，再运行 `npm run verify` 全量检查。`check` 检查语法、脱敏和发布包；`--tracked` 补查所有Git跟踪文件。新增文件先精确暂存，待推送的历史提交另行审查。多处安装核验流程见[维护与交接](docs/维护与交接.md)。
 
 实例配置、真实 QQ/群号、密钥、聊天数据、音色模型和本地部署备份不应提交。文档使用占位值，运行数据保留在实例数据目录。
 

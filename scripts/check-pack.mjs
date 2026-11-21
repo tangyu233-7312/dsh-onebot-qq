@@ -12,7 +12,6 @@
  * 注意：`--ignore-scripts` 是必须的 —— 否则 `prepack` 会再次调用本脚本造成递归。
  * 退出码：0 = 清单合规；1 = 违规或 npm pack 失败。
  */
-import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'

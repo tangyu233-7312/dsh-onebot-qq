@@ -20,7 +20,7 @@ import {
   toWellFormedText,
   escapeCq,
 } from '../kernel/format.js'
-import { ChatState, Pipeline, createDeliver, currentTurn } from '../kernel/state-pipeline.js'
+import { ChatState, Pipeline, createDeliver } from '../kernel/state-pipeline.js'
 import { createEvent, SENSITIVE_KINDS } from '../contracts.js'
 import { startCompatServer } from '../kernel/compat-server.js'
 import { cqImage } from '../platform/cq-file.js'
@@ -289,7 +289,6 @@ test('管线：passive-tap / intercept 抛错 = fail-open，后续照跑；termi
   await pipeline.run(ev, async (e) => {
     terminaled = true
     assert.ok(e.turnCtx, 'terminal 前已挂 TurnContext')
-    assert.equal(currentTurn(), null, 'terminal 不把输入上下文泄漏进长期 agent 循环')
   })
   assert.equal(woken, true)
   assert.equal(terminaled, true)

@@ -28,12 +28,12 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { loadConfig, resolveRuntimePaths, validateConfig } from '../kernel/config-store.js'
 import { atomicWriteFileSync } from '../platform/atomic.js'
-import { ensureDir, isInsidePath, resolveDataPath } from '../platform/paths.js'
+import { resolveDataPath } from '../platform/paths.js'
 import { activePersona, listPersonas, personaSources, switchPersona } from '../platform/persona-ref.js'
 import { createConfigStore } from './store.js'
 import { runDiagnostics } from './diagnostics.js'
 import {
-  ACTIONS, GROUP_PATHS, SECRET_MASK, allControls, collectModules, collectSchema, findControl,
+  ACTIONS, GROUP_PATHS, SECRET_MASK, collectModules, collectSchema, findControl,
   getPath, pluginDefs, readValue, setPath, writeValue,
 } from './schema.js'
 import { hasOps } from '../ops/provider.js'

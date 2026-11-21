@@ -28,7 +28,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { detectImageMediaType, imagePixelSize, pickImageSizeByRatio } from '../../kernel/format.js'
-import { isInsidePath, resolveTmpDir } from '../../platform/paths.js'
+import { isInsidePath } from '../../platform/paths.js'
 import { cqImage } from '../../platform/cq-file.js'
 import { atomicWriteFileSync } from '../../platform/atomic.js'
 import { DEFAULT_OPTIMIZE_PROMPT, refinePrompt } from './prompt-refine.js'
