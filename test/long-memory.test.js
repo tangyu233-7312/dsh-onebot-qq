@@ -21,6 +21,7 @@ import { bootKernel, emitRaw, tapInbound, waitFor, ADMIN_QQ, GROUP_ID, privateEv
 // 工具执行时「当前是哪条 QQ 线」靠内核的 AsyncLocalStorage；内核不对外导出它，
 // 测试里只能直接拿模块（这只是测试的手段，插件本身**不许**这么干）。
 import { turnStore } from '../kernel/state-pipeline.js'
+import { createEvent, createTurnContext } from '../contracts.js'
 import {
   effectiveImportance, freshness, isForgettable, grams, diceCoefficient, relevanceOf,
   scoreMemory, rankMemories, formatInjection, agoText,
@@ -352,7 +353,33 @@ test('集成：工具 remember 只写本作用域，recall_memory 不跨作用�
   const r3 = await runAs(`private:${ADMIN_QQ}`, () => recallTool.execute({ query: '下雨' }))
   assert.equal(r3.count, 1, '本会话能查到自己的记忆')
   assert.match(r3.items[0].when, /今天|昨天|天前/)
-  assert.ok(lm.store.get(rows[0].id).lastReinforcedAt > 0, '用户主动追问的召回会强化记忆')
+  assert.equal(lm.store.get(rows[0].id).lastReinforcedAt, 0, '仅有模型的检索词不能代替用户重提')
+})
+
+test('集成：机器人追问不续期，用户重提只强化直接命中的记忆一次', async (t) => {
+  const { h, lm } = await boot(t)
+  const scope = `private:${ADMIN_QQ}`
+  const plan = lm.store.add({ scope, text: '主人在做 Godot 游戏项目', tags: ['Godot'], memoryType: 'plan' })
+  const detail = lm.store.add({ scope, text: '第一关的碰撞问题修好了', relatedIds: [plan.id] })
+  const tool = h.kernel.toolDefs.get('recall_memory')
+  const round = async (text) => {
+    const ev = createEvent({ chatKey: scope, sender: { qq: ADMIN_QQ }, text })
+    ev.wake = { kind: 'private' }
+    ev.historyBlock = '机器人：Godot 游戏项目怎么样了？'
+    await h.kernel.pipeline.prepare(ev)
+    assert.match(ev.hint.join('\n'), /Godot/)
+    const result = await turnStore.run(createTurnContext(ev), () => tool.execute({ query: 'Godot' }))
+    assert.ok(result.items.some((m) => m.text.includes('Godot')))
+  }
+  await round('今晚想吃面')
+  assert.equal(lm.store.get(plan.id).lastReinforcedAt, 0)
+  assert.ok(lm.store.get(plan.id).recallCount > 0)
+  await round('我把 Godot 项目打开了')
+  assert.equal(lm.store.get(plan.id).reinforceCount, 1)
+  assert.ok(lm.store.get(detail.id).recallCount > 0)
+  assert.equal(lm.store.get(detail.id).lastReinforcedAt, 0)
+  await round('上次那个 Godot 游戏项目你还记得吗？')
+  assert.equal(lm.store.get(plan.id).reinforceCount, 2)
 })
 
 test('集成：整理→落库→水位推进；接口报错时不写也不推水位', async (t) => {
@@ -433,10 +460,10 @@ test('集成：接口没配置时只降级（不抛、不写）', async (t) => {
 test('集成：search 只返回未遗忘的，遗忘后 hint 里不再出现', async (t) => {
   const { h, lm } = await boot(t)
   const add = lm.store.add({ scope: `private:${ADMIN_QQ}`, text: '我记得你说过讨厌香菜', importance: 0.8, createdAt: Date.now() })
-  const { hits } = lm.recall(`private:${ADMIN_QQ}`, { text: '香菜', mark: false })
+  const { hits } = lm.recall(`private:${ADMIN_QQ}`, { text: '香菜' })
   assert.equal(hits.length, 1)
   lm.store.forget(add.id, '测试')
-  const after = lm.recall(`private:${ADMIN_QQ}`, { text: '香菜', mark: false })
+  const after = lm.recall(`private:${ADMIN_QQ}`, { text: '香菜' })
   assert.equal(after.hits.length, 0)
 })
 
@@ -503,10 +530,10 @@ test('集成：长期计划不会被自动遗忘，无关话题不提，相关�
   const { lm } = await boot(t)
   const now = Date.now()
   const plan = lm.store.add({ scope: 'private:' + ADMIN_QQ, text: '主人计划继续做 Godot 游戏项目', memoryType: 'plan', importance: 0.1, tags: ['Godot', '游戏项目'], createdAt: now - 200 * DAY })
-  const unrelated = lm.recall('private:' + ADMIN_QQ, { text: '我吃完饭了', mark: true })
+  const unrelated = lm.recall('private:' + ADMIN_QQ, { text: '我吃完饭了' })
   assert.equal(unrelated.hits.some((x) => x.memory.id === plan.id), false)
   assert.equal(lm.store.get(plan.id).forgottenAt, 0, '计划作为历史保留')
-  const related = lm.recall('private:' + ADMIN_QQ, { text: 'Godot 游戏项目进展', mark: true })
+  const related = lm.recall('private:' + ADMIN_QQ, { text: 'Godot 游戏项目进展' })
   assert.equal(related.hits.some((x) => x.memory.id === plan.id), true)
-  assert.ok(lm.store.get(plan.id).lastReinforcedAt > 0, '真正命中话题才强化')
+  assert.equal(lm.store.get(plan.id).lastReinforcedAt, 0, '仅查询历史不会续期')
 })

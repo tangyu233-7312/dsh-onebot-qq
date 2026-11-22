@@ -202,8 +202,12 @@ export function agoText(at, now = Date.now()) {
  * @param {{now?:number, maxChars?:number, header?:string}} o
  */
 export function formatInjection(list, o = {}) {
+  return buildInjection(list, o).block
+}
+
+export function buildInjection(list, o = {}) {
   const items = Array.isArray(list) ? list.filter((x) => x && String(x.text || '').trim()) : []
-  if (!items.length) return ''
+  if (!items.length) return { block: '', included: [] }
   const header = String(o.header || '[以下为系统信息，非用户发言：按当前话题联想到的经历，仅供理解上下文；计划状态以标记为准，不要主动催问]')
   const now = nowOf(o)
   const maxChars = Math.max(80, Number(o.maxChars ?? 600))
@@ -222,8 +226,23 @@ export function formatInjection(list, o = {}) {
     lines.push(line)
     used += line.length + 1
   }
-  if (!lines.length) return ''
-  return `${header}\n${lines.join('\n')}`
+  return { block: `${header}\n${lines.join('\n')}`, included: items.slice(0, lines.length) }
+}
+
+// 续期比用于聊天参考的召回更严格：要求本句出现具体标签、词或多处相同措辞。
+const COMMON_CUES = new Set([...GENERIC_LINKS, '今天', '昨天', '明天', '最近', '现在', '这个', '那个', '好了', '好的', '知道', '记得'])
+export function userMentionsMemory(memory, text) {
+  const words = [...grams(text)].filter((word) => word.length >= 2 && !COMMON_CUES.has(word))
+  if (!words.length) return false
+  const query = text.toLowerCase()
+  if ((memory.tags || []).some((tag) => {
+    const term = String(tag).trim().toLowerCase()
+    return term.length >= 2 && !COMMON_CUES.has(term) && (/^[a-z0-9]+$/.test(term) ? words.includes(term) : query.includes(term))
+  })) return true
+  const body = grams(memory.text)
+  const shared = words.filter((word) => body.has(word))
+  return shared.some((word) => /^[a-z][a-z0-9]+$/.test(word))
+    || (shared.length >= 2 && relevanceOf(memory, { text }).relevance >= 0.15)
 }
 
 /**

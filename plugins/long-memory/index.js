@@ -22,7 +22,7 @@ import path from 'node:path'
 import { resolveDataPath } from '../../platform/paths.js'
 import { createStore } from './store.js'
 import { createOrganizer, DEFAULT_ORGANIZE_PROMPT } from './organize.js'
-import { rankMemories, formatInjection, effectiveImportance, isForgettable, scoreMemory, agoText } from './decay.js'
+import { rankMemories, buildInjection, userMentionsMemory, effectiveImportance, isForgettable, scoreMemory, agoText } from './decay.js'
 import { chatComplete, normalizeLlmConfig } from './relay.js'
 
 /** 记忆库默认目录（相对数据目录，与其它状态文件同处一地）。 */
@@ -247,7 +247,7 @@ export default {
     graceDays: {
       type: 'int', default: 7, min: 0, max: 90, step: 1, unit: '天', group: '记忆', section: '遗忘',
       label: '宽限天数',
-      hint: '刚记下的头几天不掉清晰度；被想起一次会重新计时。',
+      hint: '刚记下的头几天不掉清晰度。对方在当前消息里重提这件事并被识别时重新计时。',
     },
     halfLifeDays: {
       type: 'int', default: 18, min: 2, max: 365, step: 1, unit: '天', group: '记忆', section: '遗忘',
@@ -346,21 +346,28 @@ export default {
      * 检索：只在本作用域里找（先过滤再打分 —— 隔离靠结构，不靠提示词）。
      * @returns {{hits:Array, block:string}}
      */
-    function recall(chatKey, { text = '', qqList = [], topK = null, mark = true } = {}) {
+    function recall(chatKey, { text = '', qqList = [], topK = null } = {}) {
       const cfg = cfgOf()
-      if (!scopeAllowed(chatKey)) return { hits: [], block: '' }
+      if (!scopeAllowed(chatKey)) return { hits: [], block: '', included: [] }
       const now = Date.now()
       sweepForgotten(now)
       const o = { ...decayOpts(now), scope: chatKey, text, qqList, topK: topK || num(cfg.topK, 5, 1, 20) }
       const hits = rankMemories(store.all(), o)
       const picked = hits.map((h) => h.memory)
-      const block = formatInjection(picked, { now, maxChars: num(cfg.injectMaxChars, 600, 80, 4000) })
-      // 只有真进了提示词的那几条才算“被想起”；无关候选不会续期。
-      if (mark && block) {
-        const included = picked.filter((m) => block.includes(String(m.text).replace(/\s+/g, ' ').trim()))
-        try { store.reinforce(included.map((m) => m.id), now) } catch (e) { log.warn?.(`[long-memory] 记账失败: ${e.message}`) }
+      return { hits, ...buildInjection(picked, { now, maxChars: num(cfg.injectMaxChars, 600, 80, 4000) }) }
+    }
+
+    function recordRecall(memories, userTurn) {
+      const shown = []
+      const reinforce = []
+      for (const m of memories) {
+        if (userTurn?.text && !userTurn.reinforced.has(m.id) && userMentionsMemory(m, userTurn.text)) reinforce.push(m.id)
+        else shown.push(m.id)
       }
-      return { hits, block }
+      try {
+        for (const id of store.reinforce(reinforce)) userTurn.reinforced.add(id)
+        store.markRecalled(shown)
+      } catch (e) { log.warn?.(`[long-memory] 记账失败: ${e.message}`) }
     }
 
     // ── 整理器 ──────────────────────────────────────────────────────────
@@ -392,20 +399,27 @@ export default {
     // ── 每轮注入（核心）─────────────────────────────────────────────────
     bot.on('before-turn', (ev) => {
       try {
-        if (!on() || cfgOf().injectEnabled === false) return
+        if (!on()) return
         if (!ev || !ev.wake) return
         if (ev.wake.kind === 'welcome') return
         const chatKey = String(ev.chatKey || '')
         if (!scopeAllowed(chatKey)) return
         if (ev._scratch && ev._scratch['long-memory:injected']) return
         const cfg = cfgOf()
+        const extras = (ev._scratch.turnExtras ??= {})
+        const userTurn = (extras.memoryRecallTurn ??= {
+          text: ev.wake.kind === 'proactive' ? '' : String(ev.rawText ?? ev.text ?? '').trim(),
+          reinforced: new Set(),
+        })
+        if (cfg.injectEnabled === false) return
         const lines = num(cfg.recallContextLines, 3, 0, 20)
         const hist = String(ev.historyBlock || '')
         const tail = lines > 0 ? hist.split('\n').slice(-lines - 1).join('\n') : ''
         const qqList = [String(ev.sender?.qq || ''), adminQq()].filter(Boolean)
-        const { hits, block } = recall(chatKey, { text: `${ev.text || ''}\n${tail}`, qqList })
+        const { hits, block, included } = recall(chatKey, { text: `${ev.text || ''}\n${tail}`, qqList })
         if (!block) return
         ev.hint.push(block)
+        recordRecall(included, userTurn)
         if (ev._scratch) ev._scratch['long-memory:injected'] = true
         log.debug?.(`[long-memory] 注入 ${chatKey}：${hits.length} 条候选，${block.length} 字`)
       } catch (e) {
@@ -463,7 +477,8 @@ export default {
           if (!scope) return { ok: false, reason: '拿不到当前会话（请重试一次）' }
           if (!scopeAllowed(scope)) return { ok: false, count: 0, items: [], reason: '这个会话不在「存储范围」里' }
           const limit = num(a.limit, 5, 1, 20)
-          const { hits } = recall(scope, { text: String(a.query || ''), qqList: [String(a.qq || adminQq())], topK: limit, mark: true })
+          const { hits } = recall(scope, { text: String(a.query || ''), qqList: [String(a.qq || adminQq())], topK: limit })
+          recordRecall(hits.map((hit) => hit.memory), turn.memoryRecallTurn)
           return {
             ok: true,
             count: hits.length,

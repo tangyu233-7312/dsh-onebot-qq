@@ -340,7 +340,7 @@ export function createStore({ dir, log = console, maxEventsBeforeCompact = 5000 
       return { ok: true, merged: false, id }
     },
 
-    /** 记账“这条被真正想起过”（重置宽限）。调用方先完成话题/关系网筛选。 */
+    /** 记录展示次数，保留原来的衰减起点。 */
     markRecalled(ids, at = Date.now()) {
       const out = []
       for (const id of ids || []) {
