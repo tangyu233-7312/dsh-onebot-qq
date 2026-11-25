@@ -162,6 +162,58 @@ test('schema（新手引导）：protocol enum / 模型 suggestions / info 控�
   assert.equal(localModelCtrl.default, '', '本地模型名默认空，不预设任何模型')
 })
 
+test('功能自检：状态三态正确，每项都给「去哪配」', async (t) => {
+  const h = await boot(t)
+  const endpoints = createAdminEndpoints({ kernel: h.kernel, configPath: h.configPath, dataDir: h.dataDir, log: quiet(), ops: null })
+  const st = await endpoints.handle('status', {})
+
+  assert.ok(Array.isArray(st.features) && st.features.length > 0, 'status 应带功能自检清单')
+  for (const f of st.features) {
+    for (const k of ['id', 'label', 'state', 'hint', 'where']) assert.ok(k in f, `功能项缺 ${k}`)
+    assert.ok(['on', 'off', 'unavailable'].includes(f.state), `${f.id} 状态非法：${f.state}`)
+    assert.ok(String(f.where).length > 0, `${f.id} 必须告诉用户去哪配`)
+  }
+
+  // 测试环境没有侧车运行时 → 视频插件开着但依赖不在，必须是 unavailable（最坑的那种要显眼）
+  for (const id of ['videoRead', 'videoLink']) {
+    const f = st.features.find((x) => x.id === id)
+    assert.ok(f, `缺 ${id}`)
+    assert.equal(f.state, 'unavailable', `${id}: 侧车不通时不能报 on`)
+    assert.match(String(f.hint), /侧车不可达|不可达/, `${id} 要说清是侧车的问题`)
+  }
+  // 「自己找视频看」的定时自动看默认关 → 即便侧车不通也只报 off（用户根本没开这条）
+  const wander = st.features.find((x) => x.id === 'videoWander')
+  assert.equal(wander.state, 'off', '自动看默认关 → off，不该冒充 unavailable')
+
+  // 默认关的功能要标 off，别让用户以为在用
+  assert.equal(st.features.find((f) => f.id === 'linkParser').state, 'off', '链接搬运默认关')
+  assert.equal(st.features.find((f) => f.id === 'tts').state, 'off', '语音默认关')
+  assert.equal(st.features.find((f) => f.id === 'sing').state, 'off', '唱歌默认关')
+  assert.equal(st.features.find((f) => f.id === 'longMemory').state, 'off', '记忆默认只记私聊')
+})
+
+test('功能自检：开了开关但依赖没配 → unavailable，并指出缺什么', async (t) => {
+  const h = await boot(t, { config: { pluginConfig: {
+    'long-memory': { groupsMode: 'all', llmApiKey: '' },
+    qzone: { enabled: true, nudgeTo: '' },
+    voice: { ttsEnabled: true, singEnabled: false },
+  } } })
+  const endpoints = createAdminEndpoints({ kernel: h.kernel, configPath: h.configPath, dataDir: h.dataDir, log: quiet(), ops: null })
+  const st = await endpoints.handle('status', {})
+
+  const lm = st.features.find((f) => f.id === 'longMemory')
+  assert.equal(lm.state, 'unavailable', '范围开了但没填整理接口 → 只存不提炼')
+  assert.match(String(lm.hint), /整理接口/, '要指出缺的是整理接口')
+
+  const qz = st.features.find((f) => f.id === 'qzone')
+  assert.equal(qz.state, 'unavailable', '没填 nudgeTo → 到点不会提醒')
+  assert.match(String(qz.hint), /提醒发到哪|nudgeTo/, '要指出缺的是提醒目标')
+
+  // 纯开关类：开了就是 on（后端不可用由运行时兜底）
+  assert.equal(st.features.find((f) => f.id === 'tts').state, 'on', 'ttsEnabled=true → on')
+  assert.equal(st.features.find((f) => f.id === 'sing').state, 'off', 'singEnabled=false → off')
+})
+
 test('status（新手引导）：meta / onboarding 6 项 / onebot / imagegen（绝不回显 key）', async (t) => {
   const h = await boot(t)
   const endpoints = createAdminEndpoints({ kernel: h.kernel, configPath: h.configPath, dataDir: h.dataDir, log: quiet(), ops: null })

@@ -439,6 +439,8 @@ window.__ModuleLoader__.load({
 			const lpN = (x) => (typeof x === 'number' ? x : '?')
 			const meta = status.meta || null
 			const onboarding = Array.isArray(status.onboarding) ? status.onboarding : []
+			// 功能自检（2026-11-25）：哪些功能真的用上了、没用的去哪配
+			const features = Array.isArray(status.features) ? status.features : []
 			const fmtCheck = (ts) => { try { return new Date(ts).toLocaleTimeString('zh-CN', { hour12: false }) } catch { return '' } }
 			return h('div', null, [
 				// ═══ 待配置模式提示条（首次安装还没填主人 QQ / 协议端时最醒目）═══
@@ -494,6 +496,31 @@ window.__ModuleLoader__.load({
 							}, WIZARD_ACTIONS[it.id].label)
 							: null,
 					])),
+				]) : null,
+
+				// ═══ 功能自检（2026-11-25）═══
+				// 新手向导回答「能不能开始用」，这里回答「我到底用上了哪些功能」。
+				// 三态：✅ 已用上 / ⭕ 关着 / ⚠️ 开着但依赖不在（最坑，标红）。
+				features.length ? h('div', { key: 'features' }, [
+					h('div', { style: S.group, key: 't' }, '功能自检（看看你现在用上了哪些；没用的照着「去哪配」点进去）'),
+					...features.map((f) => {
+						const icon = f.state === 'on' ? '✅' : (f.state === 'unavailable' ? '⚠️' : '⭕')
+						const warn = f.state === 'unavailable'
+						return h('div', { style: S.row, key: f.id }, [
+							h('span', { style: Object.assign({}, S.badge(!warn), warn ? { color: '#c0392b' } : {}), key: 'b' }, icon),
+							h('span', {
+								style: Object.assign({}, S.label, { fontWeight: warn ? 600 : 400, minWidth: 132 }),
+								key: 'l',
+							}, f.label || f.id),
+							h('span', {
+								style: Object.assign({}, S.msg, { flex: '1 1 auto', opacity: warn ? 1 : .75, color: warn ? '#c0392b' : undefined }),
+								key: 'h',
+							}, f.hint || ''),
+							f.where
+								? h('span', { style: Object.assign({}, S.msg, { flex: '0 0 auto', opacity: .55, fontSize: 12 }), key: 'w' }, '去哪配：' + f.where)
+								: null,
+						])
+					}),
 				]) : null,
 
 				// ═══ 版本 / 数据目录 / 配置文件（小字，排查时一眼看到）═══

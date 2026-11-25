@@ -495,6 +495,159 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
     return items
   }
 
+  // ── 功能自检（2026-11-25）────────────────────────────────────
+  //
+  // 新手向导回答的是「能不能开始用」；这里回答的是「我到底用上了哪些功能」。
+  // 每一项都给出 state + 一句现状 + **去哪配**（where），因为最常见的困惑不是
+  // "没配"，而是"不知道在哪配"。
+  //
+  // state 语义：
+  //   on          = 已启用且依赖就绪
+  //   off         = 功能关着（用户可能压根没开）
+  //   unavailable = 开关开着，但依赖不在（如侧车不通）—— 这种最坑，必须显眼
+  let sidecarCache = { at: 0, val: null }
+  async function sidecarState() {
+    const now = Date.now()
+    if (now - sidecarCache.at < 15000) return sidecarCache.val
+    const fn = kernel?.shared?.sidecarStatus
+    if (typeof fn !== 'function') return null
+    let timer = null
+    try {
+      // 探测本身有 2.5s 超时；这里再压到 1.2s，避免拖慢整个控制台刷新
+      const v = await Promise.race([
+        fn(),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(null), 1200) }),
+      ])
+      sidecarCache = { at: now, val: v }
+      return v
+    } catch {
+      return null
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
+  /**
+   * 生成功能自检清单。
+   * @param {object} raw  实例配置
+   * @param {object} sc   侧车状态（可能为 null = 插件不在/没暴露）
+   */
+  function featuresOf(raw, sc, extra = {}) {
+    const on = (b) => b === true
+    const pcfg = (id) => pluginCfg(raw, id)
+    const items = []
+    const push = (id, label, state, hint, where) => items.push({ id, label, state, hint, where })
+
+    // ── 视频三路 ──
+    const sidecarUp = sc?.up === true
+    const sidecarWhy = sc && !sc.up ? (sc.why || '连不上') : ''
+    const videoRead = pcfg('video-read')
+    const vrOn = videoRead.enabled !== false
+    push('videoRead', '群里的视频·抽帧',
+      !vrOn ? 'off' : (sidecarUp ? 'on' : 'unavailable'),
+      !vrOn ? '这个插件被关掉了'
+        : (sidecarUp ? `侧车在线（${sc?.url || '127.0.0.1:3972'}），受「叫它才看」限制`
+          : `侧车不可达：${sidecarWhy}。装包自带 sidecar，但要在控制台把「侧车目录」指过去并启动`),
+      '文件与图片 → 群里的视频；侧车在 运维 → 侧车运维')
+
+    const videoLink = pcfg('video-link-read')
+    const vlOn = videoLink.enabled !== false
+    push('videoLink', 'B站链接 / BV 号',
+      !vlOn ? 'off' : (sidecarUp ? 'on' : 'unavailable'),
+      !vlOn ? '这个插件被关掉了'
+        : (sidecarUp ? (videoLink.subtitle === false ? '侧车在线；字幕开关是关的，只读画面' : '侧车在线，画面与可用字幕都能读')
+          : `侧车不可达：${sidecarWhy}`),
+      '文件与图片 → B站链接；字幕与 Cookie 见 链接解析')
+
+    const wander = pcfg('video-wander')
+    const wanderOn = wander.enabled !== false
+    push('videoWander', '自己找视频看',
+      !wanderOn ? 'off' : (wander.autoEnabled !== true ? 'off' : (sidecarUp ? 'on' : 'unavailable')),
+      !wanderOn ? '这个插件被关掉了'
+        : (wander.autoEnabled !== true
+          ? '自动看是关的（还能用工具手动叫它看）；要它自己定时看，打开「自动看」'
+          : (sidecarUp ? `自动看已开，每 ${Number(wander.everyMinutes) || 240} 分钟一次` : `侧车不可达：${sidecarWhy}`)),
+      '自己找视频看')
+
+    // ── 链接媒体搬运（默认关）──
+    const lp = pcfg('link-parser')
+    push('linkParser', '链接媒体搬运',
+      on(lp.enabled) ? (sidecarUp ? 'on' : 'unavailable') : 'off',
+      on(lp.enabled)
+        ? (sidecarUp ? '会把链接里的媒体下载后发到群里' : `侧车不可达：${sidecarWhy}`)
+        : '默认关：它会把下载的媒体发到 QQ，不需要就别开',
+      '链接解析')
+
+    // ── 语音 / 唱歌 ──
+    const voice = pcfg('voice')
+    push('tts', '语音说话',
+      on(voice.ttsEnabled) ? 'on' : 'off',
+      on(voice.ttsEnabled) ? '已开启；后端不可用时插件会尝试本机回落' : '默认关。要发语音消息才开；本机没 TTS 环境就接 PC 算力网关',
+      '语音与唱歌')
+    push('sing', '唱歌（RVC）',
+      on(voice.singEnabled) ? 'on' : 'off',
+      on(voice.singEnabled)
+        ? '已开启；需要能跑 RVC 的 Python 环境或 PC 网关'
+        : '默认关。要走本机需先跑仓库 tools/singing-pack 的安装脚本（约 6~10 GB），或接 PC 算力网关',
+      '语音与唱歌')
+
+    // ── 长期记忆 ──
+    const lm = pcfg('long-memory')
+    const lmMode = toStr(lm.groupsMode) || 'none'
+    const lmHasLlm = Boolean(toStr(lm.llmApiKey) || toStr(lm.llmBaseUrl))
+    if (lm.enabled === false) {
+      push('longMemory', '长期记忆', 'off', '插件被关掉了', '记忆')
+    } else if (lmMode === 'none') {
+      push('longMemory', '长期记忆', 'off',
+        '当前只记私聊；要记群聊，把「群聊记忆范围」改成 list 或 all',
+        '记忆')
+    } else if (!lmHasLlm) {
+      push('longMemory', '长期记忆', 'unavailable',
+        `范围已开（${lmMode}），但没填整理接口 → 不会自动整理，只存不提炼`,
+        '记忆 → 整理接口')
+    } else {
+      push('longMemory', '长期记忆', 'on', `范围 ${lmMode}，整理接口已填`, '记忆')
+    }
+
+    // ── 表情包 ──
+    const stickers = pcfg('stickers')
+    const stats = extra.stickerStats
+    if (stickers.enabled === false) {
+      push('stickers', '表情包', 'off', '插件被关掉了', '表情包')
+    } else if (on(stickers.collect)) {
+      push('stickers', '表情包', 'on',
+        `会收集新表情${stats?.usable != null ? `，现有 ${stats.usable} 张可用` : ''}`,
+        '表情包')
+    } else {
+      push('stickers', '表情包', 'on',
+        `只读模式：能挑现有图发${stats?.usable != null ? `（${stats.usable} 张）` : ''}，但不收新图。要收新表情打开「收表情」`,
+        '表情包')
+    }
+
+    // ── 空间日记 ──
+    const qzone = pluginCfg(raw, 'qzone')
+    if (qzone.enabled === false) {
+      push('qzone', '空间日记', 'off', '插件被关掉了', '空间日记')
+    } else if (!toStr(qzone.nudgeTo)) {
+      push('qzone', '空间日记', 'unavailable',
+        '到点不会提醒 —— 没填「提醒发到哪」。可用工具手动让它写，或填上 nudgeTo 自动提醒',
+        '空间日记')
+    } else {
+      push('qzone', '空间日记', 'on', `每天 ${Number(qzone.nudgeHour) || 22}:${String(Number(qzone.nudgeMinute) || 30).padStart(2, '0')} 提醒`, '空间日记')
+    }
+
+    // ── 群历史看图 ──
+    const hi = extra.historyImageStatus
+    if (hi) {
+      push('historyImages', '群历史看图', hi.enabled === false ? 'off' : 'on',
+        hi.enabled === false ? '已关掉：它只能看到当前这条消息里的图'
+          : `能回头看最近 ${Number(hi.keepHours) || 24} 小时内的图（缓存）`,
+        '文件与图片 → 群历史图片')
+    }
+
+    return items
+  }
+
   // ── schema ─────────────────────────────────────────────────
   function schema() {
     const raw = store.read()
@@ -582,6 +735,14 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
     const toneGuard = safe(() => kernel?.shared?.toneGuard?.judgeInfo?.(), null)
     const onboarding = onboardingOf(raw, persona, onebotHealth, imagegen, toneGuard)
 
+    // 功能自检（2026-11-25）：告诉用户「哪些功能真的用上了、没用的去哪配」。
+    // 侧车状态带 15 秒缓存，避免每次刷新都去 HTTP 探测。
+    const sidecar = await sidecarState()
+    const features = featuresOf(raw, sidecar, {
+      stickerStats: safe(() => kernel?.shared?.stickerStats?.(), null),
+      historyImageStatus: safe(() => kernel?.shared?.historyImageStatus, null),
+    })
+
     const modules = collectModules(kernel, raw)
     const longForward = (() => {
       const max = Number(getPath(raw, 'outbound.replyMaxLength')) || 3000
@@ -622,6 +783,7 @@ export function createAdminEndpoints({ kernel = {}, configPath = '', dataDir = '
       services,
       meta,
       onboarding,
+      features,
       onebot,
       imagegen,
       lines,

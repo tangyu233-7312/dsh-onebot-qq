@@ -124,6 +124,23 @@ export default {
       }
     }
 
+    // 2026-11-25：把探测能力挂给控制台，让「总览 → 功能自检」能显示侧车到底通不通，
+    // 而不是只看到"开关开着"却不知道后端在不在。只暴露只读探测 + 目录信息，不暴露进程控制。
+    if (bot.shared) {
+      bot.shared.sidecarStatus = async () => {
+        const h = await health()
+        return {
+          up: h.up === true,
+          why: String(h.why || ''),
+          url: String(urlOf() || ''),
+          dir: String(dirOf() || ''),
+          serverExists: fs.existsSync(serverOf()),
+          enabled: cfg().enabled !== false,
+          autoStart: cfg().autoStart === true,
+        }
+      }
+    }
+
     /**
      * 首次补配置：pythonPath 空着就探测一个填进去。
      * 只在**用户没写过**（字段不存在或是空串）时填，绝不动用户已经设好的值。
