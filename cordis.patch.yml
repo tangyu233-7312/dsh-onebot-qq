@@ -13,9 +13,10 @@
     # 纯聊天 preset：**随包声明**，安装插件即注册，不用手改 profile 的 cordis.patch.yml。
     # 保留：聊天 / 联网 / 上下文压缩；裁掉：shell（bash+pwsh 都关）、文件、任务、技能、提问卡、插件管理。
     # 配置里没手填 dsh.agentPreset 时，插件会自动把 QQ 线切到这个 preset。
-    # 可选配件：装 dsh-onebot-qq-opsgate 后，它会覆盖本 preset、在 plugins 列表末尾追加工具门，
-    # 把全局插件注册的工具（ops_* / agent-team / MCP 资源）挡在 QQ 会话之外 —— 只影响 qq-chat。
-    # 安装与作用见 docs/安装与卸载.md「可选：QQ 线工具门」。
+    # 可选配件（**不属于本项目**）：dsh-onebot-qq-opsgate 由上游作者另外维护，
+    # 装后会覆盖本 preset、在 plugins 列表末尾追加工具门，把全局插件注册的工具
+    # （ops_* / agent-team / MCP 资源）挡在 QQ 会话之外 —— 只影响 qq-chat。
+    # 仅当 profile 里装了这类全局工具插件时才需要。见 docs/安装与卸载.md「可选：QQ 线工具门」。
     - id: preset-qq-chat
       name: '@deepseek-ai/dsh-agent-preset'
       config:
