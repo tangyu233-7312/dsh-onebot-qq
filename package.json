@@ -32,7 +32,8 @@
     "LICENSE",
     "CHANGELOG.md",
     "docs",
-    "examples"
+    "examples",
+    "sidecar"
   ],
   "engines": {
     "node": ">=22",

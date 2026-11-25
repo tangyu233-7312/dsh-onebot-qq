@@ -34,6 +34,9 @@ const FORBIDDEN = [
   { re: /(^|\/)\.env(\..*)?$/, why: '环境/凭据文件' },
   { re: /\.tgz$|\.tar\.gz$/, why: '打包产物不应嵌套' },
   { re: /(^|\/)sessions[^/]*\.json$/, why: '会话映射（含 chatKey/sessionId）' },
+  // 2026-11-25 起 sidecar 随包发布；进包的是**模板**（token/路径全空），不是站点私有配置。
+  // 必须排在下面的 config.json 规则**之前**：命中 allow 就先 break 掉，否则会被误杀。
+  { re: /^sidecar\/sidecar\.config\.json$/, why: '', allow: true },
   { re: /(^|\/)config\.json$/, why: '实例配置（含 QQ/token），只允许 examples/config.example.json' },
   { re: /(^|\/)\.github(\/|$)/, why: 'CI 配置不进包' },
 ]
@@ -67,6 +70,13 @@ const REQUIRED = [
   'examples/cordis.patch.yml',
   'examples/presets/qq-chat.patch.yml',
   'examples/windows/setup.ps1',
+  // 2026-11-25：侧车随包发布（零 npm 依赖的独立 HTTP 服务）
+  'sidecar/server.mjs',
+  'sidecar/subtitle.mjs',
+  'sidecar/sidecar.config.json',
+  'sidecar/README.md',
+  'sidecar/start.bat',
+  'sidecar/stop.bat',
 ]
 
 const npmCmd = IS_WIN ? 'npm.cmd' : 'npm'
@@ -117,6 +127,7 @@ const violations = []
 for (const p of paths) {
   for (const rule of FORBIDDEN) {
     if (!rule.re.test(p)) continue
+    if (rule.allow) break // 规则带 allow：命中即放行，且不再看后面的规则
     if (p === 'examples/config.example.json') continue // 示例配置是有意为之
     violations.push({ path: p, why: rule.why })
     break

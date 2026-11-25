@@ -95,7 +95,7 @@ B 站视频可同时读取画面与可用字幕；字幕开关、Cookie 获取�
 |---|---|---|
 | `kernel/`、`admin/`、`platform/`、`plugins/` | DSH 插件内核、控制台与子插件 | 随插件包发布，在 DSH 进程内运行 |
 | `docs/`、`examples/` | 通用文档、配置与人设示例 | 随插件包发布 |
-| `sidecar/` | 视频下载、抽帧和解析 HTTP 服务 | Git 仓库中提供，当前 npm 包不含；另行部署，见 [侧车说明](sidecar/README.md) |
+| `sidecar/` | 视频下载、抽帧和解析 HTTP 服务 | **随插件包发布**（`npm pack` 含 `sidecar/`，装完在 `node_modules/dsh-onebot-qq/sidecar`）。它是独立进程，要在控制台把「侧车目录」指过去（或复制到数据目录）才会被拉起；另需本机有 ffmpeg/ffprobe、按需装 yt-dlp。见 [侧车说明](sidecar/README.md) |
 | `tools/singing-pack/` | RVC 推理与安装脚本 | Git 仓库中提供，当前 npm 包不含；不附带音色模型或曲库 |
 | PC 算力网关 / Worker | 接收语音和唱歌任务的计算服务 | 外部程序，仓库只提供插件侧接入 |
 
