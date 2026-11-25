@@ -4,7 +4,7 @@
 
 ![license](https://img.shields.io/badge/license-MIT-blue) ![node](https://img.shields.io/badge/node-%3E%3D22-green) ![dsh](https://img.shields.io/badge/dsh-%3E%3D0.2.1--rc.2-7c3aed)
 
-这是一个**独立维护**的项目，源码在 [tangyu233-7312/dsh-onebot-qq](https://github.com/tangyu233-7312/dsh-onebot-qq)，默认分支就是 `custom`。
+这是一个**独立维护**的项目，源码在 [tangyu233-7312/dsh-onebot-qq](https://github.com/tangyu233-7312/dsh-onebot-qq)，默认分支 `main`。
 早期基于 [YUsaltyfish/dsh-onebot-qq](https://github.com/YUsaltyfish/dsh-onebot-qq) 演进，现已分家：功能、配置与行为以**本仓库**为准，不再跟随上游更新，也不把与上游的差异当作永久不变的清单。
 
 先配置基础聊天，再按需开启生图、视频、语音等能力。**功能开关、插件是否加载、外部服务是否就绪是三件不同的事**；不是所有模块装上就能直接用。
@@ -42,7 +42,7 @@ dsh plugin --profile web add github:tangyu233-7312/dsh-onebot-qq
 
 首次缺少主人 QQ 时会进入待配置模式，控制台仍可用。协议端与 DSH 不在同一台机器或容器时，需要填写 DSH 实际能访问的地址。
 
-如果需要限制 QQ 会话能访问的全局工具，可另装上游的 `dsh-onebot-qq-opsgate`，详见 [安装与卸载](docs/安装与卸载.md)。
+如果需要限制 QQ 会话能访问的全局工具，可另装配套的 `dsh-onebot-qq-opsgate`（独立包，本仓库不含），详见 [安装与卸载](docs/安装与卸载.md)。
 
 群聊回复后默认保留 60 秒同人接话窗口：无需再次 @，由模型判断是否仍在对它说话；纯呼名先固定应答。窗口长度（0~600 秒）与收集间隔在「门禁与唤醒」中配置，忙时新消息插入下一个模型步骤。
 
