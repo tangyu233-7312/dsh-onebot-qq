@@ -4,7 +4,8 @@
 
 ![license](https://img.shields.io/badge/license-MIT-blue) ![node](https://img.shields.io/badge/node-%3E%3D22-green) ![dsh](https://img.shields.io/badge/dsh-%3E%3D0.2.1--rc.2-7c3aed)
 
-这是 [YUsaltyfish/dsh-onebot-qq](https://github.com/YUsaltyfish/dsh-onebot-qq) 的定制 fork。**定制版在 `custom` 分支，安装时请显式指定 `#custom`。** 功能说明以本分支代码为准，不把历史上与上游的差异当作永久不变的清单。
+这是一个**独立维护**的项目，源码在 [tangyu233-7312/dsh-onebot-qq](https://github.com/tangyu233-7312/dsh-onebot-qq)，默认分支就是 `custom`。
+早期基于 [YUsaltyfish/dsh-onebot-qq](https://github.com/YUsaltyfish/dsh-onebot-qq) 演进，现已分家：功能、配置与行为以**本仓库**为准，不再跟随上游更新，也不把与上游的差异当作永久不变的清单。
 
 先配置基础聊天，再按需开启生图、视频、语音等能力。**功能开关、插件是否加载、外部服务是否就绪是三件不同的事**；不是所有模块装上就能直接用。
 
@@ -25,8 +26,8 @@
 | QQ 账号 | 在协议端登录，用于机器人收发消息 |
 
 ~~~sh
-# 安装本 fork 的定制版
-dsh plugin --profile web add github:tangyu233-7312/dsh-onebot-qq#custom
+# 安装（默认分支即 main）
+dsh plugin --profile web add github:tangyu233-7312/dsh-onebot-qq
 
 # 也可以安装本地 npm pack 产物，或链接开发目录（二选一）
 # dsh plugin --profile web add /abs/path/dsh-onebot-qq-0.1.1.tgz

@@ -1,6 +1,6 @@
 # 文档导航
 
-适用于本仓库 custom 分支。定制版安装地址为 `github:tangyu233-7312/dsh-onebot-qq#custom`，完整步骤见安装文档。日常入口是 DSH 设置 →「QQ 控制台」，控制台按功能归组。
+适用于本仓库 main 分支。安装地址为 `github:tangyu233-7312/dsh-onebot-qq`（默认分支即 main），完整步骤见安装文档。日常入口是 DSH 设置 →「QQ 控制台」，控制台按功能归组。
 
 ## 按任务阅读
 
