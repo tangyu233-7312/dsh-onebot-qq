@@ -146,6 +146,11 @@ export const CORE_CONTROLS = [
     hint: '本群在“唤醒那条”之后又插了 N 条才允许挂引用；0 = 一律不自动挂。',
   },
   {
+    key: 'outbound.visitPrivateAllowed', group: '群聊', type: 'bool', label: '串门也允许发到别的私聊', default: false,
+    hint: '主人私聊里它可以指定别的会话为目标（串门）。**发到群永远允许**；'
+      + '打开这个开关后 `private:<QQ号>` 也放行 —— 也就是它能主动私聊任何人，出事难收回，默认关。',
+  },
+  {
     key: 'outbound.groupContextCount', group: '群聊', type: 'int', label: '入站条数上限',
     min: 0, max: 50, step: 1, default: 10,
     hint: '**每轮最多带几条“还没给它看过的”群消息**（不是固定带这么多）。\n'

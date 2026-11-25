@@ -10,7 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { splitBubbles } from '../kernel/format.js'
-import { bootKernel, emitRaw, waitFor, ADMIN_QQ, GROUP_ID, MEMBER_QQ, groupAtEvent, privateEvent } from './helpers.mjs'
+import { bootKernel, emitRaw, waitFor, ADMIN_QQ, GROUP_ID, MEMBER_QQ, groupAtEvent, privateEvent, tapInbound } from './helpers.mjs'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -173,20 +173,73 @@ test('句池三级回落：人设 .lines.txt → _默认.lines.txt → 内置兜
   assert.ok(h.sent[2].wire.includes('底池戳'), `人设缺节应回落底池：${h.sent[2].wire}`)
 })
 
-test('两条线并发：工具按 DSH 会话 id 认线，target 写错时按会话纠正（不串线）', async (t) => {
+test('两条线并发：工具按 DSH 会话 id 认线，目标不是本轮会话时按会话纠正（不串线）', async (t) => {
   const h = await boot(t)
   const send = h.ctx._registeredTools.get('mcp__qq__send_message')
-  const sessions = []
   h.ctx.setPromptHandler(async (req) => {
     h.ctx.emit('session/event', { id: req.sessionId }, { type: 'turn/start' })
     h.ctx.emit('session/event', { id: req.sessionId }, { type: 'user/message', data: { source: { rpcId: req.requestId } } })
-    sessions.push(req.sessionId)
-    // 模型把 target 写成了群，但本轮其实是私聊会话 → 工具应按会话纠正
-    await send.execute({ target: `group:${GROUP_ID}`, text: '我是私聊回复' }, { agent: { session: { id: req.sessionId } } })
+    // 主人私聊里把 target 写成**别人的私聊**：串门默认只放行群，私聊目标仍按会话纠正
+    await send.execute({ target: `private:${MEMBER_QQ}`, text: '我是私聊回复' }, { agent: { session: { id: req.sessionId } } })
   })
   await emitRaw(h.kernel, privateEvent({ text: '私聊一句', messageId: 110 }))
   await waitFor(() => h.sent.length >= 1, { label: '私聊出站' })
-  assert.equal(h.sent.at(-1).target, `private:${ADMIN_QQ}`, '按会话纠正 target，不串到群里')
+  assert.equal(h.sent.at(-1).target, `private:${ADMIN_QQ}`, '私聊目标按会话纠正，不私信别人')
+})
+
+test('主人私聊串门：target=别的群 → 真的发到那个群，且不挂原会话的引用', async (t) => {
+  // quoteAfterMsgs=1：只要"插话数"达标，没守卫时一定会挂上原会话的 triggerMsgId
+  const h = await boot(t, { config: { outbound: { quoteAfterMsgs: 1 } } })
+  const send = h.ctx._registeredTools.get('mcp__qq__send_message')
+  h.ctx.setPromptHandler(async (req) => {
+    h.ctx.emit('session/event', { id: req.sessionId }, { type: 'turn/start' })
+    h.ctx.emit('session/event', { id: req.sessionId }, { type: 'user/message', data: { source: { rpcId: req.requestId } } })
+    const turn = [...h.kernel.turnBySession.values()][0]
+    if (turn) turn.arrivedDuringTurn = 1
+    await send.execute({ target: `group:${GROUP_ID}`, text: '本鱼去群里插一句' }, { agent: { session: { id: req.sessionId } } })
+  })
+  await emitRaw(h.kernel, privateEvent({ text: '去群里说一句', messageId: 120 }))
+  await waitFor(() => h.sent.length >= 1, { label: '串门出站' })
+  assert.equal(h.sent.at(-1).target, `group:${GROUP_ID}`, '串门的话应落到群里')
+  assert.equal(h.sent.at(-1).wire.includes('[CQ:reply'), false, '跨会话不挂原私聊的引用（消息 ID 不属于那个群）')
+})
+
+test('串门到别的私聊：默认关（纠正回本人），打开 outbound.visitPrivateAllowed 后放行', async (t) => {
+  const run = async (visitPrivateAllowed) => {
+    const h = await boot(t, { config: { outbound: { visitPrivateAllowed } } })
+    const send = h.ctx._registeredTools.get('mcp__qq__send_message')
+    h.ctx.setPromptHandler(async (req) => {
+      h.ctx.emit('session/event', { id: req.sessionId }, { type: 'turn/start' })
+      h.ctx.emit('session/event', { id: req.sessionId }, { type: 'user/message', data: { source: { rpcId: req.requestId } } })
+      await send.execute({ target: `private:${MEMBER_QQ}`, text: '替我跟他说一句' }, { agent: { session: { id: req.sessionId } } })
+    })
+    await emitRaw(h.kernel, privateEvent({ text: '去跟他说', messageId: 130 }))
+    await waitFor(() => h.sent.length >= 1, { label: `出站（visitPrivateAllowed=${visitPrivateAllowed}）` })
+    return h.sent.at(-1).target
+  }
+  assert.equal(await run(false), `private:${ADMIN_QQ}`, '开关关着 → 私聊目标仍纠正回主人')
+  assert.equal(await run(true), `private:${MEMBER_QQ}`, '开关打开 → 真的发到那个私聊')
+})
+
+test('串门口径提示：只在主人私聊的入站里注入，群聊/别人的私聊一个字都不加', async (t) => {
+  const hintOf = async (raw) => {
+    const h = await boot(t)
+    const tap = tapInbound(h.kernel)
+    h.ctx.setPromptHandler(async () => {})
+    await emitRaw(h.kernel, raw)
+    await waitFor(() => tap.events.length >= 1, { label: '入站' })
+    return (tap.last().hint || []).join(' ')
+  }
+
+  const masterPrivate = await hintOf(privateEvent({ text: '在吗', messageId: 140 }))
+  assert.match(masterPrivate, /串门特权/, '主人私聊要看到串门口径')
+  assert.match(masterPrivate, /发到别的私聊不行/, '默认关着时说明私聊目标不放行')
+
+  const group = await hintOf(groupAtEvent({ text: '在吗', messageId: 141 }))
+  assert.equal(group.includes('串门'), false, '群里不加串门提示（省 token）')
+
+  const otherPrivate = await hintOf(privateEvent({ text: '在吗', messageId: 142, userId: MEMBER_QQ }))
+  assert.equal(otherPrivate.includes('串门'), false, '别人的私聊没有这个特权')
 })
 
 test('splitBubbles：按自然句拆 2~N 条；无断点/带 CQ → null；超上限合并最短相邻', () => {

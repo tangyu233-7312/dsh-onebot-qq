@@ -27,7 +27,7 @@ import { createRequire } from 'node:module'
 import crypto from 'node:crypto'
 import { createConversationWindow } from './kernel/conversation-window.js'
 
-import { CONTRACT_VERSION, STAGES, withDefaults, createEvent, createTurnContext } from './contracts.js'
+import { CONTRACT_VERSION, STAGES, withDefaults, createEvent, createTurnContext, isMasterPrivate } from './contracts.js'
 import {
   normalizeEvent, buildPromptText, extractText, senderNameOf, parseKeywordLines,
 } from './kernel/format.js'
@@ -616,6 +616,8 @@ export async function apply(ctx, bundleConfig = {}) {
     const turnCtx = out.turnCtx ?? null
     // 主动接话不挂引用（上一道钩子已清掉显式值，这里也不再补）
     if (!turnCtx || turnCtx.wakeKind === 'proactive') return
+    // 跨会话（主人私聊串门）：triggerMsgId 属于原会话，挂到另一个群/私聊上必然引错，直接不挂
+    if (String(turnCtx.chatKey || '') !== String(out.target || '')) return
     if (out.noReply || out.replyTo != null || out.ats?.length) return
     const need = Number(runtime.outbound?.quoteAfterMsgs ?? 3)
     if (need <= 0) return
@@ -724,7 +726,8 @@ export async function apply(ctx, bundleConfig = {}) {
     pluginId: 'kernel',
     description:
       '把一条文本消息发到 QQ（群或私聊）。这是给 QQ 用户回话的唯一正确方式：不要在正文里写要发的内容，直接调用本工具。'
-      + 'target 用会话开头提示里的 [QQ会话 <target>] 原样传入；引用默认不用你管（内核按回复期间群里插话数自动决定）；'
+      + 'target 用会话开头提示里的 [QQ会话 <target>] 原样传入（**只有主人的私聊**例外：可以填别的群 group:<群号> 去串门）；'
+      + '引用默认不用你管（内核按回复期间群里插话数自动决定）；'
       + '只在想引用更早的另一条时才传 reply_to（传 0 = 明确不要挂）；内容会被网关强制脱敏并限长。'
       + '提示里出现 `[表情:…]` 时，给本工具加 sticker 参数就能顺手带一张表情包（比单独调 send_sticker 省一步）。',
     parameters: {
@@ -735,11 +738,13 @@ export async function apply(ctx, bundleConfig = {}) {
     },
     async execute(args = {}) {
       const turnCtx = resolveCurrentTurn(args.target)
+      // 串门（主人私聊发到别的群）：本轮消息 ID 属于原会话，跨会话拿来挂引用只会引错/无效
+      const crossChat = Boolean(turnCtx?.chatKey && String(args.target) !== String(turnCtx.chatKey))
       const r = await deliver(args.target, args.text, {
         replyTo: args.reply_to,
         turnCtx,
         // 只有模型显式调 send_message 的回复才由内核自动挂引用（锚已绑定当前 DSH 回合）
-        autoQuote: true,
+        autoQuote: !crossChat,
         fromTool: true, // 标记"这是模型写给群里的话"：拆条等加工只认它
       })
       const out = { ok: true, target: r.target, message_id: r.messageId, mode: r.mode, redacted: r.hits }
@@ -999,6 +1004,21 @@ export async function apply(ctx, bundleConfig = {}) {
     }
   }, { order: 90, pluginId: 'kernel:self-log' })
 
+  // ── 内置管线钩子 1.6：主人私聊的「串门」口径（2026-11-25）─────────────
+  // 工具入口只在**主人私聊**里放行跨会话发送（见下面 tools 注册处的 target 纠正逻辑），
+  // 但 send_message 的说明写的是「target 原样用本轮会话」—— 不说清楚，它只会对着主人说话。
+  // 只在主人私聊里加这一句，别处一个字不多花。
+  pipeline.use('before-turn', (ev) => {
+    if (ev.stopped || !ev.wake) return
+    if (!isMasterPrivate(ev.chatKey, kernel.adminQq)) return
+    const otherPrivate = runtime.outbound?.visitPrivateAllowed === true
+      ? '也能填 private:<QQ号> 发到别人的私聊'
+      : '发到别的私聊不行'
+    const selfKey = `private:${Number(kernel.adminQq) || '<主人QQ>'}`
+    ev.hint.push(`[串门特权:这是主人的私聊 —— send_message 的 target 可以填别的群（group:<群号>）把话送到那边，${otherPrivate}；`
+      + `回这里就填 ${selfKey}。]`)
+  }, { order: 95, pluginId: 'kernel:owner-visit' })
+
   // ── 内置管线钩子 2：before-turn 补齐群聊增量上文、引用消息与多模态识图缩放 ──────────
   pipeline.use('before-turn', async (ev) => {
     if (ev.stopped || !ev.wake) return
@@ -1080,11 +1100,25 @@ export async function apply(ctx, bundleConfig = {}) {
             }
             const turnCtx = resolveToolTurn(exec, args?.target)
             // 会话认出来了就以"本轮会话"为准：模型把 target 写错（或从旧上文抄来）时别发错群。
+            // **唯一例外：主人的私聊**（2026-11-25「串门」）：那里可以指定别的会话当目标。
+            //   · 发到别的**群**：默认就允许（群消息公开、有留档）；
+            //   · 发到别的**私聊**：默认关，要控制台打开 `outbound.visitPrivateAllowed`
+            //     —— 机器人私信陌生人比发错群更难收回。
             let callArgs = args
-            if (turnCtx?.chatKey && args && typeof args === 'object' && typeof args.target === 'string'
-              && args.target !== turnCtx.chatKey) {
-              log.warn(`[工具] ${toolName} 的 target=${args.target} 与本次会话 ${turnCtx.chatKey} 不一致 → 按会话纠正`)
-              callArgs = { ...args, target: turnCtx.chatKey }
+            const wanted = args && typeof args === 'object' && typeof args.target === 'string' ? args.target : ''
+            if (turnCtx?.chatKey && wanted && wanted !== turnCtx.chatKey) {
+              const ownMaster = isMasterPrivate(turnCtx.chatKey, kernel.adminQq)
+              const visitGroup = /^group:\d{1,12}$/.test(wanted)
+              const visitPrivate = /^private:\d{1,12}$/.test(wanted) && runtime.outbound?.visitPrivateAllowed === true
+              if (ownMaster && (visitGroup || visitPrivate)) {
+                log.info(`[工具] 串门：${turnCtx.chatKey} → ${wanted}（主人私聊特权，${toolName}）`)
+              } else {
+                const why = ownMaster && /^private:\d{1,12}$/.test(wanted)
+                  ? '（串门到别的私聊没开：控制台「群聊」页 →「串门也允许发到别的私聊」）'
+                  : ''
+                log.warn(`[工具] ${toolName} 的 target=${wanted} 与本次会话 ${turnCtx.chatKey} 不一致 → 按会话纠正${why}`)
+                callArgs = { ...args, target: turnCtx.chatKey }
+              }
             }
             return turnStore.run(turnCtx, () => def.execute(callArgs, exec))
           },

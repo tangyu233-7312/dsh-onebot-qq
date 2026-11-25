@@ -13,7 +13,7 @@
  *     "adminQq": 123456,                       // 必填（无默认）
  *     "onebot": { wsUrl, wsToken, httpUrl, httpToken },
  *     "dsh": { agentPreset, qqWorkspacePath, sessionsFile },
- *     "outbound": { replyMaxLength, longForwardThreshold, longForwardChunkSize, quoteAfterMsgs },
+ *     "outbound": { replyMaxLength, longForwardThreshold, longForwardChunkSize, quoteAfterMsgs, visitPrivateAllowed },
  *     "archive": { enabled, dir },
  *     "toolPrefix": "mcp__qq__",
  *     "plugins": { "<id>": false },            // 子插件总开关
@@ -62,6 +62,8 @@ export function defaultConfig() {
       longForwardChunkSize: 800,
       quoteAfterMsgs: 3,
       groupContextCount: 10,
+      // 主人私聊串门：发到别的**群**默认就允许；这里只决定"能不能发到别的私聊"（默认关）
+      visitPrivateAllowed: false,
     },
     archive: { enabled: true, dir: 'logs/qq_chat' },
     toolPrefix: 'mcp__qq__',
