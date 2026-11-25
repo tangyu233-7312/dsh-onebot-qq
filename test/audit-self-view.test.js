@@ -27,7 +27,7 @@ function setup(opts = {}) {
     { dir: 'in', ts: now - 60 * 1000, sender: { qq: 1001, name: '小司' }, text: '走了走了' },
   ]
   if (opts.rows !== false) {
-    fs.writeFileSync(path.join(arch, 'group_573144674.jsonl'), rows.map((r) => JSON.stringify(r)).join('\n') + '\n')
+    fs.writeFileSync(path.join(arch, 'group_573100001.jsonl'), rows.map((r) => JSON.stringify(r)).join('\n') + '\n')
   }
   // 很久以前的一条：不该被算进 6 小时窗口
   fs.writeFileSync(path.join(arch, 'group_999999999.jsonl'), JSON.stringify({ dir: 'in', ts: now - 48 * 3600 * 1000, sender: { qq: 1, name: '老人' }, text: '老消息' }) + '\n')
@@ -39,7 +39,7 @@ function setup(opts = {}) {
     cfg,
     log: quiet,
     core: { dataDir: dir, archive: { dir: 'logs/qq_chat' } },
-    onebot: { groupList: async () => (opts.noGroupList ? [] : [{ id: 573144674, name: '摸鱼群' }]) },
+    onebot: { groupList: async () => (opts.noGroupList ? [] : [{ id: 573100001, name: '摸鱼群' }]) },
     selfLog,
     registerTool(name, def) { tools[name] = def },
     shared: {},
@@ -80,7 +80,7 @@ test('browse_groups：协议端取不到群列表时退化成读留档', async (
     const r = await s.tools.browse_groups.execute({})
     assert.equal(r.ok, true)
     assert.equal(r.groups.length, 1)
-    assert.equal(r.groups[0].group, '573144674')
+    assert.equal(r.groups[0].group, '573100001')
   } finally { s.restore() }
 })
 

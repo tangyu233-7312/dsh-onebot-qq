@@ -26,12 +26,12 @@ function writeArchive(dataDir, chatKey, rows) {
 const msg = (qq, name, text, dir = 'in') => ({ dir, ts: Date.now(), sender: { qq, name, card: name }, text })
 
 function seedDay(dataDir) {
-  writeArchive(dataDir, 'group:573144674', [
+  writeArchive(dataDir, 'group:573100001', [
     msg(1001, '小司', '今天龙放出来了'),
     msg(1002, '镜华', '晚上八点打'),
     msg(0, '', '我也是这么想的', 'out'),
   ])
-  writeArchive(dataDir, 'group:767612072', [msg(1003, '枳缘', '明天上班了')])
+  writeArchive(dataDir, 'group:573100002', [msg(1003, '枳缘', '明天上班了')])
   writeArchive(dataDir, 'private:' + ADMIN_QQ, [msg(ADMIN_QQ, '主人', '早点睡')])
 }
 
@@ -51,7 +51,7 @@ test('素材装配：当天所有会话（群 + 私聊）都在，且落地一�
   })
   assert.equal(r.stats.chats, 3, '两个群 + 一个私聊')
   assert.equal(r.stats.messages, 5)
-  assert.match(r.text, /群 573144674/)
+  assert.match(r.text, /群 573100001/)
   assert.match(r.text, /今天龙放出来了/)
   assert.match(r.text, /私聊 /, '私聊也要进素材')
   assert.match(r.text, /→\[\d{2}:\d{2}\] 你：/, '机器人自己说的话要能区分')
@@ -63,7 +63,7 @@ test('素材装配：只取当天，前一天的不进素材', () => {
   const { start } = dayRange(DAY)
   const dir = path.join(dataDir, 'logs', 'qq_chat')
   fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(path.join(dir, 'group_573144674.jsonl'), [
+  fs.writeFileSync(path.join(dir, 'group_573100001.jsonl'), [
     JSON.stringify({ dir: 'in', ts: start - 3600 * 1000, sender: { qq: 1, name: '昨天的人' }, text: '昨天的话' }),
     JSON.stringify({ dir: 'in', ts: start + 60000, sender: { qq: 2, name: '今天的人' }, text: '今天的话' }),
   ].join('\n'))
@@ -152,7 +152,7 @@ test('素材装配：days=2 会把昨天也带上，并标日期', () => {
   const dir = path.join(dataDir, 'logs', 'qq_chat')
   fs.mkdirSync(dir, { recursive: true })
   const { start } = dayRange(DAY)
-  fs.writeFileSync(path.join(dir, 'group_573144674.jsonl'), [
+  fs.writeFileSync(path.join(dir, 'group_573100001.jsonl'), [
     JSON.stringify({ dir: 'in', ts: start - 3 * 3600 * 1000, sender: { qq: 1, name: '昨天的' }, text: '昨天夜里的话' }),
     JSON.stringify({ dir: 'in', ts: start - 5 * 24 * 3600 * 1000, sender: { qq: 2, name: '五天前的' }, text: '五天前的话' }),
     JSON.stringify({ dir: 'in', ts: start + 60000, sender: { qq: 3, name: '今天的' }, text: '今天的话' }),
@@ -177,8 +177,8 @@ test('素材装配：太旧的群记忆不会被当成本次经历（long-memory
   const oldTs = Date.now() - 10 * 24 * 3600 * 1000
   const rows = [
     // 十天前的旧事 + 一条昨天的（应该只出现后者）
-    { op: 'add', at: oldTs, memory: { id: 'm_old', scope: 'group:573144674', text: '十天前的旧事', importance: 0.6, createdAt: oldTs } },
-    { op: 'add', at: Date.now(), memory: { id: 'm_new', scope: 'group:573144674', text: '昨天说好的事', importance: 0.7, createdAt: Date.now() - 2 * 3600 * 1000 } },
+    { op: 'add', at: oldTs, memory: { id: 'm_old', scope: 'group:573100001', text: '十天前的旧事', importance: 0.6, createdAt: oldTs } },
+    { op: 'add', at: Date.now(), memory: { id: 'm_new', scope: 'group:573100001', text: '昨天说好的事', importance: 0.7, createdAt: Date.now() - 2 * 3600 * 1000 } },
     // 私聊记忆绝不能进空间素材
     { op: 'add', at: Date.now(), memory: { id: 'm_pm', scope: 'private:10001', text: '私聊里的秘密', importance: 0.9, createdAt: Date.now() } },
   ]
@@ -200,13 +200,13 @@ test('素材装配：onlyChatKey 只取一个群（/空间 群聊 用）', () =>
     memoryFile: path.join(dataDir, 'long-memory', 'memories.jsonl'),
     workspaceDir: path.join(dataDir, 'workspace'),
     date: DAY,
-    onlyChatKey: 'group:573144674',
+    onlyChatKey: 'group:573100001',
   })
   assert.equal(r.stats.chats, 1)
   assert.match(r.text, /今天龙放出来了/)
   assert.doesNotMatch(r.text, /明天上班了/, '别的群不该进素材')
   assert.doesNotMatch(r.text, /私聊 /, '私聊也不该进')
-  assert.match(r.text, /只看 group:573144674/)
+  assert.match(r.text, /只看 group:573100001/)
 })
 
 test('命令：/空间 群聊 只按本群的事回顾', async () => {
@@ -225,11 +225,11 @@ test('命令：/空间 群聊 只按本群的事回顾', async () => {
     const cmd = env.kernel.commands.get('空间')
     assert.ok(cmd, '应注册 /空间 命令')
     await cmd.handler(
-      { chatKey: 'group:767612072', sender: { isMaster: true }, messageId: 1, isGroup: true },
+      { chatKey: 'group:573100002', sender: { isMaster: true }, messageId: 1, isGroup: true },
       ['群聊'],
     )
     await new Promise((r) => setTimeout(r, 400))
-    assert.match(promptText, /只看 group:767612072/)
+    assert.match(promptText, /只看 group:573100002/)
     assert.match(promptText, /明天上班了/)
     assert.doesNotMatch(promptText, /今天龙放出来了/, '没点名的群不该进素材')
   } finally {

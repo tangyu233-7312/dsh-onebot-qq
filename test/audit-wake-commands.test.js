@@ -632,7 +632,7 @@ test('WAKE-NOTICE 无身份 notice（点赞 profile_like / bot_offline）：不�
     times: 1,
     time: Math.floor(Date.now() / 1000),
   })
-  await emitRaw(h.kernel, { post_type: 'notice', notice_type: 'bot_offline', user_id: 3505422215 })
+  await emitRaw(h.kernel, { post_type: 'notice', notice_type: 'bot_offline', user_id: 3500000001 })
   await sleep(150)
   assert.equal(h.ctx._prompts.length, 0, 'notice 不进模型')
   assert.equal(h.ctx._sessions.size, 0, '不建 DSH 会话（曾经的 private:undefined）')
@@ -641,11 +641,11 @@ test('WAKE-NOTICE 无身份 notice（点赞 profile_like / bot_offline）：不�
 
 test('normalizeEvent：无 user_id/group_id 的 notice 直接丢；正常 poke/入群不受影响', async () => {
   const { normalizeEvent } = await import('../kernel/format.js')
-  assert.equal(normalizeEvent({ post_type: 'notice', notice_type: 'notify', sub_type: 'profile_like', operator_id: 1 }, 3505422215), null)
-  assert.equal(normalizeEvent({ post_type: 'notice', notice_type: 'bot_offline' }, 3505422215), null)
-  const poke = normalizeEvent({ post_type: 'notice', notice_type: 'notify', sub_type: 'poke', group_id: GROUP_ID, user_id: MEMBER_QQ, target_id: 3505422215 }, 3505422215)
+  assert.equal(normalizeEvent({ post_type: 'notice', notice_type: 'notify', sub_type: 'profile_like', operator_id: 1 }, 3500000001), null)
+  assert.equal(normalizeEvent({ post_type: 'notice', notice_type: 'bot_offline' }, 3500000001), null)
+  const poke = normalizeEvent({ post_type: 'notice', notice_type: 'notify', sub_type: 'poke', group_id: GROUP_ID, user_id: MEMBER_QQ, target_id: 3500000001 }, 3500000001)
   assert.ok(poke, '群戳一戳仍要进管线（intercept 回戳）')
   assert.equal(poke.chatKey, `group:${GROUP_ID}`)
-  const inc = normalizeEvent({ post_type: 'notice', notice_type: 'group_increase', group_id: GROUP_ID, user_id: MEMBER_QQ }, 3505422215)
+  const inc = normalizeEvent({ post_type: 'notice', notice_type: 'group_increase', group_id: GROUP_ID, user_id: MEMBER_QQ }, 3500000001)
   assert.ok(inc, '入群通知仍要进管线（group-welcome 用）')
 })
