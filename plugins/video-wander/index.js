@@ -325,8 +325,27 @@ export default {
     frames: {
       type: 'int', default: 8, unit: '帧', group: '自己找视频看', advanced: true,
       min: 1, max: 12, step: 1,
-      label: '抽几帧',
-      hint: '跟「看视频」一致即可。帧越多它看得越全，但一次多模态调用也越贵。',
+      label: '短视频抽几帧',
+      hint: '跟「看视频」一致即可。帧越多它看得越全，但一次多模态调用也越贵。\n'
+        + '超过下面「多长算长视频」的片子改用「长视频抽几帧」。',
+    },
+    // 2026-11-25：与「文件与图片」页的视频插件对齐 —— 原来这里只有单一帧数，
+    // 现网最长会看 40 分钟的片子，8 帧根本接不上「讲了哪几段」。
+    // 侧车 pickFrames(durSec,{frames,framesLong,framesSplitSec}) 一直支持分档，只是本插件没传。
+    framesLong: {
+      type: 'int', default: 12, unit: '帧', group: '自己找视频看', advanced: true,
+      min: 1, max: 24, step: 1,
+      label: '长视频抽几帧',
+      hint: '视频超过下面「多长算长视频」时改用这个帧数，默认 12。\n'
+        + '为什么分开：10 分钟的片子 8 帧够概括，再长就开始漏内容，多给几帧能接上「讲了哪几段」；'
+        + '一分钟的小视频抽 12 帧纯属浪费（相邻帧几乎一样），所以短的仍走「短视频抽几帧」。',
+    },
+    framesSplitMin: {
+      type: 'int', default: 10, unit: '分钟', group: '自己找视频看', advanced: true,
+      min: 1, max: 120, step: 1,
+      label: '多长算"长视频"',
+      hint: '超过这个时长（按分钟填）就按「长视频抽几帧」抽，默认 10 分钟。\n'
+        + '只影响抽帧数量，不影响上面「最长看多久的视频」—— 那个超了是整条跳过不看。',
     },
     maxSide: {
       type: 'int', default: 1024, unit: 'px', group: '自己找视频看', advanced: true,
@@ -604,6 +623,11 @@ export default {
             url,
             platform: 'bilibili',
             frames: Math.max(1, num(cfg().frames, 8)),
+            // 长视频分档（2026-11-25）：侧车按**实际时长**选帧数，
+            // 超过 framesSplitSec 就用 framesLong。这里把分钟换成侧车要的秒。
+            // 24 是侧车 hard cap（HARD_CAP_FRAMES），这里先夹一次，免得手改配置传个离谱值下去。
+            framesLong: Math.min(24, Math.max(1, num(cfg().framesLong, 12))),
+            framesSplitSec: Math.max(60, num(cfg().framesSplitMin, 10) * 60),
             maxSide: Math.max(256, num(cfg().maxSide, 1024)),
             maxSeconds: Math.max(60, num(cfg().maxMinutes, 15) * 60),
           }),

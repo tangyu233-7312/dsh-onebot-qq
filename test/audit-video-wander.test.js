@@ -31,6 +31,9 @@ function setup(over = {}) {
     reportGraceSec: 1,
     excludeDays: 14,
     frames: 8,
+    // 长视频分档（2026-11-25）：与「文件与图片」页两个视频插件同名同义
+    framesLong: 12,
+    framesSplitMin: 10,
     maxSide: 1024,
     maxMinutes: 15,
     sidecarUrl: 'http://127.0.0.1:3972',
@@ -51,6 +54,8 @@ function setup(over = {}) {
   const selfLogRows = []
   const shared = {}
   const prompts = []
+  /** 侧车 /read 的请求体（断言长视频分档真的传下去了） */
+  const readBodies = []
   let turnEndCb = null
   const rankItems = over.rankItems || [
     { bvid: 'BV1GJ411x7h7', title: '测试视频甲', duration: 212, owner: { name: 'UP甲' }, tname: '音乐', stat: { view: 12345 }, desc: '简介甲' },
@@ -73,6 +78,7 @@ function setup(over = {}) {
     }
     if (u.includes('/read')) {
       const body = JSON.parse(opts?.body || '{}')
+      readBodies.push(body)
       const failList = over.sidecarFailBvids || []
       const hitFail = typeof body.url === 'string' && failList.some((b) => body.url.includes(b))
       if (over.sidecarFails || hitFail) return { ok: true, async json() { return { ok: false, code: 'download_failed', error: 'x' } } }
@@ -127,7 +133,7 @@ function setup(over = {}) {
 
   plugin.setup(bot)
   const restore = () => { globalThis.fetch = realFetch; fs.rmSync(dir, { recursive: true, force: true }) }
-  return { bot, tools, delivered, pluginDelivered, selfLogRows, shared, prompts, cfg, restore, dir, triggerTurnEnd: () => turnEndCb?.() }
+  return { bot, tools, delivered, pluginDelivered, selfLogRows, shared, prompts, cfg, restore, dir, readBodies, triggerTurnEnd: () => turnEndCb?.() }
 }
 
 test('跑一次：挑视频 → 抽帧 → 交感想 → 发给主人私聊', async () => {
@@ -531,6 +537,49 @@ test('migrateConfig：不修改入参（纯函数）', () => {
 test('migrateConfig：小时值超范围时夹到 1~4320 分钟', () => {
   assert.equal(plugin.migrateConfig({ everyHours: 100 }).everyMinutes, 4320, '100 小时超出上限，夹到 4320')
   assert.equal(plugin.migrateConfig({ everyHours: 0.001 }).everyMinutes, 1, '极小值夹到下限 1 分钟')
+})
+
+// ── 2026-11-25：长视频分档（与「文件与图片」页两个视频插件对齐）──────
+test('长视频分档：抽帧请求带上 framesLong 与 framesSplitSec（分钟换秒）', async () => {
+  const s = setup({ cfg: { autoEnabled: true, frames: 8, framesLong: 12, framesSplitMin: 10 } })
+  try {
+    await s.shared.videoWanderRunNow('测试')
+    const body = s.readBodies[0]
+    assert.ok(body, '应请求过侧车 /read')
+    assert.equal(body.frames, 8, '短视频帧数照旧')
+    assert.equal(body.framesLong, 12, '长视频帧数要传下去（侧车 pickFrames 用它）')
+    assert.equal(body.framesSplitSec, 600, '10 分钟应换成 600 秒传给侧车')
+  } finally { s.restore() }
+})
+
+test('长视频分档：面板上的「多长算长视频」真能改（20 分钟 = 1200 秒）', async () => {
+  const s = setup({ cfg: { autoEnabled: true, frames: 8, framesLong: 16, framesSplitMin: 20 } })
+  try {
+    await s.shared.videoWanderRunNow('测试')
+    const body = s.readBodies[0]
+    assert.equal(body.framesLong, 16)
+    assert.equal(body.framesSplitSec, 1200)
+  } finally { s.restore() }
+})
+
+test('长视频分档：没配过也有默认值（12 帧 / 10 分钟），不会传 undefined', async () => {
+  const s = setup({ cfg: { autoEnabled: true, frames: 8, framesLong: undefined, framesSplitMin: undefined } })
+  try {
+    await s.shared.videoWanderRunNow('测试')
+    const body = s.readBodies[0]
+    assert.equal(body.framesLong, 12, '缺省回落 12，与 schema 默认一致')
+    assert.equal(body.framesSplitSec, 600, '缺省回落 10 分钟')
+  } finally { s.restore() }
+})
+
+test('长视频分档：帧数被夹在合法范围（侧车硬上限 24，最小 1）', async () => {
+  const s = setup({ cfg: { autoEnabled: true, framesLong: 999, framesSplitMin: 1 } })
+  try {
+    await s.shared.videoWanderRunNow('测试')
+    const body = s.readBodies[0]
+    assert.equal(body.framesLong, 24, '超过侧车上限要夹到 24，不能把离谱值传下去')
+    assert.equal(body.framesSplitSec, 60, '1 分钟至少 60 秒')
+  } finally { s.restore() }
 })
 
 // ── 2026-10-30 线上：它点了「去看」，但看完的结果没回到它自己的记录里 ─────

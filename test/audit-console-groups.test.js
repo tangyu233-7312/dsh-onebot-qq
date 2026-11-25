@@ -61,6 +61,20 @@ test('自己找视频看：间隔是分钟控件（能在面板上填 20 分钟�
     '旧的整小时控件不该继续挂在面板上（会和分钟项冲突）')
 })
 
+test('自己找视频看：长视频分档两个控件在面板上（帧数 + 多长算长视频）', () => {
+  const long = schema.controls.find((x) => x.key === 'video-wander.framesLong')
+  const split = schema.controls.find((x) => x.key === 'video-wander.framesSplitMin')
+  assert.ok(long, '面板应有「长视频抽几帧」')
+  assert.ok(split, '面板应有「多长算"长视频"」')
+  assert.equal(long.unit, '帧')
+  assert.equal(long.default, 12)
+  assert.ok(long.max >= 12, '上限要容得下 12 帧')
+  assert.equal(split.unit, '分钟')
+  assert.equal(split.default, 10)
+  // 短视频那一项要改名，否则两栏都叫「抽几帧」分不清
+  assert.equal(schema.controls.find((x) => x.key === 'video-wander.frames').label, '短视频抽几帧')
+})
+
 test('自己找视频看：没配过间隔时面板显示默认 240 分钟', () => {
   // 面板读的是内核 buildPluginCfg 的产物（storedValue 的回落值）：这条实例 raw 里没有
   // everyHours 也没有 everyMinutes，所以应是 schema 默认 240。
