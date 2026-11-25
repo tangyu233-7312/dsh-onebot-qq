@@ -1,6 +1,6 @@
 {
   "name": "dsh-onebot-qq",
-  "version": "0.1.1",
+  "version": "1.0.0",
   "description": "DSH OneBot v11 QQ bot plugin — in-process microkernel + pluggable sub-plugins, install-and-go on Linux / Windows / macOS",
   "type": "module",
   "main": "./index.js",

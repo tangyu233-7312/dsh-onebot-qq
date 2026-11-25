@@ -30,7 +30,7 @@
 dsh plugin --profile web add github:tangyu233-7312/dsh-onebot-qq
 
 # 也可以安装本地 npm pack 产物，或链接开发目录（二选一）
-# dsh plugin --profile web add /abs/path/dsh-onebot-qq-0.1.1.tgz
+# dsh plugin --profile web add /abs/path/dsh-onebot-qq-1.0.0.tgz
 # dsh plugin --profile web add link:/abs/path/dsh-onebot-qq
 ~~~
 
@@ -114,6 +114,17 @@ node scripts/check-doc-links.mjs
 默认先列测试计划，只跑改动相关套件；跨多个核心模块且相关覆盖不足，或用户明确要求时，再运行 `npm run verify` 全量检查。`check` 检查语法、脱敏和发布包；`--tracked` 补查所有Git跟踪文件。新增文件先精确暂存，待推送的历史提交另行审查。多处安装核验流程见[维护与交接](docs/维护与交接.md)。
 
 实例配置、真实 QQ/群号、密钥、聊天数据、音色模型和本地部署备份不应提交。文档使用占位值，运行数据保留在实例数据目录。
+
+## 版本与支持
+
+当前版本 **1.0.0**（首个独立发布版本），变更见 [CHANGELOG](CHANGELOG.md)。
+
+- **DSH**：`>= 0.2.1-rc.2 < 0.3.0`
+- **Node.js**：`>= 22`
+- 平台：Linux / Windows / macOS
+
+> 升级 DSH 本体或用 `dsh plugin add` 重装后，profile 里的插件目录可能被换成仓库版本，
+> 本地改动会"消失"。改过代码的实例重装后请重新同步。
 
 ## License
 
