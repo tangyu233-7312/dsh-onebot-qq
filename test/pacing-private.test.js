@@ -5,7 +5,10 @@ import assert from 'node:assert/strict'
 import { setupPacing, flushPacing as flush, localAt } from './pacing-fixture.mjs'
 const setup = opts => setupPacing(null, opts)
 
-const T0900 = Date.parse('2026-10-29T09:00:00+08:00')
+// 2026-11-25：这里原来硬编码 '+08:00'，而 fixture 的 localAt() 是按**机器本地时区**构造时间。
+// 在 UTC 的 CI 上两者差 8 小时，于是「自然日上限」「尚未冷场」等断言全部错位。
+// 统一用 localAt()，任何时区下都与实现（startOfLocalDay 也是本地时区）同口径。
+const T0900 = localAt(9)
 
 test('私聊主动接话：对方安静够久 → 起一轮（isGroup=false）', async () => {
   const { p, fired, advance } = setup({ seed: { 'private:10001': { lastInboundAt: T0900 } } })
@@ -44,7 +47,7 @@ test('私聊主动接话：每小时最多 1 次（同一小时内第二次 tick
 test('私聊主动接话：每天最多 3 次（按自然日，0 点重置）', async () => {
   // 2026-11-01 改：每日额度从「滚动 24 小时」改成「本地自然日」——
   // 文案一直写「明天 0 点重置」，但原来的实现是等昨晚第一条满 24 小时才松口。
-  const T0 = Date.parse('2026-10-29T12:00:00+08:00')
+  const T0 = localAt(12)
   const { p, fired, advance, state } = setup({ seed: { 'private:10001': { lastInboundAt: T0900 } } })
   const perDay = new Map()
   const dayOf = (ms) => {

@@ -241,17 +241,28 @@ test('候选真正回复后仍可追问；不发没有额外出站；发送失�
 })
 
 test('连续插话保留单轮提醒额度，旧工具异步发图后仍受同轮额度约束；新轮恢复', async (t) => {
-  const h = await boot(t, { pluginConfig: {
-    stickers: { offerPercent: 100, offerCooldownMs: 0 },
-    'persona-voice': { splitReplyEnabled: false, quoteEnforce: false },
-    'link-parser': { enabled: false },
-  } })
+  const h = await boot(t, {
+    // 掷骰概率的权威值在 pacing.reply.style.stickerProbability —— 内核装配时会**覆盖**
+    // stickers.offerPercent（默认 0.8 → 80%）。只设插件侧那个值不起作用，
+    // 于是这条以前有 20% 概率不掷中、断言随机失败（2026-11-25 CI 上暴露）。
+    // ⚠️ boot() 是浅覆盖，这里必须把 merge/reply 的两个 false 一起写全，否则会退回默认（合批开、主动接话开）。
+    pacing: { merge: { enabled: false }, reply: { enabled: false, style: { stickerProbability: 1 } } },
+    pluginConfig: {
+      stickers: { offerPercent: 100, offerCooldownMs: 0 },
+      'persona-voice': { splitReplyEnabled: false, quoteEnforce: false },
+      'link-parser': { enabled: false },
+    },
+  })
   const dir = path.join(h.dataDir, 'qq-stickers')
   fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(path.join(dir, 'fixture.png'), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
   fs.writeFileSync(path.join(dir, 'index.json'), JSON.stringify({ items: [
     { id: 1, file: 'fixture.png', tags: ['无语'], tagged: true },
   ] }))
+  // 先确认权威值真的生效：stickers 的 offerPercent 被内核用 pacing.reply.style 覆盖过，
+  // 必须是 100 才可能"必然掷中"。没有这条断言，下面的 stickerNote 断言就是在赌概率。
+  const stickerCfg = h.kernel.plugins.find((p) => p.id === 'stickers')?.cfg || {}
+  assert.equal(stickerCfg.offerPercent, 100, '掷骰概率应为 100%，否则这条测试会随机失败')
   await emitRaw(h.kernel, groupAtEvent({ text: '第一问', messageId: 721 }))
   const a = h.ctx._prompts[0]; start(h, a)
   assert.ok((await send(h, a, '先回答一句')).stickerNote)
