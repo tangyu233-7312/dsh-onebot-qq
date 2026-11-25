@@ -196,15 +196,13 @@ export function agoText(at, now = Date.now()) {
  * 拼注入块。**格式是给模型看的**，改动前先想清楚：
  *   · 必须带“系统信息、非用户发言”的保护前缀 —— 否则模型会把记忆当成群友说的话（旧插件踩过）；
  *   · 每条带“多久以前”，让模型自己判断该不该提；
- *   · 空列表返回 ''（调用方据此决定不加 hint）。
+ *   · 空列表返回 `{ block: '' }`（调用方据此决定不加 hint）。
+ *
+ * 返回 `{ block, included }`：`included` 是实际塞进块里的条目（调用方据此记「这轮用了哪几条」）。
  *
  * @param {Array<{text:string, createdAt:number, memoryType?:string, state?:string, dueAt?:number}>} list 已排序、已截断
  * @param {{now?:number, maxChars?:number, header?:string}} o
  */
-export function formatInjection(list, o = {}) {
-  return buildInjection(list, o).block
-}
-
 export function buildInjection(list, o = {}) {
   const items = Array.isArray(list) ? list.filter((x) => x && String(x.text || '').trim()) : []
   if (!items.length) return { block: '', included: [] }

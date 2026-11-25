@@ -246,7 +246,7 @@ async function sendLongAsForward({ onebot, log, target, text, longForward, reply
  *   · `deliver.onDecorate(fn)` —— 插件挂出站装饰（契约 bot.onOutbound；引用锚定夺/拆条/自发轮去引用）
  *   · `deliver.media(target, cqBody, caption)` —— 带媒体 CQ 串的出站（契约 bot.sendMedia）
  *
- * deliver 内部四步是契约硬编码顺序（OUTBOUND_PHASE）：① 抽 [AT:] → ② 脱敏+合法化 → ③ decorate → ④ 发送+留档。
+ * deliver 内部四步是契约硬编码顺序：① 抽 [AT:] → ② 脱敏+合法化 → ③ decorate → ④ 发送+留档。
  * ⚠️ ①② 顺序反了会出大事（自检逮到过）：先脱敏会把 `[AT:qq=123]` 的号码变成 [已隐去]，
  *   标记当场废掉 → @ 静默失效，而且只在非豁免会话里失效，极难发现。
  *

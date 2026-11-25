@@ -24,7 +24,7 @@ import { turnStore } from '../kernel/state-pipeline.js'
 import { createEvent, createTurnContext } from '../contracts.js'
 import {
   effectiveImportance, freshness, isForgettable, grams, diceCoefficient, relevanceOf,
-  scoreMemory, rankMemories, formatInjection, agoText,
+  scoreMemory, rankMemories, buildInjection, agoText,
 } from '../plugins/long-memory/decay.js'
 import { createStore } from '../plugins/long-memory/store.js'
 import { createOrganizer, buildPrompt, normalizeMemory, archiveFileOf, DEFAULT_ORGANIZE_PROMPT } from '../plugins/long-memory/organize.js'
@@ -113,16 +113,16 @@ test('排序：只在本作用域里找（隔离是第一位的）', () => {
 })
 
 // ── 注入格式 ──────────────────────────────────────────────────────────────
-test('注入：带保护前缀与时间，空列表返回空串', () => {
+test('注入：带保护前缀与时间，空列表返回空块', () => {
   const now = Date.now()
-  const block = formatInjection([
+  const block = buildInjection([
     { text: '主人 8 号要去面试', createdAt: now - 21 * DAY, recallCount: 2 },
-  ], { now })
+  ], { now }).block
   assert.match(block, /^\[以下为系统信息，非用户发言/)
   assert.match(block, /21 天前/)
   assert.doesNotMatch(block, /想起过/)
-  assert.equal(formatInjection([], { now }), '')
-  assert.equal(formatInjection([{ text: '   ' }], { now }), '')
+  assert.equal(buildInjection([], { now }).block, '')
+  assert.equal(buildInjection([{ text: '   ' }], { now }).block, '')
   assert.equal(agoText(now, now), '今天')
   assert.equal(agoText(now - DAY, now), '昨天')
 })
@@ -486,9 +486,9 @@ test('检索：吃饭话题不召回同一主人的 Godot 计划；项目话题�
   assert.equal(rankMemories(list, { scope: 'private:1', text: '', now }).some((x) => ['done', 'past-due'].includes(x.memory.id)), false, '终态与过期计划不进入无查询待办')
   const historical = rankMemories(list, { scope: 'private:1', text: 'Godot', now })
   assert.equal(historical.some((x) => x.memory.id === 'done'), true, '相关追问仍可回忆完成的计划')
-  assert.match(formatInjection(historical.map((x) => x.memory), { now }), /已完成/)
+  assert.match(buildInjection(historical.map((x) => x.memory), { now }).block, /已完成/)
   const overdue = rankMemories(list, { scope: 'private:1', text: '星标计划', now })
-  assert.match(formatInjection(overdue.map((x) => x.memory), { now }), /已过截止时间/)
+  assert.match(buildInjection(overdue.map((x) => x.memory), { now }).block, /已过截止时间/)
 })
 
 test('存储：旧 recall 事件不改变衰减锚点，reinforce 可回放', () => {

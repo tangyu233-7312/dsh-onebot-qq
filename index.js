@@ -301,9 +301,14 @@ export async function apply(ctx, bundleConfig = {}) {
   const discovered = await discoverPlugins({ runtime, dataDir, log })
 
   // 控制台/CLI 常用的绝对路径（人设目录取已解析的 persona-voice cfg；默认人设模板随包）
+  // 相对路径一律相对 dataDir（见 resolveUnderData）。
+  const resolveUnderData = (p, fallback) => {
+    const raw = String(p || '').trim() || fallback
+    return path.resolve(path.isAbsolute(raw) ? raw : path.join(dataDir, raw))
+  }
   const kernelPaths = {
     dataDir: path.resolve(dataDir),
-    workspaceDir: path.resolve(String(runtime.dsh?.qqWorkspacePath || '').trim() || dataDir),
+    workspaceDir: resolveUnderData(runtime.dsh?.qqWorkspacePath, dataDir),
     personaDir: path.resolve(String(discovered.find((d) => d.id === 'persona-voice')?.cfg?.personaDir || '').trim()
       || path.join(dataDir, 'personas')),
     packageRoot: PACKAGE_ROOT,
@@ -520,7 +525,10 @@ export async function apply(ctx, bundleConfig = {}) {
   // 目标：QQ 会话不再散在侧栏「未分组」，而是固定归到一个专属工作区。
   async function ensureQqWorkspace({ quiet = false } = {}) {
     try {
-      const dir = path.resolve(String(runtime.dsh?.qqWorkspacePath || '').trim() || dataDir)
+      // 相对路径一律相对 **dataDir** 解析（配置默认值 `workspace` 就是这么用的）。
+      // ⚠️ 别直接 path.resolve()：那会相对 process.cwd()，跑测试时会在仓库根目录里
+      //    长出一个 workspace/ 目录（2026-11-25 清理时逮到的）。
+      const dir = resolveUnderData(runtime.dsh?.qqWorkspacePath, dataDir)
       ensureDir(dir)
       const title = String(runtime.dsh?.workspaceTitle || '').trim() || 'QQ 聊天'
       const registry = (() => {
@@ -1701,7 +1709,7 @@ export async function apply(ctx, bundleConfig = {}) {
     // 路径快照同步（人设目录可能被控制台改过；其余项随 dataDir/配置派生）
     kernel.paths = {
       ...kernel.paths,
-      workspaceDir: path.resolve(String(runtime.dsh?.qqWorkspacePath || '').trim() || dataDir),
+      workspaceDir: resolveUnderData(runtime.dsh?.qqWorkspacePath, dataDir),
       personaDir: path.resolve(String(discovered.find((d) => d.id === 'persona-voice')?.cfg?.personaDir || '').trim()
         || path.join(dataDir, 'personas')),
     }

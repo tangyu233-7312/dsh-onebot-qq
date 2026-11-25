@@ -26,7 +26,7 @@ export const CONTRACT_VERSION = 1
 export const STAGES = ['pre-gate', 'passive-tap', 'intercept', 'wake', 'before-turn']
 
 /**
- * 出站装饰阶段（`deliver()` 内部固定四步，插件只能挂 `decorate`）。
+ * 出站装饰阶段：`deliver()` 内部固定四步，插件只能挂 `decorate`。
  *
  *  `deliver()` 内部顺序（**内核硬编码，不可改**）：
  *    1. extractAt   —— 抽 `[AT:名字]` / `[AT:qq=号]`（必须在脱敏前！）
@@ -34,7 +34,6 @@ export const STAGES = ['pre-gate', 'passive-tap', 'intercept', 'wake', 'before-t
  *    3. decorate    —— ← 插件挂这里（引用锚定夺 / 长文卡片 / 拆条）
  *    4. send+archive—— 发协议端 + 写 out 留档
  */
-export const OUTBOUND_PHASE = 'decorate'
 
 /**
  * 六项出口脱敏的**唯一实现位置**：kernel/format.js 的 `sanitizeSensitive(text, { exempt })`。
@@ -160,17 +159,12 @@ export function createTurnContext(ev) {
  * | `bot.dsh` | 会话驱动：`{ ensureSession(chatKey), rename(sessionId,title), cancel(sessionId) }` |
  */
 
-/** 配置 schema 字段类型 → 控制台控件（与控制台前端已有的控件类型对齐）。 */
-export const CONFIG_TYPES = {
-  bool: 'bool',      // 开关
-  int: 'int',        // 整数（可带 unit/scale/min/max/step）
-  float: 'float',    // 小数（可带 unit/scale）
-  str: 'str',        // 文本
-  enum: 'enum',      // 下拉（options: [{value,label}]）
-  group: 'group',    // 字符串数组（如可自发接话的群号列表）
-}
-
-/** 给插件写 configSchema 用的小工具：补默认值。内核会在 setup 前套用它。 */
+/**
+ * 给插件写 configSchema 用的小工具：补默认值。内核会在 setup 前套用它。
+ *
+ * schema 字段类型（控制台按它选控件）：`bool` / `int`（可带 unit/scale/min/max/step）/
+ * `float` / `str` / `enum`（options: `[{value,label}]`）/ `group`（字符串数组，如群号列表）/ `text`。
+ */
 export function withDefaults(schema, raw = {}) {
   const cfg = {}
   for (const [key, def] of Object.entries(schema ?? {})) {
