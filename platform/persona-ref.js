@@ -20,7 +20,8 @@ import path from 'node:path'
 import { ensureDir } from './paths.js'
 import { readJsonFile, writeJsonFileSync } from './atomic.js'
 
-export const PERSONA_LINK_FILES = ['AGENTS.local.md', 'lines.txt', 'lines.default.txt', 'wake.txt']
+// 目标文件名不单独做成常量：它在下面两处是**成对**使用的（目标名 + 人设源后缀），
+// 抽成一个字符串数组反而对不上，2026-11-25 清理时删掉了没人读的 PERSONA_LINK_FILES。
 export const PERSONA_BASE_NAME = '_default.lines.txt'
 
 /** 探测目录是否允许创建文件软链（结果不缓存，调用方按需缓存）。 */
