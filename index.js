@@ -200,7 +200,21 @@ async function discoverPlugins({ runtime, dataDir, log }) {
  */
 function buildPluginCfg(plugin, runtime, dataDir) {
   const id = String(plugin.id)
-  const merged = withDefaults(plugin.configSchema, runtime.pluginConfig?.[id])
+  // 老配置键迁移（2026-11-25）：插件可以导出 migrateConfig(raw) => raw，
+  // 在套 schema 默认值**之前**把改过名的键折过来。不接这一步，
+  // 老实例里被改名的键会静默退回默认值（用户看到的是「我设的值自己变了」）。
+  // 只在内存里迁，不回写 config.json —— 用户下次在控制台保存时才落成新键。
+  let stored = runtime.pluginConfig?.[id]
+  if (typeof plugin.migrateConfig === 'function') {
+    try {
+      const next = plugin.migrateConfig(stored)
+      if (next !== undefined) stored = next
+    } catch (e) {
+      // buildPluginCfg 是模块级函数，没有外层 log —— 这里自己取一个同款 logger
+      logFor(id).warn(`老配置迁移失败，按原配置继续：${e?.message || e}`)
+    }
+  }
+  const merged = withDefaults(plugin.configSchema, stored)
   const cfg = resolveRuntimePaths(merged, dataDir)
   // gate-wake 的 adminQq：实例配置里只有一个权威值（runtime.adminQq）
   if (id === 'gate-wake' && !(Number(cfg.adminQq) > 0)) cfg.adminQq = Number(runtime.adminQq) || 0

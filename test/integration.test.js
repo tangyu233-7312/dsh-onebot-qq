@@ -8,6 +8,7 @@ import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import net from 'node:net'
+import fs from 'node:fs'
 
 import { bootKernel, emitRaw, waitFor, ADMIN_QQ, GROUP_ID, MEMBER_QQ, groupAtEvent } from './helpers.mjs'
 
@@ -209,4 +210,24 @@ test('5. 插件隔离：plugins[id]=false 完全不加载，其余插件与工�
   assert.ok(h.kernel.pluginDefs.find((d) => d.id === 'stickers')?.disabled, 'pluginDefs 标记 disabled')
   assert.ok(h.kernel.toolDefs.has('send_message'), '核心工具仍在')
   assert.equal(h.kernel.toolDefs.has('send_sticker'), false, '停用插件的工具不注册')
+})
+
+// ── 2026-11-25：插件级老配置迁移钩子（buildPluginCfg → plugin.migrateConfig）──
+test('6. 老配置里的 everyHours 在真实装配时折成 everyMinutes（不静默退回默认）', async (t) => {
+  // 现网 NAS 的真实形状：video-wander 只存过 everyHours: 1，没有 everyMinutes。
+  // 不接迁移钩子的话，withDefaults 会把新键补成默认 240 → 用户看到「我设的 1 小时变成了 4 小时」。
+  const h = await bootKernel({
+    config: {
+      pacing: { merge: { enabled: false } },
+      pluginConfig: { 'video-wander': { enabled: true, autoEnabled: true, everyHours: 1 } },
+    },
+  })
+  t.after(() => h.dispose())
+  const def = h.kernel.pluginDefs.find((d) => d.id === 'video-wander')
+  assert.ok(def, 'video-wander 应被发现')
+  assert.equal(def.cfg.everyMinutes, 60, '老配置的 1 小时必须折成 60 分钟')
+  // 实例配置文件本身不改（只在内存里迁）：用户没在控制台保存过，就不该替他改盘上的值
+  const onDisk = JSON.parse(fs.readFileSync(h.configPath, 'utf8'))
+  assert.equal(onDisk.pluginConfig['video-wander'].everyHours, 1, '不改盘上的旧键')
+  assert.equal(onDisk.pluginConfig['video-wander'].everyMinutes, undefined, '也不擅自写入新键')
 })

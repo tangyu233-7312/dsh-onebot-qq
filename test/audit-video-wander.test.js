@@ -17,7 +17,9 @@ function setup(over = {}) {
   const cfg = {
     enabled: true,
     autoEnabled: false,
-    everyHours: 4,
+    // 2026-11-25：间隔从「整小时」改成「分钟」。测试里沿用 4 小时 = 240 分钟，
+    // 这样照旧能被「两条路的配额互不占用」那条用例的注释解释。
+    everyMinutes: 240,
     maxPerDay: 6,
     regions: ['全站'],
     masterQq: '',
@@ -326,7 +328,7 @@ test('watch_video：在看视频的会话里拒绝（防递归）', async () => 
 test('两条路的配额互不占用：定时器刚看过，对话里照样能看', async () => {
   // 关键回归：原来共用 lastRunAt，定时器跑完 → 主人叫它看 → 它说「刚看过，N 分钟后再来」
   // 用户体感是「根本不是我要它看，是插件硬塞的」。
-  const s = setup({ cfg: { autoEnabled: true, everyHours: 4, maxPerDay: 6 } })
+  const s = setup({ cfg: { autoEnabled: true, everyMinutes: 240, maxPerDay: 6 } })
   try {
     // 先让定时器跑一次（shared 入口等价于「到点自己看」，走 timer 那条计数）
     await s.shared.videoWanderRunNow('到点自己看')
@@ -441,6 +443,94 @@ test('maxPerDay = 0 等于自动关掉', () => {
   try {
     assert.equal(s.shared.videoWanderStatus().autoEnabled, false)
   } finally { s.restore() }
+})
+
+// ── 2026-11-25：间隔从「整小时」改成「分钟」──────────────────
+test('everyMinutes：间隔按分钟生效（nextDueAt = 上次 + N 分钟）', async () => {
+  const s = setup({ cfg: { autoEnabled: true, everyMinutes: 25 } })
+  try {
+    const st = s.shared.videoWanderStatus()
+    assert.equal(st.everyMinutes, 25)
+    // lastRunAt 为 0（还没跑过）→ nextDueAt 就是 25 分钟整；用它反推间隔
+    assert.equal(st.nextDueAt, 25 * 60000, '25 分钟应换算成 1,500,000 毫秒')
+    // 工具回执里的 timer 段也要走分钟口径，别留两份数
+    const tool = await s.tools.watch_status.execute({})
+    assert.equal(tool.timer.everyMinutes, 25)
+    assert.equal(tool.timer.everyHours, 0.42, '派生的小时值（保留两位）要保留给老消费者')
+  } finally { s.restore() }
+})
+
+test('everyMinutes 缺省：回落到 240 分钟（4 小时）', () => {
+  const s = setup({ cfg: { autoEnabled: true, everyMinutes: undefined } })
+  try {
+    // 注意：setup() 里 cfg 显式给 everyMinutes，这里覆盖成 undefined，
+    // num(undefined, 240) 应回落到 240 —— 与 schema 默认值一致
+    const st = s.shared.videoWanderStatus()
+    assert.equal(st.everyMinutes, 240, '默认值必须与 schema 一致，不能两处各写一个数')
+    assert.equal(st.nextDueAt, 240 * 60000)
+  } finally { s.restore() }
+})
+
+test('everyMinutes=20：19 分钟没到点不动，20 分钟后才看 —— 分钟级间隔真的能生效', async (t) => {
+  const s = setup({ cfg: { autoEnabled: true, everyMinutes: 20, quietEnabled: false } })
+  try {
+    const T = Date.now()
+    // 接管插件的 60 秒轮询与 Date.now()：不用真等 20 分钟（整小时口径下这条根本没法测）
+    t.mock.timers.enable({ apis: ['setInterval', 'Date'], now: T })
+    const stateFile = path.join(s.dir, 'video-wander-state.json')
+    const writeStateFile = (lastRunAt) => fs.writeFileSync(stateFile, JSON.stringify({
+      lastRunAt, chatLastAt: 0, runs: [], seen: {}, framesPrunedAt: 0,
+    }))
+    // 用 mock 的 setInterval 重开定时器（setup 时还没有 mock）
+    s.bot.shared.videoWanderReload()
+
+    // ① 上次是 19 分钟前 → 还差 1 分钟，不该自己看
+    writeStateFile(T - 19 * 60000)
+    t.mock.timers.tick(60000)
+    await new Promise((res) => setTimeout(res, 300))
+    assert.equal(s.delivered.length, 0, '19 分钟未到 20 分钟，不该自己看')
+
+    // ② 上次是 20 分 1 秒前 → 到点，应触发一次
+    writeStateFile(T - 20 * 60000 - 1000)
+    t.mock.timers.tick(60000)
+    await new Promise((res) => setTimeout(res, 1800))
+    assert.equal(s.delivered.length, 1, '过了 20 分钟应触发一次（整小时口径下这里要等满 1 小时）')
+  } finally {
+    t.mock.timers.reset()
+    s.restore()
+  }
+})
+
+test('migrateConfig：老配置 everyHours:1 → everyMinutes:60，节奏不变', () => {
+  const out = plugin.migrateConfig({ autoEnabled: true, everyHours: 1 })
+  assert.equal(out.everyMinutes, 60, '老配置的 1 小时必须折成 60 分钟，不能静默退回默认 240')
+  assert.equal(out.everyHours, 1, '旧键保留（回滚到旧版本时节奏还是原来那个值）')
+  assert.equal(out.autoEnabled, true, '其余键原样保留')
+})
+
+test('migrateConfig：已有 everyMinutes 时不被旧键覆盖', () => {
+  const out = plugin.migrateConfig({ everyHours: 4, everyMinutes: 20 })
+  assert.equal(out.everyMinutes, 20, '新键优先，老键不能覆盖用户刚设的值')
+})
+
+test('migrateConfig：没配过间隔 / 值非法 → 原样返回（交给 schema 默认值）', () => {
+  const a = { enabled: true }
+  assert.equal(plugin.migrateConfig(a), a)
+  const b = { everyHours: 0 }
+  assert.equal(plugin.migrateConfig(b), b)
+  const c = { everyHours: 'abc' }
+  assert.equal(plugin.migrateConfig(c), c)
+})
+
+test('migrateConfig：不修改入参（纯函数）', () => {
+  const raw = { everyHours: 2 }
+  plugin.migrateConfig(raw)
+  assert.equal(raw.everyMinutes, undefined, '不能顺手把调用方的对象改了（内核还在用它做 raw 快照）')
+})
+
+test('migrateConfig：小时值超范围时夹到 1~4320 分钟', () => {
+  assert.equal(plugin.migrateConfig({ everyHours: 100 }).everyMinutes, 4320, '100 小时超出上限，夹到 4320')
+  assert.equal(plugin.migrateConfig({ everyHours: 0.001 }).everyMinutes, 1, '极小值夹到下限 1 分钟')
 })
 
 // ── 2026-10-30 线上：它点了「去看」，但看完的结果没回到它自己的记录里 ─────

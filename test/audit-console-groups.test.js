@@ -1,7 +1,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { bootKernel } from './helpers.mjs'
-import { collectSchema } from '../admin/schema.js'
+import { collectSchema, readValue } from '../admin/schema.js'
 
 let h, schema
 before(async () => {
@@ -48,4 +48,35 @@ test('控制台可操作性：控件有帮助，凭据不重复，隐藏功能�
   const info = schema.controls.find(c => c.key === 'info.fileStore')
   assert.ok(info.text.includes('read_file'))
   assert.ok(/[\\/]/.test(info.text), '收件位置应给出实际路径')
+})
+
+// ── 2026-11-25：「多久看一次」改分钟口径 ───────────────────
+test('自己找视频看：间隔是分钟控件（能在面板上填 20 分钟）', () => {
+  const c = schema.controls.find((x) => x.key === 'video-wander.everyMinutes')
+  assert.ok(c, '面板上应有 video-wander.everyMinutes')
+  assert.equal(c.unit, '分钟')
+  assert.equal(c.default, 240)
+  assert.ok(c.min <= 20 && c.max >= 20, '范围要允许 20 分钟（min=' + c.min + '）')
+  assert.equal(schema.controls.some((x) => x.key === 'video-wander.everyHours'), false,
+    '旧的整小时控件不该继续挂在面板上（会和分钟项冲突）')
+})
+
+test('自己找视频看：没配过间隔时面板显示默认 240 分钟', () => {
+  // 面板读的是内核 buildPluginCfg 的产物（storedValue 的回落值）：这条实例 raw 里没有
+  // everyHours 也没有 everyMinutes，所以应是 schema 默认 240。
+  const def = h.kernel.pluginDefs.find((d) => d.id === 'video-wander')
+  assert.ok(def)
+  assert.equal(def.cfg.everyMinutes, 240)
+  assert.equal(readValue(h.kernel, 'video-wander.everyMinutes', h.raw), 240)
+})
+
+test('自己找视频看：老配置 everyHours=1 面板读成 60 分钟（走真实 readValue）', async () => {
+  // 走完整装配：raw 里只写旧键，内核 buildPluginCfg 迁移后，面板必须读到 60 而不是 240。
+  const h2 = await bootKernel({
+    config: { pluginConfig: { 'video-wander': { enabled: true, everyHours: 1 } } },
+  })
+  try {
+    assert.equal(readValue(h2.kernel, 'video-wander.everyMinutes', h2.raw), 60,
+      '面板要显示迁移后的 60，不能退回默认 240')
+  } finally { h2.dispose() }
 })

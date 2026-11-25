@@ -76,6 +76,17 @@ const BILI_REGIONS = [
 const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d)
 const now = () => Date.now()
 
+/**
+ * 分钟 → 人话（20 分钟 / 1 小时 / 1.5 小时 / 4 小时）。
+ * 2026-11-25：间隔改成分钟口径后，日志和工具回执里再写「每 240 分钟」没人看得懂。
+ */
+function gapText(min) {
+  const m = Math.max(1, Math.round(Number(min) || 0))
+  if (m < 60) return m + ' 分钟'
+  const h = m / 60
+  return (Number.isInteger(h) ? String(h) : h.toFixed(1)) + ' 小时（' + m + ' 分钟）'
+}
+
 /** 本地日期（只用来分天，不做时区运算） */
 function localDate(ts = now()) {
   const d = new Date(ts)
@@ -171,10 +182,38 @@ function mediaTypeOf(buf) {
   return 'image/jpeg'
 }
 
+/**
+ * 老配置升级：`everyHours`（小时）→ `everyMinutes`（分钟）。
+ *
+ * 为什么必须有（2026-11-25）：间隔改成分钟口径后，老实例的配置里只有 `everyHours: 1`，
+ * 新键 `everyMinutes` 缺失 → withDefaults 会悄悄退回默认 240 分钟，
+ * 用户看到的是「我设的 1 小时变成了 4 小时」，而且没有任何报错。
+ *
+ * 内核在套 schema 默认值之前调用本函数（见 index.js 的 buildPluginCfg），
+ * 所以这里的入参是**用户实际存过的原始配置**，不是补过默认值的对象。
+ * 纯函数：不改入参，返回新对象；没有需要迁移的键就原样返回。
+ */
+export function migrateConfig(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw
+  const hasNew = raw.everyMinutes !== undefined && raw.everyMinutes !== null && raw.everyMinutes !== ''
+  const hasOld = raw.everyHours !== undefined && raw.everyHours !== null && raw.everyHours !== ''
+  // 新键已经在用 → 不拿旧键去覆盖（用户可能先在新面板里设过值）
+  if (!hasOld || hasNew) return raw
+  const hours = Number(raw.everyHours)
+  if (!Number.isFinite(hours) || hours <= 0) return raw
+  const out = { ...raw }
+  out.everyMinutes = Math.max(1, Math.min(4320, Math.round(hours * 60)))
+  // 旧键留着不删：万一哪天要回滚到旧版本，节奏仍然是用户原来那个值。
+  return out
+}
+
 export default {
   id: 'video-wander',
   title: '自己找视频看',
   order: 47,
+
+  /** 老配置键迁移钩子（内核在套默认值前调用，见文件末尾 migrateConfig 的说明） */
+  migrateConfig,
 
   configSchema: {
     // ── 常用 ────────────────────────────────────────────────
@@ -185,16 +224,20 @@ export default {
     },
     autoEnabled: {
       type: 'bool', default: false, group: '自己找视频看',
-      label: '自动看视频（每几个小时自己挑一个）',
+      label: '自动看视频（隔一阵自己挑一个）',
       hint: '开：每隔「多久看一次」这么久，自己从 B 站排行榜挑一个视频，下载抽帧真看一遍，'
         + '把感想和链接私聊发给你。\n'
         + '关（默认）：不会自己跑，但插件仍然启着 —— 你在控制台点「立刻看一个」还能手动触发。',
     },
-    everyHours: {
-      type: 'int', default: 4, unit: '小时', group: '自己找视频看',
-      min: 1, max: 72, step: 1,
+    // 2026-11-25：原来只有整小时的 everyHours（min 1 小时），用户想设 20 分钟设不了。
+    // 改成分钟口径；老配置里的小时值由 migrateConfig() 折算过来（内核在套默认值前调用）。
+    everyMinutes: {
+      type: 'int', default: 240, unit: '分钟', group: '自己找视频看',
+      min: 1, max: 4320, step: 1,
       label: '多久看一次',
-      hint: '两次「自己找视频看」之间至少隔这么久。默认 4 小时（一天最多 6 次，还要受下面「每天最多」限制）。',
+      hint: '两次「自己找视频看」之间至少隔这么久，按**分钟**填：20 = 20 分钟，90 = 一个半小时，240 = 4 小时。\n'
+        + '默认 240 分钟（一天最多 6 次，还要受下面「每天最多」限制）。\n'
+        + '定时器每 60 秒查一次是否到点，所以实际触发起步会晚 0~1 分钟。',
     },
     maxPerDay: {
       type: 'int', default: 6, unit: '次', group: '自己找视频看',
@@ -452,11 +495,11 @@ export default {
 
 
     /** 正常节奏下的下次到点时间 */
-    const dueAt = (st) => Number(st.lastRunAt || 0) + Math.max(1, num(cfg().everyHours, 4)) * 3600 * 1000
+    const dueAt = (st) => Number(st.lastRunAt || 0) + Math.max(1, num(cfg().everyMinutes, 240)) * 60000
 
     /** 失败/空手而归之后：把 lastRunAt 往前挪，等于「retryMinutes 后再试」 */
     function backoff(st) {
-      const gapMs = Math.max(1, num(cfg().everyHours, 4)) * 3600 * 1000
+      const gapMs = Math.max(1, num(cfg().everyMinutes, 240)) * 60000
       st.lastRunAt = now() - gapMs + Math.max(5, num(cfg().retryMinutes, 30)) * 60000
       save(st)
     }
@@ -961,7 +1004,9 @@ export default {
             lastSelfAt: Number(st.chatLastAt) || null,
           },
           timer: {
-            everyHours: num(cfg().everyHours, 4),
+            everyMinutes: num(cfg().everyMinutes, 240),
+            // 派生的小时数：老消费者（脚本/工具回执）读的是 everyHours，别让它突然变 undefined
+            everyHours: Math.round(num(cfg().everyMinutes, 240) / 60 * 100) / 100,
             maxPerDay: num(cfg().maxPerDay, 6),
             todayCount: runsToday(st, 'timer'),
             lastRunAt: Number(st.lastRunAt) || null,
@@ -1041,7 +1086,7 @@ export default {
 
     // ── 工具：让它在对话里也能自己决定去看 ────────────────────
     // 定时器是「到点自己看」；这个是「聊着聊着想去看看」。
-    // 两者共用同一套配额（everyHours / maxPerDay），不会因为多了一条路就能超量。
+    // 两者共用同一套配额（everyMinutes / maxPerDay），不会因为多了一条路就能超量。
     bot.registerTool('watch_video', {
       description: '自己挑一个 B 站热门视频看（不需要对方给链接）。'
         + '调用后会**真的去看**：挑视频 → 下载抽帧 → 写感想 → 把「看了什么 + 感想 + 链接」私聊发给主人。'
@@ -1243,7 +1288,7 @@ export default {
       if (timer) clearInterval(timer)
       timer = null
       if (!autoOn()) return null
-      // 60 秒一查：比「每 4 小时一次」细得多，但每次只是一次 Map 查找，开销可以忽略；
+      // 60 秒一查：比最短的间隔（1 分钟）也够用，每次只是一次 Map 查找，开销可以忽略；
       // 用长间隔会让「到点」偏出好几分钟，反而显得不自然
       timer = setInterval(() => {
         try { tick() } catch (e) { log.error('[看视频的地方] tick 异常: ' + (e?.message || e)) }
@@ -1277,7 +1322,9 @@ export default {
           + '，主人叫我 ' + masterToday + ' 个（不占额度）',
         self: { todayCount: selfToday, maxPerDay: selfCap, cooldownMin: Math.max(0, num(cfg().chatCooldownMin, 30)), lastAt: Number(st.chatLastAt) || null },
         master: { todayCount: masterToday, maxPerDay: Math.max(0, num(cfg().masterMaxPerDay, 20)) },
-        everyHours: num(cfg().everyHours, 4),
+        everyMinutes: num(cfg().everyMinutes, 240),
+        // 派生值：外部消费者（旧脚本、日志查询）读的是 everyHours
+        everyHours: Math.round(num(cfg().everyMinutes, 240) / 60 * 100) / 100,
         maxPerDay: Math.max(0, num(cfg().maxPerDay, 6)),
         todayCount: runsToday(st, 'timer'),
         lastRunAt: Number(st.lastRunAt) || null,
@@ -1325,7 +1372,7 @@ export default {
     bot.shared.videoWanderReload = () => { stop(); start() }
 
     log.info('[看视频的地方] 已装配：' + (autoOn()
-      ? '自动看=开（每 ' + num(cfg().everyHours, 4) + ' 小时最多一次，每天 ≤' + num(cfg().maxPerDay, 6) + ' 次）'
+      ? '自动看=开（每 ' + gapText(num(cfg().everyMinutes, 240)) + '最多一次，每天 ≤' + num(cfg().maxPerDay, 6) + ' 次）'
       : '自动看=关')
       + '｜它自己起的念头：冷却 ' + Math.max(0, num(cfg().chatCooldownMin, 30)) + ' 分钟，每天 ≤'
       + Math.max(0, num(cfg().chatMaxPerDay, 6)) + ' 次；主人叫的不占额度（每天上限 '

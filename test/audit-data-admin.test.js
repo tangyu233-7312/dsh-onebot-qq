@@ -106,6 +106,16 @@ test('8 端点：schema / status / set / module 正常返回；非法键返回 {
   const onDisk = JSON.parse(fs.readFileSync(h.configPath, 'utf8'))
   assert.equal(onDisk.pacing.reply.hourlyMax, 8)
 
+  // 2026-11-25：分钟级间隔必须真的能写进去并热应用（不只是面板放得下这个数）
+  const wander = await endpoints.handle('set', { key: 'video-wander.everyMinutes', value: 20 })
+  assert.equal(wander.ok, true, JSON.stringify(wander))
+  const afterWander = JSON.parse(fs.readFileSync(h.configPath, 'utf8'))
+  assert.equal(afterWander.pluginConfig['video-wander'].everyMinutes, 20, '应落到 pluginConfig.video-wander.everyMinutes')
+  assert.equal(h.kernel.plugins.find((p) => p.id === 'video-wander').cfg.everyMinutes, 20,
+    '热重载后插件 cfg 立刻变成 20 分钟（下一轮到点判定就用新值）')
+  const schemaAfter = await endpoints.handle('schema', {})
+  assert.equal(schemaAfter.controls.find((c) => c.key === 'video-wander.everyMinutes').value, 20, '面板回读 20')
+
   const module = await endpoints.handle('module', { id: 'stickers', on: false })
   assert.equal(module.ok, true)
   assert.equal(h.kernel.plugins.find((p) => p.id === 'stickers').cfg.enabled, false, '模块开关热生效')
