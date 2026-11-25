@@ -456,8 +456,9 @@ function cmdImportLegacy(flags, positional) {
   const out = outArg ? path.resolve(outArg) : path.join(dataDir, 'config.json')
   ensureDir(path.dirname(out))
 
+  // 两种形状都走 migrateLegacyConfig：v2 输入时它等价于「只保留认识的键」的归一化
   const legacy = isLegacyShape(old)
-  const migrated = isLegacyShape(old) ? migrateLegacyConfig(old) : migrateLegacyConfig(old)
+  const migrated = migrateLegacyConfig(old)
   const backup = fs.existsSync(out) ? backupFileSync(out, 'bak-import') : ''
   saveConfig(out, migrated, { backup: false })
   chmodBestEffort(out, 0o600)
