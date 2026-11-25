@@ -69,7 +69,7 @@ test('createConfigStore.update：落盘（备份 + 原子写）+ kernel.reloadCo
   const before = store.read()
   const res = await store.update((raw) => {
     raw.pacing.reply.hourlyMax = 9
-    raw.pluginConfig['gate-wake'] = { ...(raw.pluginConfig['gate-wake'] || {}), groupFollowUpMs: 30000 }
+    raw.pluginConfig['gate-wake'] = { ...(raw.pluginConfig['gate-wake'] || {}), groupFollowUpMs: 30 }
   }, { what: 'test-update' })
   assert.equal(res.ok, true)
   assert.ok(res.backup, '应生成备份文件')

@@ -113,7 +113,7 @@ test('3. 入站协调：黑名单拦截不写留档；纯 @ callAck + 接续窗�
     config: {
       pacing: { merge: { enabled: false } },
       pluginConfig: {
-        'gate-wake': { adminQq: ADMIN_QQ, groupUserBlocklist: `${GROUP_ID}:${MEMBER_QQ}`, groupFollowUpMs: 5000 },
+        'gate-wake': { adminQq: ADMIN_QQ, groupUserBlocklist: `${GROUP_ID}:${MEMBER_QQ}`, groupFollowUpMs: 5 },
         'persona-voice': { splitReplyEnabled: false },
       },
     },

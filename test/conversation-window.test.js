@@ -13,7 +13,8 @@ const event = (qq = ADMIN_QQ, over = {}) => ({
 })
 function setup() {
   let now = 100000
-  const config = { groupFollowUpMs: 10000, followUpDebounceMs: 1000 }
+  // 2026-11-25：groupFollowUpMs 改为**按秒**存（面板与存储同口径）。10 = 10 秒，与旧测试的 10000ms 等价。
+  const config = { groupFollowUpMs: 10, followUpDebounceMs: 1000 }
   const w = createConversationWindow({ config: () => config, clock: () => now, log: quiet })
   return { w, config, advance(ms) { now += ms } }
 }
@@ -53,7 +54,7 @@ test('入窗资格以收到时为准；重置使已收集候选失效；关闭/�
   assert.equal(w.current(ev), false); assert.equal(calls, 0)
   w.open(chat, ADMIN_QQ); config.groupFollowUpMs = 0
   assert.equal(w.capture(event()), false)
-  config.groupFollowUpMs = 10000
+  config.groupFollowUpMs = 10
   const next = event(); w.capture(next); w.submit(next, () => { calls++ })
   w.stop(); await w.flush(chat, ADMIN_QQ); assert.equal(calls, 0)
 })
@@ -323,4 +324,66 @@ test('合批保留两人消息/引用/图片来源', async (t) => {
   assert.ok(req.content.some((x) => x.text?.includes('QQ 消息 ID 742')))
   start(h, req)
   end(h, req)
+})
+
+// ── 2026-11-25：口径修正（毫秒 → 秒）+ 上限 + 默认值 ────────────
+test('窗口按秒生效：设 60 就是 60 秒，不再是 60 毫秒', () => {
+  let now = 0
+  const config = { groupFollowUpMs: 60, followUpDebounceMs: 1000 }
+  const w = createConversationWindow({ config: () => config, clock: () => now, log: quiet })
+  w.open(chat, ADMIN_QQ)
+  now = 59 * 1000
+  assert.equal(w.capture(event()), true, '第 59 秒仍在窗口内')
+  w.open(chat, ADMIN_QQ)
+  now = 59 * 1000 + 60 * 1000 + 1
+  assert.equal(w.capture(event()), false, '超过 60 秒应关闭')
+  w.stop()
+})
+
+test('窗口上限 600 秒：填更大也只到 10 分钟（防止误填把窗口撑到几小时）', () => {
+  let now = 0
+  const config = { groupFollowUpMs: 99999 }
+  const w = createConversationWindow({ config: () => config, clock: () => now, log: quiet })
+  w.open(chat, ADMIN_QQ)
+  now = 599 * 1000
+  assert.equal(w.capture(event()), true, '10 分钟内仍有效')
+  w.open(chat, ADMIN_QQ)
+  now = 599 * 1000 + 600 * 1000 + 1
+  assert.equal(w.capture(event()), false, '超过 600 秒要关闭，不能被填成几小时')
+  w.stop()
+})
+
+test('0 = 没有窗口（关闭接话）', () => {
+  const config = { groupFollowUpMs: 0 }
+  const w = createConversationWindow({ config: () => config, clock: () => 0, log: quiet })
+  w.open(chat, ADMIN_QQ)
+  assert.equal(w.hasOpen(chat), false)
+  assert.equal(w.capture(event()), false)
+  w.stop()
+})
+
+test('老配置兼容：门禁插件的 migrateConfig 把毫秒旧值折成秒', async () => {
+  const gate = (await import('../plugins/gate-wake/index.js')).default
+  assert.equal(typeof gate.migrateConfig, 'function')
+  // 现网真实形态：10000（当时被当 10 秒）→ 折成 10 秒，行为不变
+  assert.equal(gate.migrateConfig({ groupFollowUpMs: 10000 }).groupFollowUpMs, 10)
+  assert.equal(gate.migrateConfig({ groupFollowUpMs: 30000 }).groupFollowUpMs, 30)
+  // 已经是秒口径的小值 → 不动（新写入的值）
+  assert.equal(gate.migrateConfig({ groupFollowUpMs: 60 }).groupFollowUpMs, 60)
+  assert.equal(gate.migrateConfig({ groupFollowUpMs: 0 }).groupFollowUpMs, 0)
+  // 超上限夹到 600
+  assert.equal(gate.migrateConfig({ groupFollowUpMs: 999999 }).groupFollowUpMs, 600)
+  // 没配过 / 非法值 → 原样返回，交给 schema 默认值
+  const a = { enabled: true }; assert.equal(gate.migrateConfig(a), a)
+  assert.equal(gate.migrateConfig({ groupFollowUpMs: 'abc' }).groupFollowUpMs, 'abc')
+})
+
+test('面板默认值是 60 秒，范围 0~600', async () => {
+  const gate = (await import('../plugins/gate-wake/index.js')).default
+  const f = gate.configSchema.groupFollowUpMs
+  assert.equal(f.default, 60)
+  assert.equal(f.unit, '秒')
+  assert.equal(f.min, 0)
+  assert.equal(f.max, 600)
+  assert.equal(f.scale, undefined, '不能再留 scale:1000 —— 子插件项不做换算，留着只会误导')
 })

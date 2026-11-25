@@ -1285,7 +1285,18 @@ export async function apply(ctx, bundleConfig = {}) {
     // 引用锚：入站事件自带 message_id，记下来；活到这一轮的 DSH turn/end
     turnCtx._hasAnchor = ev.wake.kind !== 'proactive' && ev.wake.kind !== 'welcome'
     turnCtx.isGroup = ev.isGroup
-    turnCtx.participants = [...new Set((ev._scratch.batchEvents || [ev]).map((e) => String(e.sender?.qq || '')).filter(Boolean))]
+    // 本轮参与者（谁说的话进了这一轮）。顺序有意义：**被它回复/被引用的那个人排最前**。
+    // 2026-11-25：原来只按合批顺序去重，于是"合批里混进别人"时，conversation-window 可能先给别人开窗。
+    // 字段来源与 gate-wake 的 quotedSenderOf 保持一致（同一个事实别读两遍、更别自己发明字段）。
+    {
+      const batch = ev._scratch.batchEvents || [ev]
+      const all = [...new Set(batch.map((e) => String(e.sender?.qq || '')).filter(Boolean))]
+      const quoted = ev.quotedSenderQq ?? ev.quotedSenderId ?? ev._scratch?.quote?.senderId
+      const focus = quoted != null && String(quoted) ? String(quoted) : String(ev.sender?.qq || '')
+      turnCtx.participants = focus && all.includes(focus)
+        ? [focus, ...all.filter((q) => q !== focus)]
+        : all
+    }
     // 2026-10-30：给"这一轮是谁起的"一个**机器可读**的标记，别让工具去猜。
     //   _wakeKind：主动接话合成轮的标记；
     //   _triggeredBy：'master' = 主人发的消息触发的；'other' = 群友/系统触发的。

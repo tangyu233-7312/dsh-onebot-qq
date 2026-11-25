@@ -70,9 +70,17 @@ const configSchema = {
       + '和「群内白名单」的区别：这个限制所有群和私聊，群内白名单只限制某一个群。适合「只给自己和几个朋友用」的场景。',
   },
   groupAtRequired: { type: 'bool', default: true, group: '唤醒', label: '群聊必须被叫才回', hint: '开：群里必须 @ 它或叫到唤醒词才回；关：没人叫也会接话（容易吵，一般保持开）。' },
+  // 2026-11-25：口径修正。原来写的是 unit:'秒', scale:1000 —— 但**子插件项不做 scale 换算**
+  // （admin/schema.js 文件头：子插件 raw 里存的就是面板单位），于是面板显示「10000 秒」、
+  // 玩家以为自己设了近 3 小时，而 conversation-window.js 的 duration() 按「值 <1000 当秒、否则当毫秒」
+  // 把它当成 10000ms = **10 秒**。线上实测就是这个值（现网 groupFollowUpMs=10000）。
+  // 现在面板直接按**秒**填，存储也按秒，duration() 本来就兼容（<1000 当秒）×1000、跨度上限抬到 600 秒。
   groupFollowUpMs: {
-    type: 'int', default: 10000, unit: '秒', scale: 1000, group: '唤醒', label: '回复后接话窗口',
-    hint: '回复发出或纯呼名应答后，同一人在窗口内无需再次唤醒，由模型判断是否在接话；不发不续期。独立于主动接话。0 = 关闭。',
+    type: 'int', default: 60, unit: '秒', group: '唤醒', label: '回复后接话窗口',
+    min: 0, max: 600, step: 5,
+    hint: '回复发出或纯呼名应答后，同一人在窗口内无需再次唤醒，由模型判断是否在接话；不发不续期。独立于主动接话。0 = 关闭。\n'
+      + '按**秒**填：60 = 回完话后这 1 分钟内对方接着说，它会接住。默认 60 秒，最大 600 秒（10 分钟）。\n'
+      + '⚠️ 窗口期内对方每说一句都会进一次模型，填太大既费 token 又容易像在抢话。',
   },
   followUpDebounceMs: {
     type: 'int', default: 1000, min: 0, max: 3000, unit: '毫秒', group: '唤醒', label: '接话连发收集时间',
@@ -384,6 +392,27 @@ export default {
   title: '门禁与唤醒',
   order: 10,
   configSchema,
+
+  /**
+   * 老配置迁移（2026-11-25）：`groupFollowUpMs` 从「毫秒存储 + 面板谎报秒」改成「按秒存储」。
+   *
+   * 历史：老配置里存的是 10000，面板却显示「10000 秒」，实际被 duration() 当 10000ms = 10 秒。
+   * 改成按秒存之后，10000 会被当成 10000ms 兜底分支（仍然 10 秒），行为不变；
+   * 但**面板会显示 10000 秒**——还是骗人。
+   * 所以这里把 ≥1000 的老值折成它**真实生效的秒数**：10000ms → 10 秒。
+   * 迁移后再进控制台看到的就是「10 秒」= 它一直以来真正在跑的时长，不会因升级突然变长或变短。
+   */
+  migrateConfig(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw
+    const v = raw.groupFollowUpMs
+    if (v === undefined || v === null || v === '') return raw
+    const n = Number(v)
+    // <1000 已经是秒口径（新写入的值），不用动；≥1000 是老的毫秒值，折成秒
+    if (!Number.isFinite(n) || n < 1000) return raw
+    const out = { ...raw }
+    out.groupFollowUpMs = Math.max(0, Math.min(600, Math.round(n / 1000)))
+    return out
+  },
 
   setup(bot) {
     // ── 运行时屏蔽：挂在 bot 与共享的 bot.state 上（:3971/ignore/* 与控制台群卡片读同一份） ──
